@@ -248,15 +248,21 @@ class XHSMcpCliCollector:
         return payload
 
     def _infer_vendor_dir(self) -> str:
+        project_default = Path(__file__).resolve().parents[2] / "vendor" / "xhs-mcp"
+
         args = self.cfg.args or []
-        if not args:
-            return ""
-        candidate = Path(str(args[0]))
-        try:
-            if candidate.name.lower() == "xhs-mcp.js" and candidate.parent.name.lower() == "dist":
-                return str(candidate.parent.parent)
-        except Exception:
-            return ""
+        if args:
+            candidate = Path(str(args[0]))
+            try:
+                if candidate.name.lower() == "xhs-mcp.js" and candidate.parent.name.lower() == "dist":
+                    base = candidate.parent.parent
+                    if base.exists():
+                        return str(base.resolve())
+            except Exception:
+                pass
+
+        if project_default.exists():
+            return str(project_default.resolve())
         return ""
 
     def _run_detail_script(self, script_path: str, feed_id: str, xsec_token: str) -> dict:

@@ -329,14 +329,44 @@ async function main() {
   const vendorDir = args.vendorDir || "";
 
   let puppeteer;
+  const vendorCandidates = [];
   if (vendorDir) {
-    const vendorPuppeteer = path.join(vendorDir, "node_modules", "puppeteer");
-    if (fs.existsSync(vendorPuppeteer)) {
+    vendorCandidates.push(path.resolve(vendorDir));
+  }
+  vendorCandidates.push(path.resolve(__dirname, "..", "vendor", "xhs-mcp"));
+  vendorCandidates.push(path.resolve(process.cwd(), "vendor", "xhs-mcp"));
+
+  for (const candidate of vendorCandidates) {
+    const vendorPuppeteer = path.resolve(candidate, "node_modules", "puppeteer");
+    if (!fs.existsSync(vendorPuppeteer)) {
+      continue;
+    }
+    try {
       puppeteer = require(vendorPuppeteer);
+      break;
+    } catch {
+      // try next candidate
     }
   }
   if (!puppeteer) {
-    puppeteer = require("puppeteer");
+    try {
+      puppeteer = require("puppeteer");
+    } catch (error) {
+      try {
+        const message = error && error.message ? error.message : String(error);
+        console.log(
+          JSON.stringify({
+            success: false,
+            error: "missing_puppeteer_module",
+            message,
+            hint:
+              "Run npm install in vendor/xhs-mcp or provide --vendor-dir to a valid xhs-mcp directory.",
+          })
+        );
+      } finally {
+        process.exit(1);
+      }
+    }
   }
 
   const browser = await puppeteer.launch({
