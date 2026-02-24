@@ -402,7 +402,17 @@ XHS MCP 地址：`https://xhs-mcp.aicu.icu/`
 初始化 `vendor/xhs-mcp` 依赖示例。
 ```powershell
 cd vendor/xhs-mcp
-npm install
+$env:PUPPETEER_SKIP_DOWNLOAD="true"
+$env:PUPPETEER_SKIP_CHROMIUM_DOWNLOAD="true"
+npm install --no-fund --no-audit
+cd ../..
+```
+
+如遇依赖下载网络问题，可在 `vendor/xhs-mcp` 目录临时切换 npm 源后重试。
+```powershell
+cd vendor/xhs-mcp
+npm config set registry https://registry.npmjs.org/
+npm install --no-fund --no-audit
 cd ../..
 ```
 
