@@ -1,8 +1,24 @@
 # SuccessionPilot 自动找继任系统
 
+## 执行目录与路径约定
+- 下文所有命令默认在项目根目录执行（即包含 `README.md`、`config/`、`scripts/` 的目录）。
+- 建议先进入项目根目录再执行命令。
+```powershell
+cd <项目根目录>
+```
+- 关键目录说明。
+- `config/`：配置模板与主配置
+- `scripts/`：一键脚本（初始化、登录、守护、Dashboard）
+- `src/`：Python 核心代码
+- `web/`：前端页面（Dashboard）
+- `data/`：运行输出（Excel、CSV、状态、运行快照）
+- `logs/`：运行日志
+- `vendor/xhs-mcp/`：项目内置 XHS MCP 运行文件
+
 ## 一键配置（首次部署，推荐）
 1. 初始化环境（自动创建 `.venv`、安装依赖、生成 `.env` 与 `config/config.yaml`）。
 ```powershell
+cd <项目根目录>
 powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1
 ```
 
@@ -23,23 +39,141 @@ XHS_PUPPETEER_REQUIRE=
 
 3. 扫码登录并检查状态。
 ```powershell
+cd <项目根目录>
 powershell -ExecutionPolicy Bypass -File scripts/xhs_login.ps1 -Timeout 180
 powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1
 ```
 
 4. 单次验收（抓取、过滤、写表、按策略发送）。
 ```powershell
+cd <项目根目录>
 .\.venv\Scripts\python.exe -m auto_successor.main --config config/config.yaml --run-once
 ```
 
 5. 启动定时守护运行。
 ```powershell
+cd <项目根目录>
 powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath config/config.yaml
 ```
 
 6. 可选：直接发送本地已存最新 5 条摘要（不触发抓取）。
 ```powershell
+cd <项目根目录>
 .\.venv\Scripts\python.exe -m auto_successor.main --config config/config.yaml --send-latest 5
+```
+
+## 完整配置清单（按顺序）
+### 第 1 步：准备基础环境
+- 在项目根目录执行 `scripts/bootstrap.ps1`。
+- 预期结果。
+- 生成 `.venv/`、`.env`、`config/config.yaml`
+- 可执行 `.\.venv\Scripts\python.exe`
+
+### 第 2 步：配置 `.env`（密钥与账号）
+至少填写以下字段（仅邮箱模式）。
+```env
+EMAIL_SMTP_USERNAME=your_name@126.com
+EMAIL_SMTP_PASSWORD=your_126_smtp_auth_code
+EMAIL_FROM=your_name@126.com
+EMAIL_TO=receiver1@example.com,receiver2@example.com
+```
+
+按需填写（可选）。
+```env
+# 微信服务号
+WECHAT_SERVICE_APP_ID=
+WECHAT_SERVICE_APP_SECRET=
+WECHAT_SERVICE_OPENIDS=openid1,openid2
+
+# LLM
+OPENAI_API_KEY=
+
+# 浏览器与 Puppeteer 兼容参数
+CHROME_PATH=
+XHS_PUPPETEER_REQUIRE=
+```
+
+### 第 3 步：配置 `config/config.yaml`（主开关）
+最小可用（邮箱摘要）建议如下。
+```yaml
+xhs:
+  keyword: "继任"
+  search_sort: "time_descending"
+
+email:
+  enabled: true
+  smtp_host: "smtp.126.com"
+  smtp_port: 465
+  use_ssl: true
+
+wechat_service:
+  enabled: false
+
+llm:
+  enabled: false
+
+notification:
+  mode: "digest"
+  digest_interval_minutes: 30
+  digest_min_new_notes: 1
+  digest_send_when_no_new: false
+  digest_channels: ["email"]
+  attach_excel: false
+  attach_jobs_csv: false
+```
+
+如果你要“邮箱 + 微信服务号”，改这两处。
+- `wechat_service.enabled: true`
+- `notification.digest_channels: ["email", "wechat_service"]`
+
+如果你要启用 LLM 增强（过滤/岗位抽取/摘要）。
+- `.env` 填 `OPENAI_API_KEY`
+- `config/config.yaml` 设 `llm.enabled: true`
+
+### 第 4 步：小红书登录（必须）
+```powershell
+cd <项目根目录>
+powershell -ExecutionPolicy Bypass -File scripts/xhs_login.ps1 -Timeout 180
+powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1
+```
+`status` 里应看到 `loggedIn=true`。
+
+### 第 5 步：单次验收（先跑一轮）
+```powershell
+cd <项目根目录>
+.\.venv\Scripts\python.exe -m auto_successor.main --config config/config.yaml --run-once
+```
+验收点。
+- `data/output.xlsx` 已更新
+- `data/jobs.csv` 已生成或更新
+- `data/state.json` 已写入
+- `logs/app.log` 有本轮日志
+- 满足摘要条件时收到邮件/微信；无新增默认不发送
+
+### 第 6 步：启动定时任务
+```powershell
+cd <项目根目录>
+powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath config/config.yaml
+```
+
+### 第 7 步：查看前端 Dashboard
+```powershell
+cd <项目根目录>
+powershell -ExecutionPolicy Bypass -File scripts/start_dashboard.ps1 -BindHost 127.0.0.1 -Port 8787
+```
+浏览器打开 `http://127.0.0.1:8787`。
+
+### 第 8 步：常用运维命令
+手动发送已存最新 5 条摘要（不抓取）。
+```powershell
+cd <项目根目录>
+.\.venv\Scripts\python.exe -m auto_successor.main --config config/config.yaml --send-latest 5
+```
+
+检查当前小红书登录状态。
+```powershell
+cd <项目根目录>
+powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1
 ```
 
 ## 项目简介
@@ -66,6 +200,25 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - `scripts/`：运行脚本与 XHS 辅助脚本
 - `web/`：Dashboard 前端页面
 - `data/`：本地数据、状态、运行快照
+
+## 快速定位（文件在哪）
+- 主配置文件：`config/config.yaml`
+- 配置模板：`config/config.example.yaml`
+- 环境变量模板：`.env.example`
+- 本地环境变量：`.env`
+- 前端主页：`web/index.html`
+- 前端脚本：`web/app.js`
+- 前端样式：`web/styles.css`
+- 自动运行脚本：`scripts/start_auto.ps1`
+- Dashboard 脚本：`scripts/start_dashboard.ps1`
+- XHS 登录脚本：`scripts/xhs_login.ps1`
+- XHS 状态脚本：`scripts/xhs_status.ps1`
+- 一键初始化脚本：`scripts/bootstrap.ps1`
+- 主数据文件（运行后生成）：`data/output.xlsx`
+- 岗位 CSV（运行后生成）：`data/jobs.csv`
+- 状态文件（运行后生成）：`data/state.json`
+- 运行快照目录：`data/runs/`
+- 运行日志：`logs/app.log`
 
 ## 环境要求
 - Python 3.9 及以上
@@ -108,21 +261,31 @@ Copy-Item .env.example .env
 
 Dashboard 启动。
 ```powershell
+cd <项目根目录>
 .\.venv\Scripts\python.exe -m auto_successor.dashboard --host 127.0.0.1 --port 8787
 ```
 
 或使用模块入口。
 ```powershell
+cd <项目根目录>
 succession-pilot-dashboard --host 127.0.0.1 --port 8787
 ```
 
 或使用脚本。
 ```powershell
+cd <项目根目录>
 powershell -ExecutionPolicy Bypass -File scripts/start_dashboard.ps1
+```
+
+指定地址与端口示例。
+```powershell
+cd <项目根目录>
+powershell -ExecutionPolicy Bypass -File scripts/start_dashboard.ps1 -BindHost 127.0.0.1 -Port 8787
 ```
 
 守护运行快捷脚本。
 ```powershell
+cd <项目根目录>
 powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath config/config.yaml
 ```
 

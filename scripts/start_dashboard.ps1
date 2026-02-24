@@ -1,5 +1,5 @@
 param(
-  [string]$Host = "127.0.0.1",
+  [string]$BindHost = "127.0.0.1",
   [int]$Port = 8787
 )
 
@@ -10,8 +10,8 @@ Set-Location -LiteralPath $ProjectRoot
 
 $VenvPython = ".venv\Scripts\python.exe"
 if (Test-Path $VenvPython) {
-  & $VenvPython -m auto_successor.dashboard --host $Host --port $Port
+  & $VenvPython -m auto_successor.dashboard --host $BindHost --port $Port
   exit $LASTEXITCODE
 }
 
-python -m auto_successor.dashboard --host $Host --port $Port
+python -m auto_successor.dashboard --host $BindHost --port $Port

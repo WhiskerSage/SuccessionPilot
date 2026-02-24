@@ -1,10 +1,12 @@
 ﻿(() => {
   const state = {
+    allLeads: [],
     leads: [],
     selectedNoteId: "",
     loading: false,
     skin: "business-blue",
     search: "",
+    view: "overview",
     runItems: [],
   };
 
@@ -23,6 +25,8 @@
     searchInput: document.getElementById("searchInput"),
     refreshBtn: document.getElementById("refreshBtn"),
     skinBtn: document.getElementById("skinBtn"),
+    navItems: document.querySelectorAll(".nav-item[data-view]"),
+    workspace: document.getElementById("workspace"),
   };
 
   const SKINS = ["business-blue", "graphite-office"];
@@ -134,6 +138,41 @@
     }
     state.selectedNoteId = state.leads[0].note_id;
     return state.leads[0];
+  }
+
+  function leadsForView(items) {
+    const list = Array.isArray(items) ? items : [];
+    if (state.view === "summary") {
+      return list.filter((item) => String(item.summary || "").trim());
+    }
+    if (state.view === "sendlog") {
+      return list.slice(0, 80);
+    }
+    return list;
+  }
+
+  function applyViewMode(nextView) {
+    const allowed = new Set(["overview", "leads", "summary", "sendlog"]);
+    state.view = allowed.has(nextView) ? nextView : "overview";
+    document.body.dataset.view = state.view;
+
+    dom.navItems.forEach((item) => {
+      const active = item.getAttribute("data-view") === state.view;
+      item.classList.toggle("active", active);
+    });
+
+    if (state.view === "summary") {
+      dom.searchInput.placeholder = "按摘要 / 岗位 / 公司筛选";
+    } else if (state.view === "sendlog") {
+      dom.searchInput.placeholder = "按运行记录关联线索筛选";
+    } else {
+      dom.searchInput.placeholder = "公司 / 岗位 / 地点 / 摘要";
+    }
+
+    renderLeads(leadsForView(state.allLeads));
+    if (dom.workspace) {
+      dom.workspace.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
   }
 
   function compactText(value, limit = 1600) {
@@ -278,7 +317,8 @@
       query.set("q", q);
     }
     const resp = await fetchJson(`/api/leads?${query.toString()}`);
-    renderLeads((resp && resp.items) || []);
+    state.allLeads = (resp && resp.items) || [];
+    renderLeads(leadsForView(state.allLeads));
   }
 
   async function refreshAll() {
@@ -345,6 +385,12 @@
         });
       }, 260),
     );
+
+    dom.navItems.forEach((item) => {
+      item.addEventListener("click", () => {
+        applyViewMode(item.getAttribute("data-view") || "overview");
+      });
+    });
   }
 
   function initAutoRefresh() {
@@ -357,6 +403,7 @@
 
   function boot() {
     loadSkin();
+    applyViewMode("overview");
     bindEvents();
     refreshAll();
     initAutoRefresh();
