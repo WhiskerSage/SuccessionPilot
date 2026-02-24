@@ -21,7 +21,7 @@ class XHSConfig:
     command: str = "node"
     args: list[str] | None = None
     browser_path: str = "C:/Program Files/Google/Chrome/Application/chrome.exe"
-    search_sort: str = "general"
+    search_sort: str = "time_descending"
     keyword: str = "继任"
     max_results: int = 20
     max_detail_fetch: int = 5
@@ -90,14 +90,14 @@ class AgentConfig:
 @dataclass
 class NotificationConfig:
     mode: str = "digest"  # digest | realtime | off
-    digest_interval_minutes: int = 180
+    digest_interval_minutes: int = 30
     digest_min_new_notes: int = 1
     digest_send_when_no_new: bool = False
     digest_top_summaries: int = 5
     digest_channels: list[str] = field(default_factory=lambda: ["email"])
     realtime_channels: list[str] = field(default_factory=lambda: ["wechat_service", "email"])
-    attach_excel: bool = True
-    attach_jobs_csv: bool = True
+    attach_excel: bool = False
+    attach_jobs_csv: bool = False
 
 
 @dataclass
@@ -194,6 +194,45 @@ def _load_env_file(path: Path) -> None:
             os.environ[name] = value
 
 
+
+def _default_xhs_args() -> list[str]:
+    local = Path(__file__).resolve().parents[2] / "vendor" / "xhs-mcp" / "dist" / "xhs-mcp.js"
+    if local.exists():
+        return [str(local)]
+    return ["vendor/xhs-mcp/dist/xhs-mcp.js"]
+
+
+def _normalize_xhs_args(args: list[str] | None) -> list[str]:
+    items = [str(item).strip() for item in (args or []) if str(item).strip()]
+    if not items:
+        return _default_xhs_args()
+
+    first = Path(items[0])
+    if not first.exists():
+        local = Path(__file__).resolve().parents[2] / "vendor" / "xhs-mcp" / "dist" / "xhs-mcp.js"
+        if local.exists():
+            items[0] = str(local)
+    return items
+
+
+def _autofix_browser_path(path_text: str) -> str:
+    configured = str(path_text or "").strip()
+    if configured and Path(configured).exists():
+        return configured
+
+    candidates = [
+        os.getenv("CHROME_PATH", "").strip(),
+        "C:/Program Files/Google/Chrome/Application/chrome.exe",
+        "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+        "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
+        "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+    ]
+    for item in candidates:
+        if item and Path(item).exists():
+            return item
+    return configured or "C:/Program Files/Google/Chrome/Application/chrome.exe"
+
+
 def load_settings(config_path: str) -> Settings:
     path = Path(config_path)
     if not path.exists():
@@ -207,8 +246,8 @@ def load_settings(config_path: str) -> Settings:
     app = AppConfig(**_section(data, "app"))
     xhs_raw = _section(data, "xhs")
     xhs = XHSConfig(**xhs_raw)
-    if not xhs.args:
-        xhs.args = ["C:/Users/24264/.codex/vendor/xhs-mcp/dist/xhs-mcp.js"]
+    xhs.args = _normalize_xhs_args(xhs.args)
+    xhs.browser_path = _autofix_browser_path(xhs.browser_path)
 
     pipeline = PipelineConfig(**_section(data, "pipeline"))
     llm = LLMConfig(**_section(data, "llm"))
@@ -256,3 +295,4 @@ def _as_name_list(value, default: list[str]) -> list[str]:
         parts = [part.strip() for part in value.split(",") if part.strip()]
         return parts or list(default)
     return list(default)
+

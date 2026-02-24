@@ -38,6 +38,12 @@ dist/
 *.egg-info/
 pip-wheel-metadata/
 
+# Keep vendored xhs-mcp runtime files for out-of-box usage.
+!vendor/xhs-mcp/dist/
+!vendor/xhs-mcp/dist/*.js
+!vendor/xhs-mcp/package.json
+!vendor/xhs-mcp/package-lock.json
+
 # -----------------------------
 # Environment / secrets
 # -----------------------------

@@ -29,17 +29,30 @@ async function main() {
     process.exit(0);
   }
 
-  let puppeteer;
-  try {
-    const localPath = process.env.XHS_PUPPETEER_REQUIRE ||
-      "C:/Users/24264/.codex/vendor/xhs-mcp/node_modules/puppeteer";
-    puppeteer = require(localPath);
-  } catch (err) {
+  let puppeteer = null;
+  const candidates = [];
+  if (process.env.XHS_PUPPETEER_REQUIRE) {
+    candidates.push(process.env.XHS_PUPPETEER_REQUIRE);
+  }
+  candidates.push(path.resolve(__dirname, "..", "vendor", "xhs-mcp", "node_modules", "puppeteer"));
+  candidates.push("puppeteer");
+
+  let lastErr = null;
+  for (const mod of candidates) {
+    try {
+      puppeteer = require(mod);
+      break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (!puppeteer) {
     console.log(
       JSON.stringify({
         success: false,
         error: "puppeteer_require_failed",
-        message: String(err),
+        message: String(lastErr || "cannot load puppeteer"),
+        candidates,
       })
     );
     process.exit(0);

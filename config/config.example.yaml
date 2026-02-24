@@ -7,9 +7,9 @@ app:
 xhs:
   command: "node"
   args:
-    - "C:/Users/24264/.codex/vendor/xhs-mcp/dist/xhs-mcp.js"
+    - "vendor/xhs-mcp/dist/xhs-mcp.js"
   browser_path: "C:/Program Files/Google/Chrome/Application/chrome.exe"
-  search_sort: "general"
+  search_sort: "time_descending"
   keyword: "继任"
   max_results: 20
   max_detail_fetch: 5
@@ -61,7 +61,7 @@ storage:
 
 notification:
   mode: "digest" # digest | realtime | off
-  digest_interval_minutes: 180
+  digest_interval_minutes: 30
   digest_min_new_notes: 1
   digest_send_when_no_new: false
   digest_top_summaries: 5
@@ -86,3 +86,4 @@ agent:
   global_memory_path: "groups/global/CLAUDE.md"
   main_memory_path: "groups/main/CLAUDE.md"
   memory_max_chars: 4000
+

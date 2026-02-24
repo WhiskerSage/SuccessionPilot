@@ -1,4 +1,46 @@
-﻿# SuccessionPilot 自动找继任系统
+# SuccessionPilot 自动找继任系统
+
+## 一键配置（首次部署，推荐）
+1. 初始化环境（自动创建 `.venv`、安装依赖、生成 `.env` 与 `config/config.yaml`）。
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1
+```
+
+2. 填写 `.env`（至少配置邮箱；如需 LLM 再配置 `OPENAI_API_KEY`）。
+```env
+EMAIL_SMTP_USERNAME=your_name@126.com
+EMAIL_SMTP_PASSWORD=your_126_smtp_auth_code
+EMAIL_FROM=your_name@126.com
+EMAIL_TO=receiver1@example.com,receiver2@example.com
+OPENAI_API_KEY=
+
+# 可选：无法自动识别浏览器时填写
+CHROME_PATH=
+
+# 可选：仅在 puppeteer require 异常时填写
+XHS_PUPPETEER_REQUIRE=
+```
+
+3. 扫码登录并检查状态。
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/xhs_login.ps1 -Timeout 180
+powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1
+```
+
+4. 单次验收（抓取、过滤、写表、按策略发送）。
+```powershell
+.\.venv\Scripts\python.exe -m auto_successor.main --config config/config.yaml --run-once
+```
+
+5. 启动定时守护运行。
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath config/config.yaml
+```
+
+6. 可选：直接发送本地已存最新 5 条摘要（不触发抓取）。
+```powershell
+.\.venv\Scripts\python.exe -m auto_successor.main --config config/config.yaml --send-latest 5
+```
 
 ## 项目简介
 `SuccessionPilot` 用于持续采集小红书“继任”相关帖子，进行智能过滤与结构化提取，维护本地数据表，并按通知策略发送摘要。
@@ -31,32 +73,24 @@
 - Google Chrome（用于 XHS MCP 登录与抓取）
 - Windows PowerShell（示例命令按 Windows 编写）
 
-## 安装
+## 手动安装（可选）
 ```powershell
 cd <你的项目目录>
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -e .
-```
-
-## 快速开始
-1. 准备配置文件。
-```powershell
 Copy-Item config/config.example.yaml config/config.yaml
 Copy-Item .env.example .env
 ```
 
-2. 配置 XHS MCP 并完成扫码登录（见下文“XHS MCP 配置”）。
-
-3. 执行单次运行。
-```powershell
-succession-pilot --config config/config.yaml --run-once
-```
-
 ## 命令行使用
-安装后可用命令。
+若已激活虚拟环境（`.venv\Scripts\Activate.ps1`），可直接使用。
 - `succession-pilot`
 - `succession-pilot-dashboard`
+
+若未激活虚拟环境，建议使用。
+- `.\.venv\Scripts\python.exe -m auto_successor.main`
+- `.\.venv\Scripts\python.exe -m auto_successor.dashboard`
 
 `succession-pilot` 参数。
 - `--config`：配置文件路径，默认 `config/config.yaml`
@@ -74,12 +108,12 @@ succession-pilot --config config/config.yaml --run-once
 
 Dashboard 启动。
 ```powershell
-succession-pilot-dashboard --host 127.0.0.1 --port 8787
+.\.venv\Scripts\python.exe -m auto_successor.dashboard --host 127.0.0.1 --port 8787
 ```
 
 或使用模块入口。
 ```powershell
-python -m auto_successor.dashboard --host 127.0.0.1 --port 8787
+succession-pilot-dashboard --host 127.0.0.1 --port 8787
 ```
 
 或使用脚本。
@@ -138,10 +172,11 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - `digest_top_summaries`：摘要正文最多包含条数
 - `digest_channels`：摘要发送通道
 - `realtime_channels`：实时发送通道
-- `attach_excel`：是否附带 `output.xlsx`
-- `attach_jobs_csv`：是否附带 `jobs.csv`
+- `attach_excel`：是否附带 `output.xlsx`（默认关闭）
+- `attach_jobs_csv`：是否附带 `jobs.csv`（默认关闭）
 
-当前项目示例配置默认值。
+当前项目 `config/config.example.yaml` 默认值。
+- `xhs.search_sort: time_descending`
 - `notification.mode: digest`
 - `notification.digest_interval_minutes: 30`
 - `notification.digest_send_when_no_new: false`
@@ -184,30 +219,61 @@ WECHAT_SERVICE_APP_SECRET=
 WECHAT_SERVICE_OPENIDS=openid1,openid2
 
 OPENAI_API_KEY=
+
+CHROME_PATH=
+XHS_PUPPETEER_REQUIRE=
 ```
 
 ## XHS MCP 配置
 XHS MCP 地址：`https://xhs-mcp.aicu.icu/`
 
 ### 1. 路径与依赖
+默认使用项目内 `vendor/xhs-mcp`。
+
+说明。
+- 如果仓库已包含 `vendor/xhs-mcp`，通常无需再单独下载 MCP。
+- 仍需本机安装 `Node.js` 与 `Chrome`。
+- 首次在新机器运行时，如 `vendor/xhs-mcp/node_modules` 不完整，请在该目录执行一次 `npm install`。
+- 如果浏览器路径自动探测失败，可在 `.env` 中设置 `CHROME_PATH`。
+
+初始化 `vendor/xhs-mcp` 依赖示例。
+```powershell
+cd vendor/xhs-mcp
+npm install
+cd ../..
+```
+
 在 `config/config.yaml` 的 `xhs` 段配置。
 ```yaml
 xhs:
-  command: "<xhs-mcp-command>"
-  args: ["<xhs-mcp-arg1>", "<xhs-mcp-arg2>"]
+  command: "node"
+  args:
+    - "vendor/xhs-mcp/dist/xhs-mcp.js"
   browser_path: "C:/Program Files/Google/Chrome/Application/chrome.exe"
   search_sort: "time_descending"
   keyword: "继任"
 ```
 
 ### 2. 登录状态检查
+推荐使用脚本。
 ```powershell
-<xhs-mcp-command> <xhs-mcp-args...> status --compact
+powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1
+```
+
+或直接执行 MCP 命令。
+```powershell
+node vendor/xhs-mcp/dist/xhs-mcp.js status --compact
 ```
 
 ### 3. 扫码登录
+推荐使用脚本。
 ```powershell
-<xhs-mcp-command> <xhs-mcp-args...> login --timeout 180
+powershell -ExecutionPolicy Bypass -File scripts/xhs_login.ps1 -Timeout 180
+```
+
+或直接执行 MCP 命令。
+```powershell
+node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 ```
 
 登录后再次执行 `status`，确认 `loggedIn=true`。
@@ -229,7 +295,7 @@ xhs:
 回退机制。
 - 显式排序失败时会自动回退到默认 `search`。
 - 详情抓取失败或风控页命中时会保留基础帖子信息，不阻断主流程。
-- 详情抓取会复用 `~/.xhs-mcp/cookies.json` 登录态。
+- 详情抓取会复用 MCP 已登录状态。
 
 ## 智能处理规则
 执行流程。
@@ -257,7 +323,7 @@ xhs:
 
 行为。
 - 发送聚合摘要
-- 可附带 `output.xlsx` 与 `jobs.csv`
+- 可选附带 `output.xlsx` 与 `jobs.csv`（默认关闭）
 - 成功发送后写入 `state.json.last_digest_sent_at`
 - 默认“无新增不发送”
 
