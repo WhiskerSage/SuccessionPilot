@@ -1,5 +1,11 @@
 # SuccessionPilot 自动找继任系统
 
+## 版本信息
+- 项目版本：`0.1.0`
+- Python：`>=3.9`
+- Node.js：`>=18`
+- XHS MCP（vendor）：`0.8.8-local`
+
 ## 执行目录与路径约定
 - 下文所有命令默认在项目根目录执行（即包含 `README.md`、`config/`、`scripts/` 的目录）。
 - 建议先进入项目根目录再执行命令。
@@ -15,11 +21,6 @@ cd <项目根目录>
 - `logs/`：运行日志
 - `vendor/xhs-mcp/`：项目内置 XHS MCP 运行文件
 
-## 版本信息
-- 项目版本：`0.1.0`
-- Python：`>=3.9`
-- Node.js：`>=18`
-- XHS MCP（vendor）：`0.8.8-local`
 
 ## 一键配置（首次部署，推荐）
 1. 初始化环境（自动创建 `.venv`、安装依赖、生成 `.env` 与 `config/config.yaml`）。

@@ -30,6 +30,13 @@
   };
 
   const SKINS = ["business-blue", "graphite-office"];
+  const API_BASES = (() => {
+    const candidates = ["", "http://127.0.0.1:8787", "http://localhost:8787"];
+    if (window.location.protocol === "file:") {
+      return candidates.filter((item) => item);
+    }
+    return candidates;
+  })();
   const DEFAULT_DETAIL = `
     <h4>请选择一条线索</h4>
     <p>这里会展示岗位摘要、JD、评论预览和原帖详情内容。</p>
@@ -85,15 +92,33 @@
     return `<span class=\"badge ${cls}\" title=\"${escapeHtml(title)}\">${escapeHtml(toText(status))}</span>`;
   }
 
-  async function fetchJson(url) {
-    const resp = await fetch(url, {
-      headers: { "Accept": "application/json" },
-      cache: "no-store",
-    });
-    if (!resp.ok) {
-      throw new Error(`${resp.status} ${resp.statusText}`);
+  function buildApiUrl(path, base) {
+    if (!base) {
+      return path;
     }
-    return resp.json();
+    return `${base}${path}`;
+  }
+
+  async function fetchJson(path) {
+    let lastError = null;
+    for (const base of API_BASES) {
+      const url = buildApiUrl(path, base);
+      try {
+        const resp = await fetch(url, {
+          headers: { "Accept": "application/json" },
+          cache: "no-store",
+        });
+        if (!resp.ok) {
+          throw new Error(`${resp.status} ${resp.statusText}`);
+        }
+        return await resp.json();
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    const reason = lastError instanceof Error ? lastError.message : String(lastError || "unknown error");
+    throw new Error(`API unavailable (${reason}). 请启动 dashboard: http://127.0.0.1:8787`);
   }
 
   function renderSummary(summary) {
