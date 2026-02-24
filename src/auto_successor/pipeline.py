@@ -62,6 +62,7 @@ class AutoSuccessorPipeline:
 
         try:
             self.logger.info("run %s started, keyword=%s mode=%s notify=%s", run_id, keyword, mode, notification_mode)
+            self._log_progress(run_id, 5, "pipeline started")
             self.llm_enricher.reset_stats()
 
             orchestrator.run_stage(
@@ -69,6 +70,7 @@ class AutoSuccessorPipeline:
                 lambda: self.collector.ensure_logged_in(),
                 meta={"browser_path": self.settings.xhs.browser_path},
             )
+            self._log_progress(run_id, 12, "login state verified")
             notes = orchestrator.run_stage(
                 "collector.search_notes",
                 lambda: self.collector.search_notes(
@@ -79,12 +81,14 @@ class AutoSuccessorPipeline:
                 meta={"keyword": keyword, "max_results": self.settings.xhs.max_results},
             )
             notes = sorted(notes, key=lambda n: n.publish_time, reverse=True)
+            self._log_progress(run_id, 28, f"search completed, fetched={len(notes)}")
 
             pre_new_notes = orchestrator.run_stage(
                 "state.prefilter_new_notes",
                 lambda: [note for note in notes if not self.state.has(note.note_id)],
                 meta={"existing_state_size": len(self.state.processed_note_ids)},
             )
+            self._log_progress(run_id, 36, f"prefilter completed, candidates={len(pre_new_notes)}")
 
             initial_plan = self.planner.build_plan(mode=mode, fetched_count=len(notes), new_count=len(pre_new_notes))
             orchestrator.run_stage(
@@ -92,6 +96,7 @@ class AutoSuccessorPipeline:
                 lambda: self.collector.enrich_note_details(pre_new_notes, max_notes=initial_plan.detail_fetch_limit),
                 meta={"max_detail_fetch": initial_plan.detail_fetch_limit},
             )
+            self._log_progress(run_id, 46, f"detail enrichment completed, limit={initial_plan.detail_fetch_limit}")
 
             new_notes = orchestrator.run_stage(
                 "state.filter_new_notes",
@@ -99,6 +104,7 @@ class AutoSuccessorPipeline:
                 meta={"prefiltered_count": len(pre_new_notes)},
             )
             new_notes = sorted(new_notes, key=lambda n: n.publish_time, reverse=True)
+            self._log_progress(run_id, 55, f"new-note filtering completed, new={len(new_notes)}")
 
             plan = orchestrator.run_stage(
                 "agent.planner.build_plan",
@@ -114,12 +120,18 @@ class AutoSuccessorPipeline:
             target_notes = filter_outcome.targets
             filtered_out = filter_outcome.filtered_out
             target_scores = filter_outcome.scores
+            self._log_progress(
+                run_id,
+                66,
+                f"target filtering completed, targets={len(target_notes)} filtered={len(filtered_out)}",
+            )
 
             jobs = orchestrator.run_stage(
                 "agent.intelligence.build_jobs",
                 lambda: self.intelligence.build_jobs(target_notes, max_job_items=plan.max_job_items),
                 meta={"max_job_items": plan.max_job_items},
             )
+            self._log_progress(run_id, 74, f"job extraction completed, jobs={len(jobs)}")
 
             summary_mode = mode if plan.include_jd_full else "auto"
             summaries = orchestrator.run_stage(
@@ -134,6 +146,7 @@ class AutoSuccessorPipeline:
             summary_by_note_id = {item.note_id: item for item in summaries}
             ranked_targets = self.intelligence.rank_targets(target_notes, scores=target_scores, top_n=plan.top_n)
             ranked_summaries = [summary_by_note_id[note.note_id] for note in ranked_targets if note.note_id in summary_by_note_id]
+            self._log_progress(run_id, 82, f"summary generation completed, summaries={len(summaries)}")
 
             orchestrator.run_stage(
                 "storage.write_excel",
@@ -145,6 +158,7 @@ class AutoSuccessorPipeline:
                 lambda: self.store.export_jobs_csv(self.settings.storage.jobs_csv_path),
                 meta={"jobs_csv_path": self.settings.storage.jobs_csv_path},
             )
+            self._log_progress(run_id, 88, "local storage updated")
 
             send_logs = []
             notify_note_ids: list[str] = []
@@ -170,6 +184,7 @@ class AutoSuccessorPipeline:
                     },
                 )
                 notify_note_ids = sorted({log.note_id for log in send_logs})
+                self._log_progress(run_id, 94, f"realtime notification completed, send_logs={len(send_logs)}")
             elif notification_mode == "digest":
                 now = datetime.now(timezone.utc)
                 digest_due = self._is_digest_due(now)
@@ -205,6 +220,12 @@ class AutoSuccessorPipeline:
                     )
                     if digest_sent:
                         self._mark_digest_sent(now, run_id)
+                if digest_due and (enough_new or allow_no_new):
+                    self._log_progress(run_id, 94, f"digest notification completed, send_logs={len(send_logs)}")
+                else:
+                    self._log_progress(run_id, 94, "digest notification skipped by policy")
+            else:
+                self._log_progress(run_id, 94, "notification disabled")
 
             if send_logs:
                 orchestrator.run_stage(
@@ -219,6 +240,7 @@ class AutoSuccessorPipeline:
                 self.state.save()
 
             orchestrator.run_stage("state.persist", _persist_state, meta={"marked_count": len(new_notes)})
+            self._log_progress(run_id, 100, "run completed")
 
             stats = {
                 "runtime_name": self.settings.agent.runtime_name,
@@ -271,6 +293,12 @@ class AutoSuccessorPipeline:
             return stats
         finally:
             self.lock.release()
+
+    def _log_progress(self, run_id: str, percent: int, message: str) -> None:
+        pct = max(0, min(100, int(percent)))
+        done = max(0, min(20, int(round(pct / 5))))
+        bar = f"{'=' * done}{'.' * (20 - done)}"
+        self.logger.info("run %s progress [%s] %3d%% %s", run_id, bar, pct, message)
 
     def send_latest_stored(self, run_id: str, limit: int = 5) -> dict:
         mode = self._normalize_mode(self.settings.agent.mode or "auto")

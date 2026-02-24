@@ -15,10 +15,15 @@ cd <项目根目录>
 - `logs/`：运行日志
 - `vendor/xhs-mcp/`：项目内置 XHS MCP 运行文件
 
+## 版本信息
+- 项目版本：`0.1.0`
+- Python：`>=3.9`
+- Node.js：`>=18`
+- XHS MCP（vendor）：`0.8.8-local`
+
 ## 一键配置（首次部署，推荐）
 1. 初始化环境（自动创建 `.venv`、安装依赖、生成 `.env` 与 `config/config.yaml`）。
 ```powershell
-cd <项目根目录>
 powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1
 ```
 
@@ -39,26 +44,22 @@ XHS_PUPPETEER_REQUIRE=
 
 3. 扫码登录并检查状态。
 ```powershell
-cd <项目根目录>
 powershell -ExecutionPolicy Bypass -File scripts/xhs_login.ps1 -Timeout 180
 powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1
 ```
 
 4. 单次验收（抓取、过滤、写表、按策略发送）。
 ```powershell
-cd <项目根目录>
 .\.venv\Scripts\python.exe -m auto_successor.main --config config/config.yaml --run-once
 ```
 
 5. 启动定时守护运行。
 ```powershell
-cd <项目根目录>
 powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath config/config.yaml
 ```
 
 6. 可选：直接发送本地已存最新 5 条摘要（不触发抓取）。
 ```powershell
-cd <项目根目录>
 .\.venv\Scripts\python.exe -m auto_successor.main --config config/config.yaml --send-latest 5
 ```
 
@@ -132,7 +133,6 @@ notification:
 
 ### 第 4 步：小红书登录（必须）
 ```powershell
-cd <项目根目录>
 powershell -ExecutionPolicy Bypass -File scripts/xhs_login.ps1 -Timeout 180
 powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1
 ```
@@ -140,7 +140,6 @@ powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1
 
 ### 第 5 步：单次验收（先跑一轮）
 ```powershell
-cd <项目根目录>
 .\.venv\Scripts\python.exe -m auto_successor.main --config config/config.yaml --run-once
 ```
 验收点。
@@ -152,13 +151,11 @@ cd <项目根目录>
 
 ### 第 6 步：启动定时任务
 ```powershell
-cd <项目根目录>
 powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath config/config.yaml
 ```
 
 ### 第 7 步：查看前端 Dashboard
 ```powershell
-cd <项目根目录>
 powershell -ExecutionPolicy Bypass -File scripts/start_dashboard.ps1 -BindHost 127.0.0.1 -Port 8787
 ```
 浏览器打开 `http://127.0.0.1:8787`。
@@ -166,13 +163,11 @@ powershell -ExecutionPolicy Bypass -File scripts/start_dashboard.ps1 -BindHost 1
 ### 第 8 步：常用运维命令
 手动发送已存最新 5 条摘要（不抓取）。
 ```powershell
-cd <项目根目录>
 .\.venv\Scripts\python.exe -m auto_successor.main --config config/config.yaml --send-latest 5
 ```
 
 检查当前小红书登录状态。
 ```powershell
-cd <项目根目录>
 powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1
 ```
 
@@ -261,31 +256,26 @@ Copy-Item .env.example .env
 
 Dashboard 启动。
 ```powershell
-cd <项目根目录>
 .\.venv\Scripts\python.exe -m auto_successor.dashboard --host 127.0.0.1 --port 8787
 ```
 
 或使用模块入口。
 ```powershell
-cd <项目根目录>
 succession-pilot-dashboard --host 127.0.0.1 --port 8787
 ```
 
 或使用脚本。
 ```powershell
-cd <项目根目录>
 powershell -ExecutionPolicy Bypass -File scripts/start_dashboard.ps1
 ```
 
 指定地址与端口示例。
 ```powershell
-cd <项目根目录>
 powershell -ExecutionPolicy Bypass -File scripts/start_dashboard.ps1 -BindHost 127.0.0.1 -Port 8787
 ```
 
 守护运行快捷脚本。
 ```powershell
-cd <项目根目录>
 powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath config/config.yaml
 ```
 
