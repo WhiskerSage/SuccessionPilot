@@ -1,0 +1,25 @@
+[project]
+name = "successionpilot"
+version = "0.1.0"
+description = "SuccessionPilot: Xiaohongshu successor tracking runtime with agent-style orchestration"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "openpyxl>=3.1.0",
+  "PyYAML>=6.0.0",
+  "requests>=2.31.0",
+]
+
+[project.scripts]
+succession-pilot = "successionpilot.main:main"
+succession-pilot-dashboard = "auto_successor.dashboard:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

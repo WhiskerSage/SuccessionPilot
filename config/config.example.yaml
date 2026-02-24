@@ -1,0 +1,88 @@
+app:
+  timezone: "Asia/Shanghai"
+  log_level: "INFO"
+  interval_minutes: 15
+
+# XHS MCP: https://xhs-mcp.aicu.icu/
+xhs:
+  command: "node"
+  args:
+    - "C:/Users/24264/.codex/vendor/xhs-mcp/dist/xhs-mcp.js"
+  browser_path: "C:/Program Files/Google/Chrome/Application/chrome.exe"
+  search_sort: "general"
+  keyword: "继任"
+  max_results: 20
+  max_detail_fetch: 5
+  login_timeout_seconds: 180
+  command_timeout_seconds: 120
+
+pipeline:
+  min_confidence: 0.55
+
+llm:
+  enabled: false
+  provider: "openai_compatible"
+  model: "gpt-5-mini"
+  api_key: ""
+  api_key_env: "OPENAI_API_KEY"
+  base_url: "https://api.openai.com/v1"
+  timeout_seconds: 45
+  max_tokens: 900
+  temperature: 0.2
+  enabled_for_jobs: true
+  enabled_for_summary: true
+  enabled_for_filter: true
+  max_job_items: 8
+  max_summary_items: 8
+  max_filter_items: 20
+  filter_threshold: 0.62
+  strict_filter: true
+
+wechat_service:
+  enabled: false
+  app_id_env: "WECHAT_SERVICE_APP_ID"
+  app_secret_env: "WECHAT_SERVICE_APP_SECRET"
+  openids_env: "WECHAT_SERVICE_OPENIDS"
+
+email:
+  enabled: false
+  smtp_host: "smtp.126.com"
+  smtp_port: 465
+  use_ssl: true
+  username_env: "EMAIL_SMTP_USERNAME"
+  password_env: "EMAIL_SMTP_PASSWORD"
+  from_env: "EMAIL_FROM"
+  to_env: "EMAIL_TO"
+
+storage:
+  excel_path: "data/output.xlsx"
+  jobs_csv_path: "data/jobs.csv"
+  state_path: "data/state.json"
+
+notification:
+  mode: "digest" # digest | realtime | off
+  digest_interval_minutes: 180
+  digest_min_new_notes: 1
+  digest_send_when_no_new: false
+  digest_top_summaries: 5
+  digest_channels:
+    - "email"
+  realtime_channels:
+    - "wechat_service"
+    - "email"
+  attach_excel: false
+  attach_jobs_csv: false
+
+agent:
+  runtime_name: "SuccessionPilot"
+  mode: "auto"
+  agent_full_detail_fetch: true
+  agent_send_top_n: 5
+  agent_include_jd_full: true
+  # old aliases kept for compatibility
+  smart_full_detail_fetch: true
+  smart_send_top_n: 3
+  smart_include_jd_full: true
+  global_memory_path: "groups/global/CLAUDE.md"
+  main_memory_path: "groups/main/CLAUDE.md"
+  memory_max_chars: 4000

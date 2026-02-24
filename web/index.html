@@ -1,0 +1,127 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SuccessionPilot Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body data-skin="business-blue">
+  <div class="grid-bg" aria-hidden="true"></div>
+
+  <div class="shell">
+    <aside class="sidebar panel enter" style="--delay: 0ms">
+      <div class="brand">
+        <div class="brand-mark">SC</div>
+        <div>
+          <h1>SuccessionPilot</h1>
+          <p>办公运营看板</p>
+        </div>
+      </div>
+
+      <div class="nav-list">
+        <button class="nav-item active" type="button">总览</button>
+        <button class="nav-item" type="button">线索中心</button>
+        <button class="nav-item" type="button">摘要中心</button>
+        <button class="nav-item" type="button">发送日志</button>
+      </div>
+
+      <section class="side-card">
+        <h2>运行状态</h2>
+        <p>最新 Run：<strong id="latestRunId">-</strong></p>
+        <p>运行时间：<strong id="latestRunTime">-</strong></p>
+      </section>
+
+      <section class="side-card">
+        <h2>通知策略</h2>
+        <div class="row"><span>Email 摘要</span><em class="dot on"></em></div>
+        <div class="row"><span>微信服务号</span><em class="dot off"></em></div>
+        <p class="tip">摘要周期：<strong id="digestMinutes">60</strong> 分钟</p>
+      </section>
+    </aside>
+
+    <main class="main">
+      <header class="top panel enter" style="--delay: 80ms">
+        <div>
+          <h2>继任信息动态面板</h2>
+          <p>展示抓取结果、结构化信息、摘要与发送状态</p>
+        </div>
+        <div class="toolbar">
+          <label class="search">
+            <span>搜索</span>
+            <input id="searchInput" type="text" placeholder="公司 / 岗位 / 地点 / 摘要" />
+          </label>
+          <button id="skinBtn" class="btn ghost" type="button">切换皮肤</button>
+          <button id="refreshBtn" class="btn primary" type="button">刷新数据</button>
+        </div>
+      </header>
+
+      <section class="kpis">
+        <article class="panel kpi enter" style="--delay: 120ms">
+          <p>抓取总量</p>
+          <h3 id="kpiRaw">0</h3>
+          <small>raw_notes</small>
+        </article>
+        <article class="panel kpi enter" style="--delay: 170ms">
+          <p>摘要总量</p>
+          <h3 id="kpiSummary">0</h3>
+          <small>succession_summary</small>
+        </article>
+        <article class="panel kpi enter" style="--delay: 220ms">
+          <p>岗位条目</p>
+          <h3 id="kpiJobs">0</h3>
+          <small>jobs</small>
+        </article>
+        <article class="panel kpi enter" style="--delay: 270ms">
+          <p>发送记录</p>
+          <h3 id="kpiSend">0</h3>
+          <small>send_log</small>
+        </article>
+      </section>
+
+      <section class="workspace">
+        <article class="panel table-panel enter" style="--delay: 320ms">
+          <div class="head-row">
+            <h3>线索列表</h3>
+            <span class="count" id="leadCount">0 条</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>发布时间</th>
+                  <th>岗位 / 公司</th>
+                  <th>地点</th>
+                  <th>互动</th>
+                  <th>状态</th>
+                </tr>
+              </thead>
+              <tbody id="leadBody"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="panel detail-panel enter" style="--delay: 370ms">
+          <div class="head-row">
+            <h3>详情与摘要</h3>
+            <span class="chip">实时数据</span>
+          </div>
+          <div id="detailBox" class="detail-box">
+            <h4>请选择一条线索</h4>
+            <p>这里会展示岗位摘要、JD、评论预览和链接。</p>
+          </div>
+          <div class="runs-box">
+            <h4>最近运行</h4>
+            <ul id="runList"></ul>
+          </div>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
