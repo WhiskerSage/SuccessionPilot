@@ -38,12 +38,21 @@ $xhsCli = "vendor/xhs-mcp/dist/xhs-mcp.js"
 if ((Test-Path "$xhsRoot/package.json") -and (-not $SkipVendorInstall)) {
   if (-not (Test-Path "$xhsRoot/node_modules/puppeteer")) {
     Push-Location $xhsRoot
-    $env:PUPPETEER_SKIP_DOWNLOAD = "true"
-    $env:PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "true"
-    npm install --no-fund --no-audit
-    Remove-Item Env:PUPPETEER_SKIP_DOWNLOAD -ErrorAction SilentlyContinue
-    Remove-Item Env:PUPPETEER_SKIP_CHROMIUM_DOWNLOAD -ErrorAction SilentlyContinue
-    Pop-Location
+    try {
+      $env:PUPPETEER_SKIP_DOWNLOAD = "true"
+      $env:PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "true"
+      npm install --no-fund --no-audit --cache ".npm-cache"
+      if ($LASTEXITCODE -ne 0) {
+        throw "npm install failed in $xhsRoot with exit code $LASTEXITCODE"
+      }
+      if (-not (Test-Path "node_modules/puppeteer")) {
+        throw "npm install finished but node_modules/puppeteer is missing in $xhsRoot"
+      }
+    } finally {
+      Remove-Item Env:PUPPETEER_SKIP_DOWNLOAD -ErrorAction SilentlyContinue
+      Remove-Item Env:PUPPETEER_SKIP_CHROMIUM_DOWNLOAD -ErrorAction SilentlyContinue
+      Pop-Location
+    }
   }
 }
 

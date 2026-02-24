@@ -398,13 +398,14 @@ XHS MCP 地址：`https://xhs-mcp.aicu.icu/`
 - 仍需本机安装 `Node.js` 与 `Chrome`。
 - 首次在新机器运行时，如 `vendor/xhs-mcp/node_modules` 不完整，请在该目录执行一次 `npm install`。
 - 如果浏览器路径自动探测失败，可在 `.env` 中设置 `CHROME_PATH`。
+- `scripts/xhs_login.ps1` 与 `scripts/xhs_status.ps1` 会自动优先使用 `CHROME_PATH` 或本机 Chrome/Edge 路径，不依赖 Chromium 下载。
 
 初始化 `vendor/xhs-mcp` 依赖示例。
 ```powershell
 cd vendor/xhs-mcp
 $env:PUPPETEER_SKIP_DOWNLOAD="true"
 $env:PUPPETEER_SKIP_CHROMIUM_DOWNLOAD="true"
-npm install --no-fund --no-audit
+npm install --no-fund --no-audit --cache .npm-cache
 cd ../..
 ```
 
@@ -412,7 +413,7 @@ cd ../..
 ```powershell
 cd vendor/xhs-mcp
 npm config set registry https://registry.npmjs.org/
-npm install --no-fund --no-audit
+npm install --no-fund --no-audit --cache .npm-cache
 cd ../..
 ```
 
@@ -433,6 +434,11 @@ xhs:
 powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1
 ```
 
+指定浏览器路径示例。
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1 -BrowserPath "C:/Program Files/Google/Chrome/Application/chrome.exe"
+```
+
 或直接执行 MCP 命令。
 ```powershell
 node vendor/xhs-mcp/dist/xhs-mcp.js status --compact
@@ -442,6 +448,11 @@ node vendor/xhs-mcp/dist/xhs-mcp.js status --compact
 推荐使用脚本。
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/xhs_login.ps1 -Timeout 180
+```
+
+指定浏览器路径示例。
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/xhs_login.ps1 -Timeout 180 -BrowserPath "C:/Program Files/Google/Chrome/Application/chrome.exe"
 ```
 
 或直接执行 MCP 命令。
