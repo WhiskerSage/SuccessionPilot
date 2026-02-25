@@ -67,7 +67,6 @@ class RuntimeManager:
     @staticmethod
     def _build_subprocess_env() -> dict[str, str]:
         env = os.environ.copy()
-        env.setdefault("PYTHONUTF8", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
         return env
 

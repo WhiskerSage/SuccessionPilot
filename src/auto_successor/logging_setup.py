@@ -36,8 +36,6 @@ def setup_logging(log_level: str = "INFO", log_file: str = "logs/app.log") -> lo
 
 def _configure_console_utf8() -> None:
     # Improve Chinese readability on Windows terminals.
-    os.environ.setdefault("PYTHONUTF8", "1")
-    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     try:
         if hasattr(sys.stdout, "reconfigure"):
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")

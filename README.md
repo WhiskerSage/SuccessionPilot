@@ -1,10 +1,15 @@
 ﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.3.3`
+- 项目版本：`0.3.4`
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
+
+### v0.3.4 更新要点
+- Dashboard 皮肤优化：`graphite-office` 升级为明显深色办公主题，表格/按钮/输入框/卡片统一深色化，切换后视觉差异更明确。
+- 前端视觉微调：圆角由“偏硬”调整为“适度圆角”，保留办公风的同时提升可读性与整体质感。
+- 环境兼容修复：移除脚本与子进程中的 `PYTHONUTF8=1` 强制设置，修复部分 Conda 环境下 `init_import_site`/编码报错问题。
 
 ### v0.3.3 更新要点
 - 终端中文乱码修复增强：统一设置 UTF-8 运行环境（PowerShell 脚本、Python 日志、Dashboard 子进程），减少运行日志乱码。
@@ -622,7 +627,8 @@ node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 
 ### 7. 终端仍出现乱码怎么办
 - 优先使用项目脚本启动（`scripts/start_auto.ps1`、`scripts/start_dashboard.ps1`、`scripts/xhs_login.ps1`、`scripts/xhs_status.ps1`），脚本已内置 UTF-8 设置。
-- 直接运行 Python 时建议加：`PYTHONUTF8=1` 与 `PYTHONIOENCODING=utf-8`。
+- 直接运行 Python 时优先设置：`PYTHONIOENCODING=utf-8`；不建议在 Conda 环境全局强制 `PYTHONUTF8=1`。
+- 若出现 `init_import_site` 或 `UnicodeDecodeError`，先清理当前终端中的 `PYTHONUTF8` 环境变量再重试。
 - 如果是历史日志文件中的旧乱码，可忽略；新运行日志会按新策略输出。
 
 ## 测试
@@ -670,6 +676,7 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
+| v0.3.4 | 2026-02-26 | Dashboard 皮肤升级：`graphite-office` 改为深色办公主题；前端改为适度圆角；移除 `PYTHONUTF8=1` 强制设置，修复部分 Conda 环境启动报错。 |
 | v0.3.3 | 2026-02-26 | 中文乱码修复增强（脚本/日志/子进程/解码链路统一 UTF-8）；LLM 文本回退策略增强；岗位通知中“岗位要求/原文摘要”去重，避免重复展示。 |
 | v0.3.2 | 2026-02-25 | 新增可观测性面板：最近运行展示阶段总耗时/平均耗时/失败阶段数/慢阶段 Top/错误码分布；`/api/runs` 与 run stats 增加阶段观测字段并兼容历史快照解析。 |
 | v0.3.1 | 2026-02-25 | 版本升级；LLM 过滤/结构化提取改为全量调用；终端新增降级/恢复与回退日志（full_llm/fallback）；Windows 终端中文显示优化；filter 提示词与输入字段精简提速；邮件升级为 HTML 办公风模板（无圆角、表格化）并微调字号。 |

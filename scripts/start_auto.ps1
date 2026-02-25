@@ -11,7 +11,6 @@ try {
   chcp 65001 > $null
 } catch {}
 
-$env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 
 if (-not (Test-Path $ConfigPath) -and (Test-Path "config/config.example.yaml")) {
