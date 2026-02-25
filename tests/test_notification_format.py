@@ -142,6 +142,10 @@ class TestNotificationFormat(unittest.TestCase):
         self.assertIn("【摘要详情】", sender.text)
         self.assertIn("- 风险标签：信息不完整", sender.text)
         self.assertIn("正文信息（详细）：第一段", sender.text)
+        self.assertIn("SuccessionPilot 线索通知", sender.html)
+        self.assertIn("基础信息", sender.html)
+        self.assertIn("摘要详情", sender.html)
+        self.assertIn("信息不完整", sender.html)
 
     def test_email_sender_supports_html_alternative(self):
         sender = _CaptureSender()

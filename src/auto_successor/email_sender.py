@@ -3,6 +3,7 @@ from __future__ import annotations
 import mimetypes
 import smtplib
 from email import encoders
+from email.header import Header
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -43,7 +44,7 @@ class EmailSender:
             return SendResult(status="failed", response="missing EMAIL_TO")
 
         msg = MIMEMultipart("mixed")
-        msg["Subject"] = subject
+        msg["Subject"] = str(Header(str(subject or ""), "utf-8"))
         msg["From"] = sender
         msg["To"] = ", ".join(recipients)
         alt = MIMEMultipart("alternative")
