@@ -6,11 +6,6 @@
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
 
-| 版本   | 备注                           |
-|--------|--------------------------------|
-| 0.3.0  | 批次摘要链路改造；简历匹配与机会点套磁 |
-| 0.2.0  |                                |
-| 0.1.1  |                                |
 
 ## 执行目录与路径约定
 - 下文所有命令默认在项目根目录执行（即包含 `README.md`、`config/`、`scripts/` 的目录）。
@@ -217,6 +212,7 @@ powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1
 ## 快速定位（文件在哪）
 - 主配置文件：`config/config.yaml`
 - 配置模板：`config/config.example.yaml`
+- 你的简历：`config/resume.txt`
 - 环境变量模板：`.env.example`
 - 本地环境变量：`.env`
 - 前端主页：`web/index.html`
@@ -639,6 +635,7 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
+| v0.3.0 | 2026-02-25 | 批次摘要链路改造、接入简历、通知新增机会点与快速套磁 |
 | v0.2.0 | 2026-02-25 | Dashboard 框架化（auto/fastapi/legacy 引擎切换）；前端拆分多页面（总览/控制中心/线索中心/摘要中心）；线索接口与页面支持分页；控制台功能接入页面。 |
 | v0.1.0 | 2026-02-24 | 项目首版：小红书采集、LLM 过滤与摘要、结构化岗位提取、本地 Excel/CSV 落盘、邮件/微信通知、基础 Dashboard。 |
 
