@@ -28,7 +28,7 @@ class XHSMcpCliCollector:
         if status.get("success") and status.get("loggedIn") is True:
             return
 
-        self.logger.warning("xhs status shows not logged in; trying login flow")
+        self.logger.warning("XHS 登录状态异常：未登录，开始尝试登录流程")
         login = self._run_json(["login", "--timeout", str(self.cfg.login_timeout_seconds)])
         if not login.get("success"):
             raise XHSCollectorError(f"xhs login failed: {login}")
@@ -109,7 +109,7 @@ class XHSMcpCliCollector:
     def enrich_note_details(self, notes: list[NoteRecord], max_notes: int) -> None:
         script = Path(__file__).resolve().parents[2] / "scripts" / "xhs_detail_fetch.js"
         if not script.exists():
-            self.logger.warning("detail script not found: %s", script)
+            self.logger.warning("详情抓取脚本不存在：%s", script)
             return
 
         target_notes = notes[: max(0, max_notes)]
@@ -133,7 +133,7 @@ class XHSMcpCliCollector:
             if detail_text:
                 note.detail_text = detail_text[:1500]
             elif blocked_by_risk_page:
-                self.logger.info("detail blocked by risk page, note=%s", note.note_id)
+                self.logger.info("详情抓取被风控页拦截：note=%s", note.note_id)
 
             if comments_preview:
                 note.comments_preview = comments_preview[:700]
@@ -171,13 +171,13 @@ class XHSMcpCliCollector:
         if sort == "general":
             return self._run_json(["search", "-k", keyword, "--compact"])
 
-        self.logger.info("xhs search with explicit sort=%s", sort)
+        self.logger.info("XHS 搜索：使用显式排序参数 sort=%s", sort)
         payload: dict
         try:
             payload = self._run_search_script(keyword=keyword, sort=sort, max_results=max_results)
         except Exception as exc:
             self.logger.warning(
-                "xhs explicit sort=%s request failed (%s), fallback to default search",
+                "XHS 显式排序请求失败 sort=%s（%s），回退默认搜索",
                 sort,
                 exc,
             )
@@ -188,7 +188,7 @@ class XHSMcpCliCollector:
 
         reason = self._summarize_search_error(payload)
         self.logger.warning(
-            "xhs explicit sort=%s failed (%s), fallback to default search",
+            "XHS 显式排序失败 sort=%s（%s），回退默认搜索",
             sort,
             reason,
         )
@@ -203,7 +203,7 @@ class XHSMcpCliCollector:
                 fallback["meta"] = meta
             return fallback
         except Exception as exc:
-            self.logger.warning("xhs fallback search also failed: %s", exc)
+            self.logger.warning("XHS 默认搜索回退也失败：%s", exc)
             return payload
 
     def _run_search_script(self, keyword: str, sort: str, max_results: int) -> dict:

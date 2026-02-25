@@ -22,6 +22,7 @@ class LLMClient:
         self._degraded_active = False
         self._last_error_code = ""
         self._error_counts: dict[str, int] = {}
+        self._request_seq = 0
 
     def is_enabled(self) -> bool:
         return self.settings.llm.enabled
@@ -35,11 +36,11 @@ class LLMClient:
             self._last_error_code = "cooldown_active"
             if not self._degraded_active:
                 remain = int(self._disabled_until - now)
-                self.logger.warning("llm degraded: fallback mode enabled, cooldown remaining ~%ss", max(1, remain))
+                self.logger.warning("[LLM降级] 进入回退模式，冷却剩余约 %ss", max(1, remain))
                 self._degraded_active = True
             return False
         if self._degraded_active:
-            self.logger.info("llm recovered: resume normal llm calls")
+            self.logger.info("[LLM恢复] 冷却结束，恢复 LLM 调用")
             self._degraded_active = False
         return True
 
@@ -113,6 +114,15 @@ class LLMClient:
         max_retries = max(0, min(int(getattr(cfg, "max_retries", 1)), 1))
         retry_backoff = max(0.0, min(float(getattr(cfg, "retry_backoff_seconds", 0.6)), 2.0))
         attempts = 1 + max_retries
+        self._request_seq += 1
+        request_id = self._request_seq
+        self.logger.info(
+            "[LLM请求] 第%s次 | model=%s | max_tokens=%s | timeout=%ss",
+            request_id,
+            payload.get("model"),
+            payload.get("max_tokens"),
+            read_timeout,
+        )
 
         for attempt in range(1, attempts + 1):
             try:
@@ -127,27 +137,28 @@ class LLMClient:
             except Exception as exc:
                 code, retryable = self._classify_error(exc)
                 if attempt < attempts and retryable:
-                    self.logger.info("llm retry: stage=request attempt=%s/%s code=%s", attempt + 1, attempts, code)
+                    self.logger.info("[LLM重试] 请求#%s attempt=%s/%s code=%s", request_id, attempt + 1, attempts, code)
                     if retry_backoff > 0:
                         time.sleep(retry_backoff * attempt)
                     continue
                 self._mark_failure(code=code)
-                self.logger.warning("llm request failed: code=%s detail=%s", code, exc)
+                self.logger.warning("[LLM失败] 请求#%s code=%s detail=%s", request_id, code, exc)
                 return None
 
             content = self._extract_text(data)
             if content is not None:
                 self._mark_success()
+                self.logger.info("[LLM成功] 请求#%s 返回长度=%s", request_id, len(content))
                 return self._strip_code_fence(content)
 
             code = "empty_content"
             if attempt < attempts:
-                self.logger.info("llm retry: stage=empty_content attempt=%s/%s code=%s", attempt + 1, attempts, code)
+                self.logger.info("[LLM重试] 请求#%s attempt=%s/%s code=%s", request_id, attempt + 1, attempts, code)
                 if retry_backoff > 0:
                     time.sleep(retry_backoff * attempt)
                 continue
             self._mark_failure(code=code)
-            self.logger.warning("llm response missing content: code=%s payload=%s", code, str(data)[:300])
+            self.logger.warning("[LLM失败] 请求#%s code=%s payload=%s", request_id, code, str(data)[:300])
             return None
 
         self._mark_failure(code="unknown_error")
@@ -230,9 +241,9 @@ class LLMClient:
         if self._consecutive_failures >= self._failure_threshold:
             self._disabled_until = time.monotonic() + self._cooldown_seconds
             self.logger.warning(
-                "llm degraded: temporarily disabled for %ss after %s consecutive failures (last_code=%s)",
-                self._cooldown_seconds,
+                "[LLM降级] 连续失败 %s 次，暂停 %ss（last_code=%s）",
                 self._consecutive_failures,
+                self._cooldown_seconds,
                 code,
             )
             self._degraded_active = False

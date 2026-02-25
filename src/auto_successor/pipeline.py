@@ -64,12 +64,12 @@ class AutoSuccessorPipeline:
         orchestrator = RuntimeOrchestrator(runtime_name=self.settings.agent.runtime_name, logger=self.logger)
 
         if not self.lock.acquire():
-            self.logger.warning("skip run %s because previous run lock exists", run_id)
+            self.logger.warning("跳过运行 | run=%s | 原因=检测到上一次运行锁未释放", run_id)
             return {"skipped": True, "reason": "run_locked"}
 
         try:
-            self.logger.info("run %s started, keyword=%s mode=%s notify=%s", run_id, keyword, mode, notification_mode)
-            self._log_progress(run_id, 5, "pipeline started")
+            self.logger.info("运行开始 | run=%s | keyword=%s | mode=%s | notify=%s", run_id, keyword, mode, notification_mode)
+            self._log_progress(run_id, 5, "初始化运行上下文")
             self.llm_enricher.reset_stats()
             self.llm_client.clear_error_counts()
 
@@ -84,7 +84,7 @@ class AutoSuccessorPipeline:
                 lambda: self.collector.ensure_logged_in(),
                 meta={"browser_path": self.settings.xhs.browser_path},
             )
-            self._log_progress(run_id, 12, "login state verified")
+            self._log_progress(run_id, 12, "登录态检查完成")
 
             notes = orchestrator.run_stage(
                 "collector.search_notes",
@@ -96,14 +96,14 @@ class AutoSuccessorPipeline:
                 meta={"keyword": keyword, "max_results": self.settings.xhs.max_results},
             )
             notes = sorted(notes, key=lambda n: n.publish_time, reverse=True)
-            self._log_progress(run_id, 28, f"search completed, fetched={len(notes)}")
+            self._log_progress(run_id, 28, f"搜索完成，抓取到 {len(notes)} 条")
 
             pre_new_notes = orchestrator.run_stage(
                 "state.prefilter_new_notes",
                 lambda: [note for note in notes if not self.state.has(note.note_id)],
                 meta={"existing_state_size": len(self.state.processed_note_ids)},
             )
-            self._log_progress(run_id, 36, f"prefilter completed, candidates={len(pre_new_notes)}")
+            self._log_progress(run_id, 36, f"预过滤完成，候选新增 {len(pre_new_notes)} 条")
 
             initial_plan = self.planner.build_plan(mode=mode, fetched_count=len(notes), new_count=len(pre_new_notes))
             orchestrator.run_stage(
@@ -111,7 +111,7 @@ class AutoSuccessorPipeline:
                 lambda: self.collector.enrich_note_details(pre_new_notes, max_notes=initial_plan.detail_fetch_limit),
                 meta={"max_detail_fetch": initial_plan.detail_fetch_limit},
             )
-            self._log_progress(run_id, 46, f"detail enrichment completed, limit={initial_plan.detail_fetch_limit}")
+            self._log_progress(run_id, 46, f"正文补全完成，详情抓取上限 {initial_plan.detail_fetch_limit}")
 
             new_notes = orchestrator.run_stage(
                 "state.filter_new_notes",
@@ -119,7 +119,7 @@ class AutoSuccessorPipeline:
                 meta={"prefiltered_count": len(pre_new_notes)},
             )
             new_notes = sorted(new_notes, key=lambda n: n.publish_time, reverse=True)
-            self._log_progress(run_id, 55, f"new-note filtering completed, new={len(new_notes)}")
+            self._log_progress(run_id, 55, f"增量过滤完成，新增 {len(new_notes)} 条")
 
             plan = orchestrator.run_stage(
                 "agent.planner.build_plan",
@@ -134,10 +134,16 @@ class AutoSuccessorPipeline:
             )
             target_notes = filter_outcome.targets
             filtered_out = filter_outcome.filtered_out
+            llm_stage_calls = self.llm_enricher.stage_call_counts()
+            llm_stage_fallbacks = self.llm_enricher.stage_fallback_counts()
             self._log_progress(
                 run_id,
                 66,
-                f"target filtering completed, targets={len(target_notes)} filtered={len(filtered_out)}",
+                (
+                    f"目标筛选完成，命中 {len(target_notes)} 条，过滤 {len(filtered_out)} 条，"
+                    f"LLM筛选调用 {int(llm_stage_calls.get('filter', 0))} 次，"
+                    f"规则回退 {int(llm_stage_fallbacks.get('filter', 0))} 次"
+                ),
             )
 
             jobs = orchestrator.run_stage(
@@ -173,9 +179,19 @@ class AutoSuccessorPipeline:
                 else:
                     job_parse_rule += 1
                 parse_details.append({"post_id": item.post_id, "parse_source": parse_source})
-                self.logger.info("run %s job parse_source post_id=%s source=%s", run_id, item.post_id, parse_source)
+                self.logger.info("岗位解析来源 | run=%s | post_id=%s | source=%s", run_id, item.post_id, parse_source)
             summaries = self._jobs_to_summary_records(run_id=run_id, jobs=jobs)
-            self._log_progress(run_id, 80, f"structured extraction completed, jobs={len(jobs)}")
+            llm_stage_calls = self.llm_enricher.stage_call_counts()
+            llm_stage_fallbacks = self.llm_enricher.stage_fallback_counts()
+            self._log_progress(
+                run_id,
+                80,
+                (
+                    f"岗位结构化完成，岗位 {len(jobs)} 条（LLM解析 {job_parse_llm}，规则解析 {job_parse_rule}），"
+                    f"LLM提取调用 {int(llm_stage_calls.get('job', 0))} 次，"
+                    f"规则回退 {int(llm_stage_fallbacks.get('job', 0))} 次"
+                ),
+            )
 
             orchestrator.run_stage(
                 "storage.write_excel",
@@ -187,7 +203,7 @@ class AutoSuccessorPipeline:
                 lambda: self.store.export_jobs_csv(self.settings.storage.jobs_csv_path),
                 meta={"jobs_csv_path": self.settings.storage.jobs_csv_path},
             )
-            self._log_progress(run_id, 88, "local storage updated")
+            self._log_progress(run_id, 88, "本地存储已更新（Excel/CSV）")
 
             send_logs = []
             notify_note_ids: list[str] = []
@@ -221,7 +237,7 @@ class AutoSuccessorPipeline:
                     send_logs = dispatch_result["logs"]
                     notify_note_ids = sorted({log.note_id for log in send_logs})
                     digest_subject = dispatch_result["subject"]
-                self._log_progress(run_id, 94, f"realtime notification completed, send_logs={len(send_logs)}")
+                self._log_progress(run_id, 94, f"实时通知完成，发送日志 {len(send_logs)} 条")
 
             elif notification_mode == "digest":
                 now = datetime.now(timezone.utc)
@@ -260,11 +276,11 @@ class AutoSuccessorPipeline:
                     if digest_sent:
                         self._mark_digest_sent(now, run_id)
                 if digest_due and (enough_new or allow_no_new):
-                    self._log_progress(run_id, 94, f"digest notification completed, send_logs={len(send_logs)}")
+                    self._log_progress(run_id, 94, f"摘要通知完成，发送日志 {len(send_logs)} 条")
                 else:
-                    self._log_progress(run_id, 94, "digest notification skipped by policy")
+                    self._log_progress(run_id, 94, "摘要通知按策略跳过（未到时间窗或新增不足）")
             else:
-                self._log_progress(run_id, 94, "notification disabled")
+                self._log_progress(run_id, 94, "通知已关闭")
 
             if send_logs:
                 orchestrator.run_stage(
@@ -279,12 +295,15 @@ class AutoSuccessorPipeline:
                 self.state.save()
 
             orchestrator.run_stage("state.persist", _persist_state, meta={"marked_count": len(new_notes)})
-            self._log_progress(run_id, 100, "run completed")
+            self._log_progress(run_id, 100, "本轮运行完成")
 
             stage_records = orchestrator.stage_records()
             stage_timing = self._summarize_stage_timing(stage_records)
             stage_error_codes = self._collect_stage_error_codes(stage_records)
             llm_error_codes = self.llm_client.error_counts()
+            llm_stage_calls = self.llm_enricher.stage_call_counts()
+            llm_stage_fallbacks = self.llm_enricher.stage_fallback_counts()
+            llm_fallback_total = sum(int(v) for v in llm_stage_fallbacks.values())
 
             stats = {
                 "runtime_name": self.settings.agent.runtime_name,
@@ -311,6 +330,9 @@ class AutoSuccessorPipeline:
                 "llm_success": self.llm_enricher.success,
                 "llm_fail": self.llm_enricher.fail,
                 "llm_error_codes": llm_error_codes,
+                "llm_stage_calls": llm_stage_calls,
+                "llm_stage_fallbacks": llm_stage_fallbacks,
+                "llm_fallback_total": llm_fallback_total,
                 "stage_error_codes": stage_error_codes,
                 "job_parse_rule": job_parse_rule,
                 "job_parse_llm": job_parse_llm,
@@ -352,31 +374,43 @@ class AutoSuccessorPipeline:
                     "stage_records": stage_records,
                 },
             )
-            self.logger.info("run %s finished: %s", run_id, stats)
+            self.logger.info(
+                "LLM统计 | run=%s | 调用=%s | 成功=%s | 失败=%s | 阶段调用=%s | 阶段回退=%s",
+                run_id,
+                self.llm_enricher.calls,
+                self.llm_enricher.success,
+                self.llm_enricher.fail,
+                llm_stage_calls,
+                llm_stage_fallbacks,
+            )
+            self.logger.info("运行结束 | run=%s | stats=%s", run_id, stats)
             return stats
         finally:
             self.lock.release()
 
     def _log_progress(self, run_id: str, percent: int, message: str) -> None:
         pct = max(0, min(100, int(percent)))
-        done = max(0, min(20, int(round(pct / 5))))
-        bar = f"{'=' * done}{'.' * (20 - done)}"
-        self.logger.info("run %s progress [%s] %3d%% %s", run_id, bar, pct, message)
+        width = 24
+        done = max(0, min(width, int(round(pct * width / 100))))
+        bar = f"{'#' * done}{'-' * (width - done)}"
+        self.logger.info("运行进度 | run=%s | [%s] %3d%% | %s", run_id, bar, pct, message)
 
     def send_latest_stored(self, run_id: str, limit: int = 5) -> dict:
         mode = self._normalize_mode(self.settings.agent.mode or "auto")
 
         if not self.lock.acquire():
-            self.logger.warning("skip manual send %s because previous run lock exists", run_id)
+            self.logger.warning("跳过发送 | run=%s | 原因=检测到上一次运行锁未释放", run_id)
             return {"skipped": True, "reason": "run_locked"}
 
         try:
             top_n = max(1, int(limit))
+            self._log_progress(run_id, 8, f"准备发送本地最新岗位，目标条数 {top_n}")
             summaries = list(self._load_latest_summaries_from_store(limit=top_n) or [])
             if summaries:
                 jobs = self._summaries_to_jobs(summaries)
             else:
                 jobs = self._load_latest_jobs_from_store(limit=top_n)
+            self._log_progress(run_id, 32, f"已加载本地岗位 {len(jobs)} 条")
             resume_text = self.resume_loader.load_resume_text()
             digest_attachments = self._collect_digest_attachments()
             digest_channels = list(self.settings.notification.digest_channels)
@@ -406,7 +440,8 @@ class AutoSuccessorPipeline:
                         },
                     },
                 )
-                self.logger.info("manual send %s finished: %s", run_id, stats)
+                self._log_progress(run_id, 100, "无可发送岗位，任务结束")
+                self.logger.info("手动发送完成 | run=%s | stats=%s", run_id, stats)
                 return stats
 
             dispatch_result = self._dispatch_batch_with_compat(
@@ -419,6 +454,7 @@ class AutoSuccessorPipeline:
                 attachments=digest_attachments,
                 digest_style=True,
             )
+            self._log_progress(run_id, 72, "通知分发执行完成，正在写入发送日志")
             send_logs = dispatch_result["logs"]
             digest_sent = any(str(getattr(log, "send_status", "")).strip().lower() == "success" for log in send_logs)
 
@@ -455,7 +491,8 @@ class AutoSuccessorPipeline:
                     },
                 },
             )
-            self.logger.info("manual send %s finished: %s", run_id, stats)
+            self._log_progress(run_id, 100, f"发送任务完成，发送日志 {len(send_logs)} 条")
+            self.logger.info("手动发送完成 | run=%s | stats=%s", run_id, stats)
             return stats
         finally:
             self.lock.release()

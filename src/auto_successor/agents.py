@@ -87,7 +87,7 @@ class PlannerAgent:
             include_jd_full=include_jd_full,
         )
         self.logger.info(
-            "planner plan mode=%s detail_fetch=%s filter=%s jobs=%s summaries=%s top_n=%s full_llm=%s",
+            "规划结果 | mode=%s | detail_fetch=%s | filter=%s | jobs=%s | summaries=%s | top_n=%s | full_llm=%s",
             plan.mode,
             plan.detail_fetch_limit,
             plan.max_filter_items,
@@ -122,41 +122,64 @@ class IntelligenceAgent:
         targets: list[NoteRecord] = []
         filtered_out: list[dict] = []
         scores: dict[str, float] = {}
+        total = len(notes)
+        llm_budget = max(0, int(max_filter_items))
+        progress_step = max(1, total // 5) if total > 0 else 1
+        self.logger.info("[阶段] 目标筛选开始：总条数=%s，LLM配额=%s", total, llm_budget)
 
         for idx, note in enumerate(notes):
-            allow_llm = idx < max(0, int(max_filter_items))
+            allow_llm = idx < llm_budget
             decision = self.llm_enricher.classify_target(note, allow_llm=allow_llm)
             scores[note.note_id] = float(decision.score)
             if decision.is_target:
                 targets.append(note)
-                continue
-            filtered_out.append(
-                {
-                    "note_id": note.note_id,
-                    "title": note.title[:100],
-                    "score": round(decision.score, 4),
-                    "reason": decision.reason,
-                    "source": decision.source,
-                }
-            )
-            self.logger.info(
-                "filter out note=%s score=%.2f source=%s reason=%s",
-                note.note_id,
-                decision.score,
-                decision.source,
-                decision.reason,
-            )
+            else:
+                filtered_out.append(
+                    {
+                        "note_id": note.note_id,
+                        "title": note.title[:100],
+                        "score": round(decision.score, 4),
+                        "reason": decision.reason,
+                        "source": decision.source,
+                    }
+                )
+                self.logger.info(
+                    "过滤帖子 | note=%s | score=%.2f | source=%s | reason=%s",
+                    note.note_id,
+                    decision.score,
+                    decision.source,
+                    decision.reason,
+                )
+            current = idx + 1
+            if current == total or current % progress_step == 0:
+                pct = int(round(current * 100 / max(1, total)))
+                self.logger.info(
+                    "[阶段进度] 目标筛选 %s/%s (%s%%) | 命中=%s | 过滤=%s",
+                    current,
+                    total,
+                    pct,
+                    len(targets),
+                    len(filtered_out),
+                )
 
         return FilterOutcome(targets=targets, filtered_out=filtered_out, scores=scores)
 
     def build_jobs(self, notes: list[NoteRecord], max_job_items: int, resume_text: str, mode: str) -> list[JobRecord]:
         jobs: list[JobRecord] = []
+        total = len(notes)
+        llm_budget = max(0, int(max_job_items))
+        progress_step = max(1, total // 5) if total > 0 else 1
+        self.logger.info("[阶段] 岗位结构化开始：总条数=%s，LLM配额=%s", total, llm_budget)
         for idx, note in enumerate(notes):
             job = to_job_record(note)
             job.mode = mode
-            if idx < max(0, int(max_job_items)):
+            if idx < llm_budget:
                 job = self.llm_enricher.enrich_job(note, job, resume_text=resume_text, mode=mode)
             jobs.append(normalize_job_record(job))
+            current = idx + 1
+            if current == total or current % progress_step == 0:
+                pct = int(round(current * 100 / max(1, total)))
+                self.logger.info("[阶段进度] 岗位结构化 %s/%s (%s%%)", current, total, pct)
         jobs.sort(key=lambda item: item.publish_time, reverse=True)
         return jobs
 
@@ -192,6 +215,8 @@ class IntelligenceAgent:
         return jobs
 
     def attach_outreach_messages(self, jobs: list[JobRecord], resume_text: str) -> list[JobRecord]:
+        opp_total = sum(1 for item in jobs if item.opportunity_point)
+        self.logger.info("[阶段] 套磁生成开始：机会点岗位=%s", opp_total)
         for job in jobs:
             if not job.opportunity_point:
                 job.outreach_message = ""
