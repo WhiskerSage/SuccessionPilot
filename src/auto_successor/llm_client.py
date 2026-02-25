@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 
 import requests
@@ -13,12 +14,29 @@ class LLMClient:
     def __init__(self, settings: Settings, logger) -> None:
         self.settings = settings
         self.logger = logger
+        self._consecutive_failures = 0
+        self._disabled_until = 0.0
+        self._failure_threshold = 3
+        self._cooldown_seconds = 180
+        self._degraded_active = False
 
     def is_enabled(self) -> bool:
         return self.settings.llm.enabled
 
     def is_available(self) -> bool:
-        return self.settings.llm.enabled and bool(self.settings.llm_api_key)
+        if not (self.settings.llm.enabled and bool(self.settings.llm_api_key)):
+            return False
+        now = time.monotonic()
+        if now < self._disabled_until:
+            if not self._degraded_active:
+                remain = int(self._disabled_until - now)
+                self.logger.warning("llm degraded: fallback mode enabled, cooldown remaining ~%ss", max(1, remain))
+                self._degraded_active = True
+            return False
+        if self._degraded_active:
+            self.logger.info("llm recovered: resume normal llm calls")
+            self._degraded_active = False
+        return True
 
     def chat_json(self, system_prompt: str, user_prompt: str, model: str | None = None) -> dict[str, Any] | None:
         text = self.chat_text(system_prompt=system_prompt, user_prompt=user_prompt, model=model)
@@ -74,11 +92,14 @@ class LLMClient:
             "temperature": cfg.temperature if temperature is None else float(temperature),
             "max_tokens": cfg.max_tokens if max_tokens is None else int(max_tokens),
         }
+        # Keep single-request latency bounded even if config timeout is large.
+        effective_timeout = max(5, min(int(cfg.timeout_seconds), 20))
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=cfg.timeout_seconds)
+            resp = requests.post(url, headers=headers, json=payload, timeout=effective_timeout)
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
+            self._mark_failure()
             self.logger.warning("llm request failed: %s", exc)
             return None
 
@@ -88,8 +109,10 @@ class LLMClient:
             message = choices[0].get("message", {})
             content = message.get("content")
             if isinstance(content, str):
+                self._mark_success()
                 return self._strip_code_fence(content)
             if isinstance(message.get("reasoning_content"), str):
+                self._mark_success()
                 return self._strip_code_fence(message.get("reasoning_content") or "")
             if isinstance(content, list):
                 text_parts = []
@@ -99,17 +122,22 @@ class LLMClient:
                         if isinstance(t, str):
                             text_parts.append(t)
                 if text_parts:
+                    self._mark_success()
                     return self._strip_code_fence("\n".join(text_parts))
             if isinstance(choices[0].get("text"), str):
+                self._mark_success()
                 return self._strip_code_fence(choices[0].get("text") or "")
 
         # Fallback for some providers.
         if isinstance(data, dict):
             if isinstance(data.get("output_text"), str):
+                self._mark_success()
                 return self._strip_code_fence(data["output_text"])
             if isinstance(data.get("text"), str):
+                self._mark_success()
                 return self._strip_code_fence(data["text"])
 
+        self._mark_failure()
         self.logger.warning("llm response missing content: %s", str(data)[:300])
         return None
 
@@ -121,4 +149,19 @@ class LLMClient:
         if m:
             return m.group(1).strip()
         return raw
+
+    def _mark_success(self) -> None:
+        self._consecutive_failures = 0
+
+    def _mark_failure(self) -> None:
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self._failure_threshold:
+            self._disabled_until = time.monotonic() + self._cooldown_seconds
+            self.logger.warning(
+                "llm degraded: temporarily disabled for %ss after %s consecutive failures",
+                self._cooldown_seconds,
+                self._consecutive_failures,
+            )
+            self._degraded_active = False
+            self._consecutive_failures = 0
 

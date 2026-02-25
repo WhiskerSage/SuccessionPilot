@@ -70,9 +70,9 @@ class PlannerAgent:
             include_jd_full = self._agent_bool("agent_include_jd_full", "smart_include_jd_full", True)
         else:
             detail_fetch_limit = min(self.settings.xhs.max_detail_fetch, fetched_count)
-            max_filter_items = max(0, int(self.settings.llm.max_filter_items))
-            max_job_items = max(0, int(self.settings.llm.max_job_items))
-            max_summary_items = max(0, int(self.settings.llm.max_summary_items))
+            max_filter_items = new_count
+            max_job_items = new_count
+            max_summary_items = new_count
             top_n = max(1, self._agent_int("agent_send_top_n", "smart_send_top_n", 3))
             include_jd_full = self._agent_bool("agent_include_jd_full", "smart_include_jd_full", True)
 
@@ -86,13 +86,14 @@ class PlannerAgent:
             include_jd_full=include_jd_full,
         )
         self.logger.info(
-            "planner plan mode=%s detail_fetch=%s filter=%s jobs=%s summaries=%s top_n=%s",
+            "planner plan mode=%s detail_fetch=%s filter=%s jobs=%s summaries=%s top_n=%s full_llm=%s",
             plan.mode,
             plan.detail_fetch_limit,
             plan.max_filter_items,
             plan.max_job_items,
             plan.max_summary_items,
             plan.top_n,
+            "on" if plan.max_filter_items >= new_count and plan.max_job_items >= new_count and plan.max_summary_items >= new_count else "off",
         )
         return plan
 

@@ -8,6 +8,7 @@ from .agent_memory import AgentMemoryLoader
 from .llm_client import LLMClient
 from .models import JobRecord, NoteRecord, SummaryRecord
 from .succession import extract_apply_info, extract_arrival_info, extract_jd_full, extract_poster_comment_update
+from .text_utils import clean_line
 
 TARGET_TOKENS = [
     "继任",
@@ -73,6 +74,9 @@ class LLMEnricher:
         self.calls = 0
         self.success = 0
         self.fail = 0
+        self._degrade_notice_filter = False
+        self._degrade_notice_job = False
+        self._degrade_notice_summary = False
         memory_loader = AgentMemoryLoader(
             global_path=self.settings.agent.global_memory_path,
             main_path=self.settings.agent.main_memory_path,
@@ -85,6 +89,9 @@ class LLMEnricher:
         self.calls = 0
         self.success = 0
         self.fail = 0
+        self._degrade_notice_filter = False
+        self._degrade_notice_job = False
+        self._degrade_notice_summary = False
 
     def classify_target(self, note: NoteRecord, allow_llm: bool = True) -> FilterDecision:
         cfg = self.settings.llm
@@ -93,28 +100,27 @@ class LLMEnricher:
             return rule_decision
 
         if not (allow_llm and cfg.enabled and self.client.is_available()):
+            if allow_llm and cfg.enabled and (not self._degrade_notice_filter):
+                self.logger.warning("llm degraded: filter stage fallback to rule-only")
+                self._degrade_notice_filter = True
             return rule_decision
 
         system_prompt = (
-            "你是帖子筛选助手。任务：判断该帖子是否属于“找继任/找接任的岗位交接信息”。"
-            "严格返回 JSON，不要 markdown。"
-            "字段：is_target(boolean), relevance_score(0-1), reason(string)。"
-            "如果帖子是政治、军事、历史、娱乐剧情等非招聘语境，is_target 必须为 false。"
+            "你是帖子筛选助手。"
+            "判断是否是“找继任/接任的招聘帖子”。"
+            "只返回JSON: {is_target, relevance_score, reason}。"
+            "政治/军事/历史/剧情语境必须false。"
         )
         system_prompt = self._with_memory(system_prompt)
         user_prompt = (
             f"title: {note.title}\n"
-            f"author: {note.author}\n"
-            f"publish_time: {note.publish_time_text}\n"
-            f"like_count: {note.like_count}\n"
-            f"comment_count: {note.comment_count}\n"
             f"detail_text: {note.detail_text}\n"
             f"comments_preview: {note.comments_preview}\n"
-            f"url: {note.url}\n"
         )
         self.calls += 1
         obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=self._parse_model())
         if not obj:
+            self.logger.warning("llm fallback(filter): note=%s use=rule", note.note_id)
             self.fail += 1
             return rule_decision
 
@@ -165,6 +171,9 @@ class LLMEnricher:
         current.match_reason = current.match_reason or "rule fallback"
 
         if not (cfg.enabled and cfg.enabled_for_jobs and self.client.is_available()):
+            if cfg.enabled and cfg.enabled_for_jobs and (not self._degrade_notice_job):
+                self.logger.warning("llm degraded: job extraction fallback to rule fields")
+                self._degrade_notice_job = True
             return current
 
         system_prompt = (
@@ -188,6 +197,7 @@ class LLMEnricher:
         self.calls += 1
         obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=self._parse_model())
         if not obj:
+            self.logger.warning("llm fallback(job): note=%s use=rule_fields", note.note_id)
             self.fail += 1
             return current
 
@@ -421,7 +431,7 @@ class LLMEnricher:
 
     @staticmethod
     def _clean_line(text: str) -> str:
-        return re.sub(r"\s+", " ", text or "").strip()
+        return clean_line(text)
 
     def _with_memory(self, system_prompt: str) -> str:
         if not self.system_prefix:
@@ -486,6 +496,9 @@ class LLMEnricher:
     def enrich_summary(self, note: NoteRecord, current: SummaryRecord, mode: str = "auto") -> SummaryRecord:
         cfg = self.settings.llm
         if not (cfg.enabled and cfg.enabled_for_summary and self.client.is_available()):
+            if cfg.enabled and cfg.enabled_for_summary and (not self._degrade_notice_summary):
+                self.logger.warning("llm degraded: summary generation fallback to local summary")
+                self._degrade_notice_summary = True
             return current
         mode = (mode or "auto").strip().lower()
         if mode == "smart":
@@ -529,6 +542,7 @@ class LLMEnricher:
         self.calls += 1
         obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=self._parse_model())
         if not obj:
+            self.logger.warning("llm fallback(summary): note=%s use=local_summary", note.note_id)
             self.fail += 1
             return current
 

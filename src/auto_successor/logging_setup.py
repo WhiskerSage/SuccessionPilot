@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
 def setup_logging(log_level: str = "INFO", log_file: str = "logs/app.log") -> logging.Logger:
+    _configure_console_utf8()
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
 
     level = getattr(logging, log_level.upper(), logging.INFO)
@@ -30,3 +33,24 @@ def setup_logging(log_level: str = "INFO", log_file: str = "logs/app.log") -> lo
 
     return logger
 
+
+def _configure_console_utf8() -> None:
+    # Improve Chinese readability on Windows terminals.
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetConsoleOutputCP(65001)
+        kernel32.SetConsoleCP(65001)
+    except Exception:
+        pass

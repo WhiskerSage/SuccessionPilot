@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from .config import XHSConfig
 from .models import NoteRecord
+from .text_utils import clean_line
 
 
 class XHSCollectorError(RuntimeError):
@@ -69,13 +70,13 @@ class XHSMcpCliCollector:
                 interact_raw = note_card.get("interact_info")
             interact = interact_raw if isinstance(interact_raw, dict) else {}
 
-            title = str(note_card.get("displayTitle") or note_card.get("display_title") or "").strip()
-            author = str(user.get("nickName") or user.get("nick_name") or user.get("nickname") or "").strip()
+            title = clean_line(str(note_card.get("displayTitle") or note_card.get("display_title") or ""))
+            author = clean_line(str(user.get("nickName") or user.get("nick_name") or user.get("nickname") or ""))
             like_count = self._to_int(self._pick(interact, "likedCount", "liked_count"))
             comment_count = self._to_int(self._pick(interact, "commentCount", "comment_count"))
             share_count = self._to_int(self._pick(interact, "sharedCount", "shared_count"))
 
-            publish_text = self._extract_publish_time_text(note_card)
+            publish_text = clean_line(self._extract_publish_time_text(note_card))
             publish_time = self._parse_publish_time(publish_text)
 
             xsec_token = str(feed.get("xsecToken") or feed.get("xsec_token") or "").strip()
@@ -414,7 +415,7 @@ class XHSMcpCliCollector:
 
     @staticmethod
     def _sanitize_detail_text(text: str) -> str:
-        value = (text or "").strip()
+        value = clean_line(text)
         if not value:
             return ""
         blocked_patterns = [
@@ -426,11 +427,11 @@ class XHSMcpCliCollector:
         ]
         if any(re.search(pat, value, flags=re.IGNORECASE) for pat in blocked_patterns):
             return ""
-        return re.sub(r"\s+", " ", value).strip()
+        return clean_line(value)
 
     @staticmethod
     def _sanitize_comments_preview(text: str) -> str:
-        value = re.sub(r"\s+", " ", (text or "")).strip()
+        value = clean_line(text)
         if not value:
             return ""
 
@@ -465,7 +466,7 @@ class XHSMcpCliCollector:
         for item in cleaned_parts:
             if item not in uniq:
                 uniq.append(item)
-        return " | ".join(uniq[:8])
+        return clean_line(" | ".join(uniq[:8]))
 
     def _parse_publish_time(self, text: str) -> datetime:
         now = datetime.now(self.tz)
