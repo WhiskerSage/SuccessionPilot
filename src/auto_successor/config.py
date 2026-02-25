@@ -45,6 +45,11 @@ class LLMConfig:
     api_key_env: str = "OPENAI_API_KEY"
     base_url: str = "https://api.openai.com/v1"
     timeout_seconds: int = 45
+    request_timeout_seconds: int = 12
+    max_retries: int = 1
+    retry_backoff_seconds: float = 0.6
+    failure_threshold: int = 2
+    cooldown_seconds: int = 120
     max_tokens: int = 900
     temperature: float = 0.2
     enabled_for_jobs: bool = True

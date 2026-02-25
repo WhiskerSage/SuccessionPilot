@@ -101,7 +101,10 @@ class LLMEnricher:
 
         if not (allow_llm and cfg.enabled and self.client.is_available()):
             if allow_llm and cfg.enabled and (not self._degrade_notice_filter):
-                self.logger.warning("llm degraded: filter stage fallback to rule-only")
+                self.logger.warning(
+                    "llm degraded: filter stage fallback to rule-only (reason=%s)",
+                    self._client_error_reason(),
+                )
                 self._degrade_notice_filter = True
             return rule_decision
 
@@ -115,12 +118,16 @@ class LLMEnricher:
         user_prompt = (
             f"title: {note.title}\n"
             f"detail_text: {note.detail_text}\n"
-            f"comments_preview: {note.comments_preview}\n"
+            f"poster_comments_preview: {note.comments_preview}\n"
         )
         self.calls += 1
         obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=self._parse_model())
         if not obj:
-            self.logger.warning("llm fallback(filter): note=%s use=rule", note.note_id)
+            self.logger.warning(
+                "llm fallback(filter): note=%s use=rule reason=%s",
+                note.note_id,
+                self._client_error_reason(),
+            )
             self.fail += 1
             return rule_decision
 
@@ -172,7 +179,10 @@ class LLMEnricher:
 
         if not (cfg.enabled and cfg.enabled_for_jobs and self.client.is_available()):
             if cfg.enabled and cfg.enabled_for_jobs and (not self._degrade_notice_job):
-                self.logger.warning("llm degraded: job extraction fallback to rule fields")
+                self.logger.warning(
+                    "llm degraded: job extraction fallback to rule fields (reason=%s)",
+                    self._client_error_reason(),
+                )
                 self._degrade_notice_job = True
             return current
 
@@ -190,14 +200,18 @@ class LLMEnricher:
             f"author: {note.author}\n"
             f"publish_time: {note.publish_time.isoformat()}\n"
             f"detail_text: {note.detail_text}\n"
-            f"comments_preview: {note.comments_preview}\n"
+            f"poster_comments_preview: {note.comments_preview}\n"
             f"url: {note.url}\n"
             f"mode: {mode}\n"
         )
         self.calls += 1
         obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=self._parse_model())
         if not obj:
-            self.logger.warning("llm fallback(job): note=%s use=rule_fields", note.note_id)
+            self.logger.warning(
+                "llm fallback(job): note=%s use=rule_fields reason=%s",
+                note.note_id,
+                self._client_error_reason(),
+            )
             self.fail += 1
             return current
 
@@ -438,6 +452,17 @@ class LLMEnricher:
             return system_prompt
         return f"{self.system_prefix}\n\n[Current Task]\n{system_prompt}"
 
+    def _client_error_reason(self) -> str:
+        getter = getattr(self.client, "last_error_code", None)
+        if callable(getter):
+            try:
+                value = str(getter() or "").strip()
+                if value:
+                    return value
+            except Exception:
+                pass
+        return "unavailable"
+
     def _pick_text(self, obj: dict, key: str, default: str, max_len: int) -> str:
         text = self._clean_line(str(obj.get(key) or default or ""))
         if not text:
@@ -497,7 +522,10 @@ class LLMEnricher:
         cfg = self.settings.llm
         if not (cfg.enabled and cfg.enabled_for_summary and self.client.is_available()):
             if cfg.enabled and cfg.enabled_for_summary and (not self._degrade_notice_summary):
-                self.logger.warning("llm degraded: summary generation fallback to local summary")
+                self.logger.warning(
+                    "llm degraded: summary generation fallback to local summary (reason=%s)",
+                    self._client_error_reason(),
+                )
                 self._degrade_notice_summary = True
             return current
         mode = (mode or "auto").strip().lower()
@@ -534,7 +562,7 @@ class LLMEnricher:
             f"comment_count: {note.comment_count}\n"
             f"share_count: {note.share_count}\n"
             f"detail_text: {note.detail_text}\n"
-            f"comments_preview: {note.comments_preview}\n"
+            f"poster_comments_preview: {note.comments_preview}\n"
             f"url: {note.url}\n"
             f"mode: {mode}\n"
             "要求：如果正文/评论缺失，要明确说明信息缺口，不要编造。"
@@ -542,7 +570,11 @@ class LLMEnricher:
         self.calls += 1
         obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=self._parse_model())
         if not obj:
-            self.logger.warning("llm fallback(summary): note=%s use=local_summary", note.note_id)
+            self.logger.warning(
+                "llm fallback(summary): note=%s use=local_summary reason=%s",
+                note.note_id,
+                self._client_error_reason(),
+            )
             self.fail += 1
             return current
 

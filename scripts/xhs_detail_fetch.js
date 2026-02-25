@@ -113,6 +113,7 @@ async function main() {
         return (el && el.textContent ? el.textContent : "").trim();
       };
       const normalize = (s) => (s || "").replace(/\s+/g, " ").trim();
+      const normalizeName = (s) => normalize(s).replace(/^@+/, "");
       const unique = (arr) => {
         const out = [];
         for (const x of arr) {
@@ -126,6 +127,18 @@ async function main() {
         const t = normalize(s);
         if (!t) return false;
         return /安全限制IP存在风险|切换可靠网络环境|网络环境存在风险|访问受限|返回首页|请稍后重试|风险验证|异常请求/.test(t);
+      };
+      const isLikelyCommentText = (t) => {
+        if (!t) return false;
+        if (t.length < 4 || t.length > 220) return false;
+        if (/^赞|^回复|^展开|^收起|^查看更多/.test(t)) return false;
+        return true;
+      };
+      const equalName = (a, b) => {
+        const aa = normalizeName(a);
+        const bb = normalizeName(b);
+        if (!aa || !bb) return false;
+        return aa === bb;
       };
 
       const metaDesc =
@@ -153,14 +166,46 @@ async function main() {
         pushDetail(el.textContent || "");
       }
 
-      const domComments = Array.from(
-        document.querySelectorAll('[class*="comment"], [class*="Comment"], li, p')
-      )
-        .map((el) => normalize(el.textContent || ""))
-        .filter((t) => t.length >= 4 && t.length <= 160)
-        .filter((t) => !/^赞|回复|展开|收起|查看更多/.test(t));
+      const authorCandidates = [];
+      const pushAuthorCandidate = (s) => {
+        const name = normalizeName(s);
+        if (!name) return;
+        if (name.length < 2 || name.length > 40) return;
+        authorCandidates.push(name);
+      };
+      pushAuthorCandidate(textOf('[class*="author"] [class*="name"]'));
+      pushAuthorCandidate(textOf('[class*="author-name"]'));
+      pushAuthorCandidate(textOf('[class*="user"] [class*="name"]'));
+      pushAuthorCandidate(textOf('[class*="nickname"]'));
 
-      const stateComments = [];
+      const commentEntries = [];
+      const pushCommentEntry = ({ text, actorName = "", hasAuthorBadge = false, isAuthorFlag = false }) => {
+        const content = normalize(text);
+        if (!isLikelyCommentText(content)) return;
+        if (isBlockedText(content)) return;
+        commentEntries.push({
+          text: content,
+          actorName: normalizeName(actorName),
+          hasAuthorBadge: Boolean(hasAuthorBadge),
+          isAuthorFlag: Boolean(isAuthorFlag),
+        });
+      };
+
+      const domCommentNodes = Array.from(
+        document.querySelectorAll(
+          '[class*="comment-item"], [class*="commentItem"], [class*="comment"], li[class*="comment"], li'
+        )
+      ).slice(0, 160);
+      for (const el of domCommentNodes) {
+        const text = normalize(el.textContent || "");
+        if (!isLikelyCommentText(text)) continue;
+        const actorName = normalize(
+          el.querySelector('[class*="name"], [class*="user"], [class*="author"], a')?.textContent || ""
+        );
+        const hasAuthorBadge = /作者|楼主|博主|贴主/.test(text);
+        pushCommentEntry({ text, actorName, hasAuthorBadge, isAuthorFlag: false });
+      }
+
       const stateDetails = [];
       const states = [window.__INITIAL_STATE__, window.__INITIAL_SSR_STATE__, window.__NEXT_DATA__];
       const queue = [];
@@ -168,31 +213,67 @@ async function main() {
         if (st && typeof st === "object") queue.push({ v: st, p: "root" });
       }
       let visited = 0;
-      while (queue.length && visited < 6000) {
+      while (queue.length && visited < 7000) {
         const item = queue.shift();
         visited += 1;
         if (!item) continue;
         const { v, p } = item;
         if (v == null) continue;
+
         if (typeof v === "string") {
           const txt = normalize(v);
           const path = String(p || "").toLowerCase();
           if (!txt) continue;
-          if (/comment|评论/.test(path) && txt.length >= 4 && txt.length <= 180) {
-            if (!isBlockedText(txt)) stateComments.push(txt);
-          }
           if (/(desc|content|text|note|title|caption|post|body|detail)/.test(path) && txt.length >= 16 && txt.length <= 1400) {
             if (!isBlockedText(txt)) stateDetails.push(txt);
           }
+          if (
+            /(author|creator|publisher|post_user|note_user|note\.user|nick|name)/.test(path) &&
+            !/(comment|reply|replies)/.test(path)
+          ) {
+            pushAuthorCandidate(txt);
+          }
           continue;
         }
+
         if (Array.isArray(v)) {
           for (let i = 0; i < v.length && i < 40; i += 1) {
             queue.push({ v: v[i], p: `${p}[${i}]` });
           }
           continue;
         }
+
         if (typeof v === "object") {
+          const path = String(p || "").toLowerCase();
+          if (/comment|reply|replies|评论/.test(path)) {
+            const content =
+              v.content || v.text || v.desc || v.comment || v.message || v.noteText || v.note_text || "";
+            const actorName =
+              (v.user && (v.user.nickName || v.user.nick_name || v.user.nickname || v.user.name)) ||
+              v.nickName ||
+              v.nick_name ||
+              v.nickname ||
+              v.userName ||
+              v.user_name ||
+              "";
+            const tagText = `${v.tagText || ""} ${v.tag_text || ""} ${v.role || ""} ${v.userType || ""} ${v.user_type || ""}`;
+            const isAuthorFlag = Boolean(
+              v.isAuthor ||
+              v.is_author ||
+              v.isPoster ||
+              v.is_poster ||
+              v.isNoteAuthor ||
+              v.is_note_author ||
+              /author|poster|note_author|作者|楼主|博主|贴主/i.test(tagText)
+            );
+            pushCommentEntry({
+              text: content,
+              actorName,
+              hasAuthorBadge: /作者|楼主|博主|贴主/.test(normalize(content)),
+              isAuthorFlag,
+            });
+          }
+
           for (const [k, val] of Object.entries(v)) {
             queue.push({ v: val, p: `${p}.${k}` });
           }
@@ -204,13 +285,26 @@ async function main() {
       mergedDetails.sort((a, b) => b.length - a.length);
       const detailText = mergedDetails[0] || "";
 
+      const candidateNames = unique(authorCandidates);
+      const posterName = candidateNames[0] || "";
+      const isPosterEntry = (entry) => {
+        if (!entry || !entry.text) return false;
+        if (entry.isAuthorFlag || entry.hasAuthorBadge) return true;
+        if (posterName && entry.actorName && equalName(entry.actorName, posterName)) return true;
+        if (posterName && entry.text.includes(posterName) && /作者|楼主|博主|贴主|回复/.test(entry.text)) return true;
+        return false;
+      };
+      const allComments = unique(commentEntries.map((x) => x.text)).slice(0, 8);
+      const posterComments = unique(commentEntries.filter(isPosterEntry).map((x) => x.text)).slice(0, 8);
+
       const commentCountText =
         textOf('[class*="comment-count"]') || textOf('[class*="commentCount"]') || "";
 
       return {
         title,
         detail_text: detailText,
-        comments_preview: unique([...domComments, ...stateComments]).slice(0, 8).join(" | "),
+        poster_comments_preview: posterComments.join(" | "),
+        comments_preview: allComments.join(" | "),
         comment_count_text: commentCountText,
         blocked_by_risk_page: blockedByRiskPage,
       };

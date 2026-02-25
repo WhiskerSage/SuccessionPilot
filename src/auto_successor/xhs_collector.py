@@ -125,7 +125,9 @@ class XHSMcpCliCollector:
                 continue
 
             detail_text = self._sanitize_detail_text(str(payload.get("detail_text") or ""))
-            comments_preview = self._sanitize_comments_preview(str(payload.get("comments_preview") or ""))
+            comments_preview = self._sanitize_comments_preview(
+                str(payload.get("poster_comments_preview") or payload.get("comments_preview") or "")
+            )
             blocked_by_risk_page = bool(payload.get("blocked_by_risk_page"))
 
             if detail_text:
