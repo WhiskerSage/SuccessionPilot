@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import tempfile
+import unittest
 
 import yaml
 
@@ -89,3 +92,87 @@ def test_load_leads_page_empty(tmp_path: Path) -> None:
     assert result["page"] == 1
     assert result["page_size"] == 20
     assert result["total_pages"] == 1
+
+
+def test_load_runs_with_stage_observability_from_stats(tmp_path: Path) -> None:
+    workspace = tmp_path
+    _write_config(workspace / "config" / "config.yaml")
+    runs_dir = workspace / "data" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "run_id": "r-observe",
+        "recorded_at": "2026-02-25T12:00:00+00:00",
+        "stats": {
+            "mode": "agent",
+            "notification_mode": "digest",
+            "fetched": 9,
+            "target_notes": 4,
+            "jobs": 3,
+            "send_logs": 2,
+            "digest_sent": True,
+            "stage_total_ms": 4800,
+            "stage_avg_ms": 1200,
+            "stage_failed_count": 1,
+            "stage_top_slow": [
+                {"name": "collector.search", "duration_ms": 2600, "status": "success"},
+                {"name": "agent.filter", "duration_ms": 1400, "status": "failed"},
+            ],
+            "llm_error_codes": {"read_timeout": 2},
+            "stage_error_codes": {"timeout": 1},
+        },
+    }
+    (runs_dir / "20260225-120000.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    backend = DataBackend(workspace=workspace)
+
+    result = backend.load_runs(limit=10)
+    assert len(result) == 1
+    item = result[0]
+    assert item["mode"] == "agent"
+    assert item["notification_mode"] == "digest"
+    assert item["stage_total_ms"] == 4800
+    assert item["stage_avg_ms"] == 1200
+    assert item["stage_failed_count"] == 1
+    assert item["slow_stages"][0]["name"] == "collector.search"
+    assert item["error_codes"]["read_timeout"] == 2
+    assert item["error_codes"]["timeout"] == 1
+
+
+def test_load_runs_fallback_stage_metrics_from_stage_records(tmp_path: Path) -> None:
+    workspace = tmp_path
+    _write_config(workspace / "config" / "config.yaml")
+    runs_dir = workspace / "data" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "run_id": "r-stage-fallback",
+        "recorded_at": "2026-02-25T12:10:00+00:00",
+        "stats": {
+            "fetched": 2,
+            "target_notes": 1,
+            "jobs": 1,
+        },
+        "stage_records": [
+            {"name": "collector.search", "duration_ms": 900, "status": "success"},
+            {"name": "agent.filter", "duration_ms": 300, "status": "failed", "error_code": "network_error"},
+        ],
+    }
+    (runs_dir / "20260225-121000.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    backend = DataBackend(workspace=workspace)
+
+    result = backend.load_runs(limit=10)
+    assert len(result) == 1
+    item = result[0]
+    assert item["stage_total_ms"] == 1200
+    assert item["stage_avg_ms"] == 600
+    assert item["stage_failed_count"] == 1
+    assert item["slow_stages"][0]["name"] == "collector.search"
+    assert item["error_codes"]["network_error"] == 1
+
+
+class TestDashboardBackendCore(unittest.TestCase):
+    def test_load_runs_with_stage_observability_from_stats_unittest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            test_load_runs_with_stage_observability_from_stats(Path(tmp_dir))
+
+    def test_load_runs_fallback_stage_metrics_from_stage_records_unittest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            test_load_runs_fallback_stage_metrics_from_stage_records(Path(tmp_dir))

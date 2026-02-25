@@ -1,17 +1,17 @@
 ﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.3.1`
+- 项目版本：`0.3.2`
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
 
-### v0.3.1 更新要点
-- LLM 调用策略改为全量模式：新抓取数据在过滤、结构化提取阶段默认全量走 LLM。
-- 终端日志增强：新增 `full_llm=on` 标识，以及 LLM 降级/恢复/回退路径提示（如 `llm fallback(filter/job/summary)`）。
-- 终端中文显示优化：提升 Windows 终端 UTF-8 兼容性，减少抓取/日志中的乱码显示问题。
-- filter 提示词与输入字段精简：降低 token 开销，提升筛选速度。
-- 邮件通知升级为 HTML 办公风模板（无圆角、表格化排版），并小幅下调字号，提升阅读舒适度与客户端兼容性。
+### v0.3.2 更新要点
+- 新增可观测性面板：最近运行记录支持展示阶段总耗时、平均耗时、失败阶段数、慢阶段 Top、错误码分布。
+- 运行统计增强：`data/runs/*.json` 的 `stats` 新增阶段耗时与错误码聚合字段，便于回放与排障。
+- `/api/runs` 输出增强：统一提供 `stage_total_ms`、`stage_avg_ms`、`stage_failed_count`、`slow_stages`、`error_codes` 字段，并兼容历史快照回退解析。
+- LLM 调用策略维持全量模式，并保留降级/恢复日志，便于观察 LLM 可用性波动。
+- 邮件通知维持 HTML 办公风模板（无圆角、表格化排版）并保持中文显示兼容优化。
 
 
 ## 执行目录与路径约定
@@ -576,6 +576,7 @@ node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 - 线索列表检索
 - 岗位/摘要/正文详情联动查看
 - 最近运行记录
+- 可观测性统计（阶段耗时、慢阶段、错误码）
 - 30 秒自动刷新汇总
 
 后端 API。
@@ -583,6 +584,7 @@ node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 - `GET /api/summary`
 - `GET /api/leads?limit=200&q=关键词`
 - `GET /api/runs?limit=20`
+- `GET /api/runs` 关键字段：`stage_total_ms`、`stage_avg_ms`、`stage_failed_count`、`slow_stages`、`error_codes`
 
 ## 常见问题
 ### 1. 无法登录小红书
@@ -652,6 +654,7 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
+| v0.3.2 | 2026-02-25 | 新增可观测性面板：最近运行展示阶段总耗时/平均耗时/失败阶段数/慢阶段 Top/错误码分布；`/api/runs` 与 run stats 增加阶段观测字段并兼容历史快照解析。 |
 | v0.3.1 | 2026-02-25 | 版本升级；LLM 过滤/结构化提取改为全量调用；终端新增降级/恢复与回退日志（full_llm/fallback）；Windows 终端中文显示优化；filter 提示词与输入字段精简提速；邮件升级为 HTML 办公风模板（无圆角、表格化）并微调字号。 |
 | v0.3.0 | 2026-02-25 | 批次摘要链路改造；新增简历解析（前端上传）、双模型配置（解析/套磁）；通知新增机会点与个性化快速套磁 |
 | v0.2.0 | 2026-02-25 | Dashboard 框架化（auto/fastapi/legacy 引擎切换）；前端拆分多页面（总览/控制中心/线索中心/摘要中心）；线索接口与页面支持分页；控制台功能接入页面。 |

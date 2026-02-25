@@ -732,15 +732,83 @@ class DataBackend:
                 payload = json.loads(file.read_text(encoding="utf-8"))
             except Exception:
                 continue
+            stats = payload.get("stats")
+            if not isinstance(stats, dict):
+                stats = {}
+            stage_records = payload.get("stage_records")
+            if not isinstance(stage_records, list):
+                stage_records = []
+
+            slow_stages = stats.get("stage_top_slow")
+            if not isinstance(slow_stages, list):
+                normalized_stages: list[dict[str, Any]] = []
+                for item in stage_records:
+                    if not isinstance(item, dict):
+                        continue
+                    normalized_stages.append(
+                        {
+                            "name": str(item.get("name") or ""),
+                            "duration_ms": self._to_int(item.get("duration_ms")),
+                            "status": str(item.get("status") or ""),
+                        }
+                    )
+                slow_stages = sorted(normalized_stages, key=lambda x: self._to_int(x.get("duration_ms")), reverse=True)[:3]
+
+            stage_total_ms = self._to_int(stats.get("stage_total_ms"))
+            if stage_total_ms <= 0 and stage_records:
+                stage_total_ms = sum(self._to_int(item.get("duration_ms")) for item in stage_records if isinstance(item, dict))
+
+            stage_avg_ms = self._to_int(stats.get("stage_avg_ms"))
+            if stage_avg_ms <= 0 and stage_records:
+                stage_avg_ms = int(stage_total_ms / max(1, len(stage_records)))
+
+            stage_failed_count = self._to_int(stats.get("stage_failed_count"))
+            if stage_failed_count <= 0 and stage_records:
+                stage_failed_count = sum(
+                    1
+                    for item in stage_records
+                    if isinstance(item, dict) and str(item.get("status") or "").strip().lower() == "failed"
+                )
+
+            llm_error_codes = stats.get("llm_error_codes")
+            if not isinstance(llm_error_codes, dict):
+                llm_error_codes = {}
+            stage_error_codes = stats.get("stage_error_codes")
+            if not isinstance(stage_error_codes, dict):
+                stage_error_codes = {}
+                for item in stage_records:
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("status") or "").strip().lower() != "failed":
+                        continue
+                    code = str(item.get("error_code") or "").strip().lower() or "stage_failed"
+                    stage_error_codes[code] = self._to_int(stage_error_codes.get(code)) + 1
+
+            merged_error_codes: dict[str, int] = {}
+            for source in (llm_error_codes, stage_error_codes):
+                for key, value in source.items():
+                    code = str(key or "").strip().lower()
+                    if not code:
+                        continue
+                    merged_error_codes[code] = self._to_int(merged_error_codes.get(code)) + self._to_int(value)
+
             out.append(
                 {
                     "run_id": str(payload.get("run_id") or file.stem),
                     "recorded_at": str(payload.get("recorded_at") or ""),
-                    "fetched": self._to_int(payload.get("fetched")),
-                    "target_notes": self._to_int(payload.get("target_notes")),
-                    "jobs": self._to_int(payload.get("jobs")),
-                    "send_logs": self._to_int(payload.get("send_logs")),
-                    "digest_sent": bool(payload.get("digest_sent")),
+                    "mode": str(payload.get("mode") or stats.get("mode") or ""),
+                    "notification_mode": str(payload.get("notification_mode") or stats.get("notification_mode") or ""),
+                    "fetched": self._to_int(stats.get("fetched") if stats else payload.get("fetched")),
+                    "target_notes": self._to_int(stats.get("target_notes") if stats else payload.get("target_notes")),
+                    "jobs": self._to_int(stats.get("jobs") if stats else payload.get("jobs")),
+                    "send_logs": self._to_int(stats.get("send_logs") if stats else payload.get("send_logs")),
+                    "digest_sent": bool(stats.get("digest_sent") if stats else payload.get("digest_sent")),
+                    "llm_fail": self._to_int(stats.get("llm_fail")),
+                    "stage_total_ms": stage_total_ms,
+                    "stage_avg_ms": stage_avg_ms,
+                    "stage_failed_count": stage_failed_count,
+                    "slow_stages": slow_stages,
+                    "error_codes": merged_error_codes,
                 }
             )
         return out

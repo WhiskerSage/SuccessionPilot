@@ -21,6 +21,7 @@ class LLMClient:
         self._cooldown_seconds = max(30, int(getattr(settings.llm, "cooldown_seconds", 120)))
         self._degraded_active = False
         self._last_error_code = ""
+        self._error_counts: dict[str, int] = {}
 
     def is_enabled(self) -> bool:
         return self.settings.llm.enabled
@@ -44,6 +45,12 @@ class LLMClient:
 
     def last_error_code(self) -> str:
         return self._last_error_code
+
+    def error_counts(self) -> dict[str, int]:
+        return dict(self._error_counts)
+
+    def clear_error_counts(self) -> None:
+        self._error_counts = {}
 
     def chat_json(self, system_prompt: str, user_prompt: str, model: str | None = None) -> dict[str, Any] | None:
         text = self.chat_text(system_prompt=system_prompt, user_prompt=user_prompt, model=model)
@@ -218,6 +225,8 @@ class LLMClient:
     def _mark_failure(self, code: str = "unknown_error") -> None:
         self._consecutive_failures += 1
         self._last_error_code = code
+        key = str(code or "unknown_error").strip() or "unknown_error"
+        self._error_counts[key] = int(self._error_counts.get(key, 0)) + 1
         if self._consecutive_failures >= self._failure_threshold:
             self._disabled_until = time.monotonic() + self._cooldown_seconds
             self.logger.warning(

@@ -157,6 +157,19 @@
     return n.toLocaleString("zh-CN");
   }
 
+  function fmtMs(value) {
+    const ms = Math.max(0, toInt(value, 0));
+    if (!ms) return "-";
+    if (ms < 1000) return `${ms}ms`;
+    const seconds = ms / 1000;
+    if (seconds < 10) return `${seconds.toFixed(1)}s`;
+    if (seconds < 60) return `${Math.round(seconds)}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remain = Math.round(seconds % 60);
+    if (!remain) return `${minutes}m`;
+    return `${minutes}m${String(remain).padStart(2, "0")}s`;
+  }
+
   function statusBadge(status, likeCount, commentCount) {
     const score = Number(likeCount || 0) + Number(commentCount || 0) * 2;
     let cls = "";
@@ -269,6 +282,26 @@
       dom.runList.innerHTML = "<li>暂无运行记录</li>";
       return;
     }
+    const normalizeSlowStages = (value) => {
+      if (!Array.isArray(value)) return [];
+      return value
+        .filter((item) => item && typeof item === "object")
+        .map((item) => ({
+          name: toText(item.name, "unknown"),
+          durationMs: Math.max(0, toInt(item.duration_ms, 0)),
+        }))
+        .filter((item) => item.durationMs > 0);
+    };
+    const normalizeErrorCodes = (value) => {
+      if (!value || typeof value !== "object") return [];
+      return Object.entries(value)
+        .map(([k, v]) => ({
+          code: String(k || "").trim().toLowerCase(),
+          count: Math.max(0, toInt(v, 0)),
+        }))
+        .filter((item) => item.code && item.count > 0)
+        .sort((a, b) => b.count - a.count);
+    };
     dom.runList.innerHTML = state.runItems
       .map((item) => {
         const runId = toText(item.run_id);
@@ -277,7 +310,42 @@
         const jobs = fmtInt(item.jobs);
         const sent = fmtInt(item.send_logs);
         const digest = item.digest_sent ? "摘要已发" : "摘要未发";
-        return `<li><strong>${escapeHtml(runId)}</strong> · ${escapeHtml(t)} · 抓取 ${fetched} / 岗位 ${jobs} / 发送 ${sent} · ${digest}</li>`;
+        const digestCls = item.digest_sent ? "ok" : "warn";
+        const mode = toText(item.mode);
+        const notifyMode = toText(item.notification_mode);
+        const stageTotal = fmtMs(item.stage_total_ms);
+        const stageAvg = fmtMs(item.stage_avg_ms);
+        const stageFailed = Math.max(0, toInt(item.stage_failed_count, 0));
+        const slowStages = normalizeSlowStages(item.slow_stages).slice(0, 3);
+        const slowStageText = slowStages.length
+          ? slowStages.map((s) => `${s.name} ${fmtMs(s.durationMs)}`).join(" · ")
+          : "暂无";
+        const errorCodes = normalizeErrorCodes(item.error_codes);
+        const errorHtml = errorCodes.length
+          ? errorCodes
+              .slice(0, 4)
+              .map((entry) => `<span class="run-code">${escapeHtml(entry.code)} × ${fmtInt(entry.count)}</span>`)
+              .join("")
+          : '<span class="run-code empty">无</span>';
+        const remainErrors = errorCodes.length > 4 ? `<span class="run-code">+${errorCodes.length - 4}</span>` : "";
+        return `
+          <li class="run-item">
+            <div class="run-head">
+              <strong>${escapeHtml(runId)}</strong>
+              <span>${escapeHtml(t)}</span>
+            </div>
+            <div class="run-meta">
+              <span>抓取 ${fetched}</span>
+              <span>岗位 ${jobs}</span>
+              <span>发送 ${sent}</span>
+              <span class="run-chip">${escapeHtml(mode)} / ${escapeHtml(notifyMode)}</span>
+              <span class="run-chip ${digestCls}">${digest}</span>
+            </div>
+            <div class="run-stage">阶段耗时：总计 ${escapeHtml(stageTotal)} · 平均 ${escapeHtml(stageAvg)} · 失败 ${fmtInt(stageFailed)}</div>
+            <div class="run-stage">慢阶段：${escapeHtml(slowStageText)}</div>
+            <div class="run-codes"><span class="run-label">错误码：</span>${errorHtml}${remainErrors}</div>
+          </li>
+        `;
       })
       .join("");
   }

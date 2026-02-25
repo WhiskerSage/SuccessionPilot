@@ -16,6 +16,7 @@ class StageRecord:
     ended_at: str
     duration_ms: int
     meta: dict = field(default_factory=dict)
+    error_code: str = ""
     error: str = ""
 
 
@@ -60,6 +61,7 @@ class RuntimeOrchestrator:
                     ended_at=ended,
                     duration_ms=duration_ms,
                     meta=meta,
+                    error_code=self._classify_error_code(exc),
                     error=str(exc),
                 )
             )
@@ -74,7 +76,21 @@ class RuntimeOrchestrator:
                 "ended_at": stage.ended_at,
                 "duration_ms": stage.duration_ms,
                 "meta": stage.meta,
+                "error_code": stage.error_code,
                 "error": stage.error,
             }
             for stage in self._stages
         ]
+
+    @staticmethod
+    def _classify_error_code(exc: Exception) -> str:
+        text = str(exc or "").lower()
+        if "timeout" in text:
+            return "timeout"
+        if "not logged in" in text or "login failed" in text:
+            return "auth_failed"
+        if "json" in text and "output" in text:
+            return "invalid_output"
+        if "network" in text or "connection" in text:
+            return "network_error"
+        return (exc.__class__.__name__ or "stage_error").lower()

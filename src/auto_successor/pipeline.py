@@ -71,6 +71,7 @@ class AutoSuccessorPipeline:
             self.logger.info("run %s started, keyword=%s mode=%s notify=%s", run_id, keyword, mode, notification_mode)
             self._log_progress(run_id, 5, "pipeline started")
             self.llm_enricher.reset_stats()
+            self.llm_client.clear_error_counts()
 
             resume_text = orchestrator.run_stage(
                 "resume.load_text",
@@ -280,6 +281,11 @@ class AutoSuccessorPipeline:
             orchestrator.run_stage("state.persist", _persist_state, meta={"marked_count": len(new_notes)})
             self._log_progress(run_id, 100, "run completed")
 
+            stage_records = orchestrator.stage_records()
+            stage_timing = self._summarize_stage_timing(stage_records)
+            stage_error_codes = self._collect_stage_error_codes(stage_records)
+            llm_error_codes = self.llm_client.error_counts()
+
             stats = {
                 "runtime_name": self.settings.agent.runtime_name,
                 "mode": mode,
@@ -293,12 +299,19 @@ class AutoSuccessorPipeline:
                 "opportunities": len(opportunity_post_ids),
                 "summaries": len(jobs),
                 "send_logs": len(send_logs),
-                "stages": len(orchestrator.stage_records()),
+                "stages": len(stage_records),
+                "stage_total_ms": stage_timing["total_ms"],
+                "stage_avg_ms": stage_timing["avg_ms"],
+                "stage_failed_count": stage_timing["failed_count"],
+                "stage_slowest": stage_timing["slowest"],
+                "stage_top_slow": stage_timing["top_slow"],
                 "llm_enabled": self.llm_client.is_enabled(),
                 "llm_available": self.llm_client.is_available(),
                 "llm_calls": self.llm_enricher.calls,
                 "llm_success": self.llm_enricher.success,
                 "llm_fail": self.llm_enricher.fail,
+                "llm_error_codes": llm_error_codes,
+                "stage_error_codes": stage_error_codes,
                 "job_parse_rule": job_parse_rule,
                 "job_parse_llm": job_parse_llm,
                 "job_parse_details_count": len(parse_details),
@@ -336,7 +349,7 @@ class AutoSuccessorPipeline:
                         "details_count": len(parse_details),
                         "details": parse_details,
                     },
-                    "stage_records": orchestrator.stage_records(),
+                    "stage_records": stage_records,
                 },
             )
             self.logger.info("run %s finished: %s", run_id, stats)
@@ -688,3 +701,52 @@ class AutoSuccessorPipeline:
         if dt.tzinfo is None:
             return dt.replace(tzinfo=timezone.utc)
         return dt
+
+    @staticmethod
+    def _summarize_stage_timing(stage_records: list[dict[str, Any]]) -> dict[str, Any]:
+        normalized: list[dict[str, Any]] = []
+        failed_count = 0
+        total_ms = 0
+
+        for item in stage_records or []:
+            name = str(item.get("name") or "").strip()
+            status = str(item.get("status") or "").strip().lower()
+            try:
+                duration_ms = int(item.get("duration_ms") or 0)
+            except Exception:
+                duration_ms = 0
+            duration_ms = max(0, duration_ms)
+            total_ms += duration_ms
+            if status == "failed":
+                failed_count += 1
+            normalized.append(
+                {
+                    "name": name,
+                    "duration_ms": duration_ms,
+                    "status": status or "success",
+                }
+            )
+
+        count = len(normalized)
+        avg_ms = int(total_ms / count) if count > 0 else 0
+        top = sorted(normalized, key=lambda x: int(x.get("duration_ms") or 0), reverse=True)[:3]
+        slowest = top[0] if top else {"name": "", "duration_ms": 0, "status": ""}
+
+        return {
+            "total_ms": total_ms,
+            "avg_ms": avg_ms,
+            "failed_count": failed_count,
+            "slowest": slowest,
+            "top_slow": top,
+        }
+
+    @staticmethod
+    def _collect_stage_error_codes(stage_records: list[dict[str, Any]]) -> dict[str, int]:
+        counters: dict[str, int] = {}
+        for item in stage_records or []:
+            status = str(item.get("status") or "").strip().lower()
+            if status != "failed":
+                continue
+            code = str(item.get("error_code") or "").strip().lower() or "stage_failed"
+            counters[code] = int(counters.get(code, 0)) + 1
+        return counters
