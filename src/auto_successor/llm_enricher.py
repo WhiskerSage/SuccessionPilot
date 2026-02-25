@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import re
 
 from .agent_memory import AgentMemoryLoader
@@ -52,6 +53,8 @@ HARD_NEGATIVE_TOKENS = [
     "政坛",
     "选举",
 ]
+
+BROKER_TOKENS = ["中介", "代投", "内推收费", "保证入职", "保offer", "付费推荐", "代理"]
 
 
 @dataclass
@@ -140,7 +143,6 @@ class LLMEnricher:
             )
 
         if strict_filter:
-            # Strict mode: avoid false positive when only one side is confident.
             is_target = llm_target and llm_score >= threshold and (rule_decision.is_target or rule_decision.score >= 0.45)
             score = max(llm_score, rule_decision.score) if is_target else min(llm_score, rule_decision.score)
             return FilterDecision(is_target=is_target, score=score, reason=reason, source="hybrid")
@@ -151,25 +153,37 @@ class LLMEnricher:
         is_target = score >= threshold and (llm_target or rule_decision.is_target)
         return FilterDecision(is_target=is_target, score=score, reason=reason, source="hybrid")
 
-    def enrich_job(self, note: NoteRecord, current: JobRecord) -> JobRecord:
+    def enrich_job(self, note: NoteRecord, current: JobRecord, resume_text: str, mode: str) -> JobRecord:
         cfg = self.settings.llm
+        current.mode = (mode or "auto").strip().lower() or "auto"
+        current.parse_source = "rule"
+        current.author = note.author
+        current.arrival_time = current.arrival_time or extract_arrival_info(note.detail_text or "")[:120]
+        current.application_method = current.application_method or extract_apply_info(note.detail_text or "")[:180]
+        current.risk_line = current.risk_line or self._infer_risk_line(note)
+        current.match_score = self._fallback_match_score(note, resume_text)
+        current.match_reason = current.match_reason or "rule fallback"
+
         if not (cfg.enabled and cfg.enabled_for_jobs and self.client.is_available()):
             return current
 
         system_prompt = (
-            "你是岗位信息结构化助手。"
-            "请从输入帖子信息中抽取岗位字段，输出严格 JSON，不要 markdown。"
-            "字段: company, position, location, requirements。"
-            "缺失时填'未知'。requirements 最多两条，用中文分号拼接。"
+            "你是岗位结构化提取助手。"
+            "基于帖子与简历文本，输出严格 JSON（英文字段名，不要 markdown）。"
+            "字段: company, position, publish_time, location, requirements, arrival_time, application_method, author, risk_line, match_score, match_reason, link, post_id, mode。"
+            "其中 risk_line 只能是 low|medium|high，并按正文判断是否可能是中介广告。"
+            "match_score 范围 0-100。"
         )
         system_prompt = self._with_memory(system_prompt)
         user_prompt = (
+            f"resume_text: {resume_text}\n"
             f"title: {note.title}\n"
             f"author: {note.author}\n"
-            f"publish_time: {note.publish_time_text}\n"
+            f"publish_time: {note.publish_time.isoformat()}\n"
             f"detail_text: {note.detail_text}\n"
             f"comments_preview: {note.comments_preview}\n"
             f"url: {note.url}\n"
+            f"mode: {mode}\n"
         )
         self.calls += 1
         obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt)
@@ -178,23 +192,283 @@ class LLMEnricher:
             return current
 
         try:
-            company = str(obj.get("company") or current.company).strip() or current.company
-            position = str(obj.get("position") or current.position).strip() or current.position
-            location = str(obj.get("location") or current.location).strip() or current.location
-            requirements_raw = obj.get("requirements")
-            if isinstance(requirements_raw, list):
-                requirements = "；".join(self._clean_line(str(item)) for item in requirements_raw if str(item).strip())
-            else:
-                requirements = str(requirements_raw or current.requirements).strip() or current.requirements
+            current.company = self._pick_text(obj, "company", current.company, 60)
+            current.position = self._pick_text(obj, "position", current.position, 80)
+            current.location = self._pick_text(obj, "location", current.location, 40)
+            current.requirements = self._pick_text(obj, "requirements", current.requirements, 380)
+            current.arrival_time = self._pick_text(obj, "arrival_time", current.arrival_time, 120)
+            current.application_method = self._pick_text(obj, "application_method", current.application_method, 180)
+            current.author = self._pick_text(obj, "author", current.author, 80)
+            risk_line = self._pick_text(obj, "risk_line", current.risk_line, 20).lower()
+            if risk_line not in {"low", "medium", "high"}:
+                risk_line = self._infer_risk_line(note)
+            current.risk_line = risk_line
+            current.match_score = self._clamp_score_100(obj.get("match_score"), default=current.match_score)
+            current.match_reason = self._pick_text(obj, "match_reason", current.match_reason, 220)
+            current.link = self._pick_text(obj, "link", current.link or note.url, 600)
+            current.post_id = self._pick_text(obj, "post_id", current.post_id or note.note_id, 120)
+            current.mode = self._pick_text(obj, "mode", current.mode or mode, 20)
+            current.parse_source = "llm"
             self.success += 1
-            current.company = self._clean_line(company)[:60] or "未知"
-            current.position = self._clean_line(position)[:80] or "未知"
-            current.location = self._clean_line(location)[:40] or "未知"
-            current.requirements = self._clean_line(requirements)[:180] or "未提取到明确要求"
         except Exception:
             self.fail += 1
         return current
 
+    def summarize_push_batch(self, *, run_id: str, mode: str, jobs: list[JobRecord], resume_text: str) -> dict:
+        if not jobs:
+            return {
+                "headline": f"run {run_id}: no new target jobs",
+                "overview": "本轮没有可推送的目标岗位。",
+            }
+
+        cfg = self.settings.llm
+        fallback = self._fallback_batch_summary(run_id=run_id, mode=mode, jobs=jobs)
+        if not (cfg.enabled and cfg.enabled_for_summary and self.client.is_available()):
+            return fallback
+
+        system_prompt = (
+            "你是岗位批次摘要助手。"
+            "基于岗位结构化信息与简历文本，输出严格 JSON（英文字段名）。"
+            "字段: headline, overview。"
+            "overview 控制在 120-220 中文字符，突出本轮机会点与风险。"
+        )
+        compact_jobs = [
+            {
+                "company": item.company,
+                "position": item.position,
+                "location": item.location,
+                "requirements": item.requirements[:240],
+                "arrival_time": item.arrival_time,
+                "application_method": item.application_method,
+                "risk_line": item.risk_line,
+                "match_score": round(item.match_score, 2),
+                "post_id": item.post_id,
+                "opportunity_point": bool(item.opportunity_point),
+            }
+            for item in jobs
+        ]
+        user_prompt = (
+            f"run_id: {run_id}\n"
+            f"mode: {mode}\n"
+            f"resume_text: {resume_text}\n"
+            f"jobs_json: {json.dumps(compact_jobs, ensure_ascii=False)}\n"
+        )
+
+        self.calls += 1
+        obj = self.client.chat_json(system_prompt=self._with_memory(system_prompt), user_prompt=user_prompt)
+        if not obj:
+            self.fail += 1
+            return fallback
+
+        try:
+            headline = self._pick_text(obj, "headline", fallback["headline"], 140)
+            overview = self._pick_text(obj, "overview", fallback["overview"], 420)
+            self.success += 1
+            return {"headline": headline, "overview": overview}
+        except Exception:
+            self.fail += 1
+            return fallback
+
+    def build_outreach_message(self, job: JobRecord, resume_text: str) -> str:
+        system_prompt = self._with_memory(
+            "你是一名求职邮件撰写助手。"
+            "请根据候选人简历与岗位信息，生成一封简短、专业、真诚的中文套磁邮件。"
+            "必须遵守："
+            "1) 输出为邮件格式（含主题和正文）；"
+            "2) 正文先自我介绍：姓名、院校、专业、毕业年份（若缺失可写“信息未提供”）；"
+            "3) 默认可立即到岗（除非简历明确给出其他时间）；"
+            "4) 说明2-3条与岗位匹配点；"
+            "5) 不得出现“匹配度XX分/评分/打分/算法”等表述；"
+            "6) 语气礼貌，长度约100-140字；"
+            "7) 仅输出邮件文本，不要Markdown，不要解释。"
+        )
+
+        user_prompt = (
+            f"岗位信息：\n"
+            f"- Company: {job.company}\n"
+            f"- Position: {job.position}\n"
+            f"- Location: {job.location}\n"
+            f"- Requirements: {job.requirements}\n"
+            f"- arrival_time: {job.arrival_time}\n"
+            f"- application_method: {job.application_method}\n"
+            f"- Link: {job.link}\n\n"
+            f"候选人简历原文：\n{resume_text}\n\n"
+            "请按要求生成邮件。"
+        )
+
+        try:
+            text = self.client.chat_text(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.4,
+                max_tokens=260,
+            )
+            cleaned = self._clean_line(text or "").replace("\\n", "\n").strip()
+            if cleaned:
+                return cleaned[:800]
+
+            retry_prompt = (
+                f"请直接输出中文邮件正文（含主题和称呼），不要解释。\n"
+                f"岗位：{job.company}-{job.position}，地点：{job.location}。\n"
+                f"岗位要求：{job.requirements}\n"
+                f"候选人简历：{resume_text[:2200]}"
+            )
+            text_retry = self.client.chat_text(
+                system_prompt="你是求职套磁文案助手，输出精炼中文邮件。",
+                user_prompt=retry_prompt,
+                temperature=0.3,
+                max_tokens=260,
+            )
+            cleaned_retry = self._clean_line(text_retry or "").replace("\\n", "\n").strip()
+            if cleaned_retry:
+                return cleaned_retry[:800]
+
+            self.logger.warning("outreach llm returned empty content, fallback used for post=%s", job.post_id)
+            return self._fallback_outreach_message(job)
+        except Exception as exc:
+            self.logger.warning("outreach llm failed for post=%s: %s", job.post_id, exc)
+            return self._fallback_outreach_message(job)
+
+    def _rule_classify(self, note: NoteRecord) -> FilterDecision:
+        text = self._note_text(note)
+        threshold = self._clamp_score(getattr(self.settings.llm, "filter_threshold", 0.62))
+
+        target_hits = [token for token in TARGET_TOKENS if token in text]
+        job_hits = [token for token in JOB_CONTEXT_TOKENS if token in text]
+        negative_hits = [token for token in NEGATIVE_TOKENS if token in text]
+        hard_negative_hits = [token for token in HARD_NEGATIVE_TOKENS if token in text]
+
+        score = 0.18
+        score += min(len(target_hits), 2) * 0.22
+        score += min(len(job_hits), 3) * 0.13
+        score -= min(len(negative_hits), 2) * 0.17
+        score -= min(len(hard_negative_hits), 2) * 0.25
+        if note.comment_count >= 20:
+            score += 0.06
+        if note.like_count >= 50:
+            score += 0.04
+        score = self._clamp_score(score)
+
+        has_core_intent = bool(target_hits)
+        has_job_intent = bool(job_hits)
+        has_hard_negative = bool(hard_negative_hits)
+
+        is_target = has_core_intent and score >= threshold and (has_job_intent or not has_hard_negative)
+        if has_hard_negative and not has_job_intent:
+            is_target = False
+            score = min(score, 0.35)
+
+        reason_parts = []
+        if target_hits:
+            reason_parts.append(f"target={','.join(target_hits[:3])}")
+        if job_hits:
+            reason_parts.append(f"job={','.join(job_hits[:3])}")
+        if hard_negative_hits:
+            reason_parts.append(f"hard_neg={','.join(hard_negative_hits[:2])}")
+        elif negative_hits:
+            reason_parts.append(f"neg={','.join(negative_hits[:2])}")
+        reason = " | ".join(reason_parts) if reason_parts else "rule_only"
+        return FilterDecision(is_target=is_target, score=score, reason=reason, source="rule")
+
+    @staticmethod
+    def _note_text(note: NoteRecord) -> str:
+        return "\n".join(
+            [
+                note.title or "",
+                note.detail_text or "",
+                note.comments_preview or "",
+            ]
+        ).lower()
+
+    @staticmethod
+    def _to_bool(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        text = str(value or "").strip().lower()
+        return text in {"1", "true", "yes", "y", "是", "对"}
+
+    @staticmethod
+    def _clamp_score(value) -> float:
+        try:
+            score = float(value)
+        except Exception:
+            score = 0.0
+        return max(0.0, min(1.0, score))
+
+    @staticmethod
+    def _clamp_score_100(value, default: float = 0.0) -> float:
+        try:
+            score = float(value)
+        except Exception:
+            score = float(default or 0.0)
+        return max(0.0, min(100.0, score))
+
+    @staticmethod
+    def _clean_line(text: str) -> str:
+        return re.sub(r"\s+", " ", text or "").strip()
+
+    def _with_memory(self, system_prompt: str) -> str:
+        if not self.system_prefix:
+            return system_prompt
+        return f"{self.system_prefix}\n\n[Current Task]\n{system_prompt}"
+
+    def _pick_text(self, obj: dict, key: str, default: str, max_len: int) -> str:
+        text = self._clean_line(str(obj.get(key) or default or ""))
+        if not text:
+            text = self._clean_line(str(default or ""))
+        return text[:max_len]
+
+    def _infer_risk_line(self, note: NoteRecord) -> str:
+        text = self._note_text(note)
+        broker_hits = sum(1 for token in BROKER_TOKENS if token in text)
+        if broker_hits >= 2:
+            return "high"
+        if broker_hits == 1:
+            return "medium"
+        return "low"
+
+    def _fallback_match_score(self, note: NoteRecord, resume_text: str) -> float:
+        if not resume_text.strip():
+            return 50.0
+        note_text = self._note_text(note)
+        resume_tokens = [token for token in self._tokenize(resume_text) if len(token) >= 2]
+        if not resume_tokens:
+            return 50.0
+        hit = sum(1 for token in resume_tokens[:80] if token in note_text)
+        ratio = hit / max(6, min(len(resume_tokens), 80))
+        return round(max(0.0, min(100.0, ratio * 160)), 2)
+
+    @staticmethod
+    def _tokenize(text: str) -> list[str]:
+        clean = re.sub(r"[^\w\u4e00-\u9fff]+", " ", (text or "").lower())
+        return [item.strip() for item in clean.split() if item.strip()]
+
+    def _fallback_batch_summary(self, *, run_id: str, mode: str, jobs: list[JobRecord]) -> dict:
+        opp_count = sum(1 for item in jobs if item.opportunity_point)
+        max_score = max((float(item.match_score or 0.0) for item in jobs), default=0.0)
+        if max_score <= 0:
+            opportunity_desc = "未发现明显机会点"
+        else:
+            top = [item for item in sorted(jobs, key=lambda item: item.match_score, reverse=True) if float(item.match_score or 0.0) > 0][:3]
+            top_text = "；".join(f"{item.company}-{item.position}" for item in top) or "未发现明显机会点"
+            opportunity_desc = f"机会点关注：{top_text}"
+        return {
+            "headline": f"SuccessionPilot batch summary | run={run_id} | jobs={len(jobs)} | opp={opp_count}",
+            "overview": f"本轮模式 {mode}，共识别 {len(jobs)} 个岗位，机会点 {opp_count} 个。{opportunity_desc}。",
+        }
+
+    def _fallback_outreach_message(self, job: JobRecord) -> str:
+        return (
+            f"主题：应聘{job.company}-{job.position}\n"
+            "您好，\n"
+            "我叫张三，XX大学XX专业，预计202X年毕业，可立即到岗。"
+            "我在相关项目中积累了与岗位相关的实践经验，具备数据分析与协同执行能力，"
+            "期待有机会进一步沟通。感谢您的时间！"
+        )[:800]
+
+    # backward compatibility for legacy callers/tests
     def enrich_summary(self, note: NoteRecord, current: SummaryRecord, mode: str = "auto") -> SummaryRecord:
         cfg = self.settings.llm
         if not (cfg.enabled and cfg.enabled_for_summary and self.client.is_available()):
@@ -281,83 +555,6 @@ class LLMEnricher:
         except Exception:
             self.fail += 1
         return current
-
-    def _rule_classify(self, note: NoteRecord) -> FilterDecision:
-        text = self._note_text(note)
-        threshold = self._clamp_score(getattr(self.settings.llm, "filter_threshold", 0.62))
-
-        target_hits = [token for token in TARGET_TOKENS if token in text]
-        job_hits = [token for token in JOB_CONTEXT_TOKENS if token in text]
-        negative_hits = [token for token in NEGATIVE_TOKENS if token in text]
-        hard_negative_hits = [token for token in HARD_NEGATIVE_TOKENS if token in text]
-
-        score = 0.18
-        score += min(len(target_hits), 2) * 0.22
-        score += min(len(job_hits), 3) * 0.13
-        score -= min(len(negative_hits), 2) * 0.17
-        score -= min(len(hard_negative_hits), 2) * 0.25
-        if note.comment_count >= 20:
-            score += 0.06
-        if note.like_count >= 50:
-            score += 0.04
-        score = self._clamp_score(score)
-
-        has_core_intent = bool(target_hits)
-        has_job_intent = bool(job_hits)
-        has_hard_negative = bool(hard_negative_hits)
-
-        is_target = has_core_intent and score >= threshold and (has_job_intent or not has_hard_negative)
-        if has_hard_negative and not has_job_intent:
-            is_target = False
-            score = min(score, 0.35)
-
-        reason_parts = []
-        if target_hits:
-            reason_parts.append(f"target={','.join(target_hits[:3])}")
-        if job_hits:
-            reason_parts.append(f"job={','.join(job_hits[:3])}")
-        if hard_negative_hits:
-            reason_parts.append(f"hard_neg={','.join(hard_negative_hits[:2])}")
-        elif negative_hits:
-            reason_parts.append(f"neg={','.join(negative_hits[:2])}")
-        reason = " | ".join(reason_parts) if reason_parts else "rule_only"
-        return FilterDecision(is_target=is_target, score=score, reason=reason, source="rule")
-
-    @staticmethod
-    def _note_text(note: NoteRecord) -> str:
-        return "\n".join(
-            [
-                note.title or "",
-                note.detail_text or "",
-                note.comments_preview or "",
-            ]
-        ).lower()
-
-    @staticmethod
-    def _to_bool(value) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return value != 0
-        text = str(value or "").strip().lower()
-        return text in {"1", "true", "yes", "y", "是", "对"}
-
-    @staticmethod
-    def _clamp_score(value) -> float:
-        try:
-            score = float(value)
-        except Exception:
-            score = 0.0
-        return max(0.0, min(1.0, score))
-
-    @staticmethod
-    def _clean_line(text: str) -> str:
-        return re.sub(r"\s+", " ", text or "").strip()
-
-    def _with_memory(self, system_prompt: str) -> str:
-        if not self.system_prefix:
-            return system_prompt
-        return f"{self.system_prefix}\n\n[Current Task]\n{system_prompt}"
 
     def _compose_standard_summary(
         self,

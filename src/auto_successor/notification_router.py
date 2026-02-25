@@ -33,7 +33,7 @@ class NotificationChannel:
             f"- 标题：{summary.title or '（无标题）'}",
             f"- 作者：{summary.author or '未知'}",
             f"- 发布时间：{publish}",
-            f"- 链接：{summary.url}",
+            f"- 原文：{summary.url}",
         ]
         if summary.risk_flags:
             lines.append(f"- 风险标签：{summary.risk_flags}")

@@ -80,7 +80,17 @@
     cfgLlmEnabled: document.getElementById("cfgLlmEnabled"),
     cfgLlmModel: document.getElementById("cfgLlmModel"),
     cfgLlmBaseUrl: document.getElementById("cfgLlmBaseUrl"),
+    resumeFileInput: document.getElementById("resumeFileInput"),
+    resumeParseBtn: document.getElementById("resumeParseBtn"),
+    resumeUploadBtn: document.getElementById("resumeUploadBtn"),
+    resumeSourcePath: document.getElementById("resumeSourcePath"),
+    resumeTextPath: document.getElementById("resumeTextPath"),
+    resumeTextArea: document.getElementById("resumeTextArea"),
+    resumeChars: document.getElementById("resumeChars"),
+    resumeSourceExists: document.getElementById("resumeSourceExists"),
   };
+
+  let selectedResumeFile = null;
 
   const SKINS = ["business-blue", "graphite-office"];
   const API_BASES = (() => {
@@ -201,6 +211,33 @@
         "Content-Type": "application/json",
       },
       body: JSON.stringify(payload || {}),
+    });
+  }
+
+  async function postForm(path, formData) {
+    return apiRequest(path, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+      },
+      body: formData,
+    });
+  }
+
+  function toBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result || "");
+        const commaIndex = result.indexOf(",");
+        if (commaIndex < 0) {
+          resolve(result);
+          return;
+        }
+        resolve(result.slice(commaIndex + 1));
+      };
+      reader.onerror = () => reject(reader.error || new Error("read file failed"));
+      reader.readAsDataURL(file);
     });
   }
 
@@ -508,6 +545,41 @@
     renderConfig((resp && resp.config) || {});
   }
 
+  function renderResume(resume) {
+    const data = resume || {};
+    if (dom.resumeSourcePath) dom.resumeSourcePath.value = String(data.source_txt_path || "");
+    if (dom.resumeTextPath) dom.resumeTextPath.value = String(data.resume_text_path || "");
+    if (dom.resumeChars) dom.resumeChars.textContent = fmtInt(data.resume_chars || 0);
+    if (dom.resumeSourceExists) dom.resumeSourceExists.textContent = data.source_exists ? "已存在" : "不存在";
+    if (dom.resumeTextArea) dom.resumeTextArea.value = String(data.resume_text || data.resume_preview || "");
+    if (dom.resumeParseBtn && !selectedResumeFile) {
+      dom.resumeParseBtn.classList.add("hidden");
+    }
+  }
+
+  async function loadResume() {
+    const data = await fetchJson("/api/resume");
+    renderResume(data || {});
+  }
+
+  async function parseResumeFile(file) {
+    if (!file) {
+      throw new Error("请选择文件");
+    }
+    const form = new FormData();
+    form.append("file", file, file.name || "resume.txt");
+    try {
+      return await postForm("/api/resume/parse", form);
+    } catch (_err) {
+      const base64 = await toBase64(file);
+      return postJson("/api/resume/parse", {
+        filename: String(file.name || "resume.txt"),
+        mime_type: String(file.type || ""),
+        content_base64: base64,
+      });
+    }
+  }
+
   async function invokeAction(action, payload = {}) {
     const data = await postJson("/api/action", { action, ...payload });
     if (data && data.runtime) {
@@ -565,7 +637,7 @@
     setLoadingTable("正在加载实时数据...");
 
     try {
-      await Promise.all([loadSummaryAndRuns(), loadRuntime(), loadConfig()]);
+      await Promise.all([loadSummaryAndRuns(), loadRuntime(), loadConfig(), loadResume()]);
       if (isWorkspaceView(state.view)) {
         await loadLeads();
       } else {
@@ -741,6 +813,42 @@
           renderConfig((data && data.config) || {});
           showToast((data && data.message) || "配置已保存", "success");
           await loadSummaryAndRuns();
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : String(err), "error");
+        }
+      });
+    }
+    if (dom.resumeFileInput) {
+      dom.resumeFileInput.addEventListener("change", () => {
+        selectedResumeFile = dom.resumeFileInput && dom.resumeFileInput.files ? dom.resumeFileInput.files[0] : null;
+        if (dom.resumeParseBtn) {
+          dom.resumeParseBtn.classList.toggle("hidden", !selectedResumeFile);
+        }
+      });
+    }
+    if (dom.resumeParseBtn) {
+      dom.resumeParseBtn.addEventListener("click", async () => {
+        try {
+          const data = await parseResumeFile(selectedResumeFile);
+          if (dom.resumeTextArea) {
+            dom.resumeTextArea.value = String((data && data.resume_text) || "");
+          }
+          if (dom.resumeChars) {
+            dom.resumeChars.textContent = fmtInt((data && data.resume_chars) || 0);
+          }
+          showToast("文件解析完成，已覆盖文本框", "success");
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : String(err), "error");
+        }
+      });
+    }
+    if (dom.resumeUploadBtn) {
+      dom.resumeUploadBtn.addEventListener("click", async () => {
+        try {
+          const text = String(dom.resumeTextArea ? dom.resumeTextArea.value : "");
+          const data = await postJson("/api/resume/text", { resume_text: text });
+          showToast((data && data.message) || "简历上传成功", "success");
+          await loadResume();
         } catch (err) {
           showToast(err instanceof Error ? err.message : String(err), "error");
         }

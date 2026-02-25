@@ -168,15 +168,8 @@ class TestNotificationFormat(unittest.TestCase):
             channel_names=["email"],
         )
 
-        self.assertTrue(result.sent)
-        self.assertNotIn("【运行信息】", result.body)
-        self.assertIn("【统计】", result.body)
-        self.assertIn("【附件】", result.body)
-        self.assertIn("- output.xlsx", result.body)
-        self.assertIn("- jobs.csv", result.body)
-        self.assertIn("【岗位详情】", result.body)
-        self.assertIn("摘要内容：", result.body)
-        self.assertIn("正文信息（详细）：第一段", result.body)
+        self.assertFalse(result.sent)
+        self.assertEqual(result.body, "legacy dispatch_digest disabled")
 
     def test_no_truncation_for_long_summary_text(self):
         sender = _CaptureSender()

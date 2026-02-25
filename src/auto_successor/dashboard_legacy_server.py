@@ -61,6 +61,10 @@ def make_handler(backend: DataBackend, web_dir: Path):
                     self._json(backend.load_runtime())
                     return
 
+                if path == "/api/resume":
+                    self._json(backend.load_resume_view())
+                    return
+
                 if path == "/api/config":
                     self._json({"config": backend.load_config_view()})
                     return
@@ -83,6 +87,34 @@ def make_handler(backend: DataBackend, web_dir: Path):
                 if path == "/api/config":
                     config = backend.save_config_view(payload)
                     self._json({"ok": True, "message": "配置已保存", "config": config})
+                    return
+                if path == "/api/resume/text":
+                    text = str(payload.get("resume_text") or "")
+                    self._json(backend.save_resume_text(text))
+                    return
+                if path == "/api/resume/upload":
+                    filename = str(payload.get("filename") or "resume.txt")
+                    mime_type = str(payload.get("mime_type") or "")
+                    content_base64 = str(payload.get("content_base64") or "")
+                    self._json(
+                        backend.upload_resume_base64(
+                            filename=filename,
+                            content_base64=content_base64,
+                            mime_type=mime_type,
+                        )
+                    )
+                    return
+                if path == "/api/resume/parse":
+                    filename = str(payload.get("filename") or "resume.txt")
+                    mime_type = str(payload.get("mime_type") or "")
+                    content_base64 = str(payload.get("content_base64") or "")
+                    self._json(
+                        backend.parse_resume_base64(
+                            filename=filename,
+                            content_base64=content_base64,
+                            mime_type=mime_type,
+                        )
+                    )
                     return
                 if path == "/api/action":
                     action = str(payload.get("action") or "").strip()

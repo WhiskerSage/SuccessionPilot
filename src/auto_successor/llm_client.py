@@ -47,7 +47,13 @@ class LLMClient:
             return None
         return None
 
-    def chat_text(self, system_prompt: str, user_prompt: str) -> str | None:
+    def chat_text(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str | None:
         if not self.is_available():
             return None
 
@@ -64,11 +70,12 @@ class LLMClient:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "temperature": cfg.temperature,
-            "max_tokens": cfg.max_tokens,
+            "temperature": cfg.temperature if temperature is None else float(temperature),
+            "max_tokens": cfg.max_tokens if max_tokens is None else int(max_tokens),
         }
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=cfg.timeout_seconds)
+            resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
             self.logger.warning("llm request failed: %s", exc)
@@ -81,6 +88,8 @@ class LLMClient:
             content = message.get("content")
             if isinstance(content, str):
                 return self._strip_code_fence(content)
+            if isinstance(message.get("reasoning_content"), str):
+                return self._strip_code_fence(message.get("reasoning_content") or "")
             if isinstance(content, list):
                 text_parts = []
                 for part in content:
@@ -90,6 +99,8 @@ class LLMClient:
                             text_parts.append(t)
                 if text_parts:
                     return self._strip_code_fence("\n".join(text_parts))
+            if isinstance(choices[0].get("text"), str):
+                return self._strip_code_fence(choices[0].get("text") or "")
 
         # Fallback for some providers.
         if isinstance(data, dict):

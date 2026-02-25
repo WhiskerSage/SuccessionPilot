@@ -58,14 +58,24 @@ JOB_HEADERS = [
     "run_id",
     "Company",
     "Position",
+    "publish_time",
     "Location",
     "Requirements",
+    "arrival_time",
+    "application_method",
+    "author",
+    "risk_line",
+    "match_score",
+    "match_reason",
     "Link",
     "PostID",
-    "publish_time",
+    "mode",
     "comment_count",
     "comments_preview",
+    "original_text",
     "source_title",
+    "opportunity_point",
+    "outreach_message",
 ]
 
 
@@ -233,14 +243,24 @@ class ExcelStore:
                 "run_id": job.run_id,
                 "Company": job.company,
                 "Position": job.position,
+                "publish_time": job.publish_time.isoformat(),
                 "Location": job.location,
                 "Requirements": job.requirements,
+                "arrival_time": job.arrival_time,
+                "application_method": job.application_method,
+                "author": job.author,
+                "risk_line": job.risk_line,
+                "match_score": round(job.match_score, 2),
+                "match_reason": job.match_reason,
                 "Link": job.link,
                 "PostID": job.post_id,
-                "publish_time": job.publish_time.isoformat(),
+                "mode": job.mode,
                 "comment_count": job.comment_count,
                 "comments_preview": job.comments_preview,
+                "original_text": job.original_text,
                 "source_title": job.source_title,
+                "opportunity_point": bool(job.opportunity_point),
+                "outreach_message": job.outreach_message,
             }
         rows = list(by_post.values())
         rows.sort(key=lambda x: str(x.get("publish_time") or ""), reverse=True)
@@ -262,15 +282,44 @@ class ExcelStore:
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["Company", "Position", "Location", "Requirements", "Link", "PostID"])
+            writer.writerow(
+                [
+                    "Company",
+                    "Position",
+                    "publish_time",
+                    "Location",
+                    "Requirements",
+                    "arrival_time",
+                    "application_method",
+                    "author",
+                    "risk_line",
+                    "match_score",
+                    "Link",
+                    "PostID",
+                    "mode",
+                    "opportunity_point",
+                    "original_text",
+                    "outreach_message",
+                ]
+            )
             for row in rows:
                 writer.writerow(
                     [
                         row.get("Company", ""),
                         row.get("Position", ""),
+                        row.get("publish_time", ""),
                         row.get("Location", ""),
                         row.get("Requirements", ""),
+                        row.get("arrival_time", ""),
+                        row.get("application_method", ""),
+                        row.get("author", ""),
+                        row.get("risk_line", ""),
+                        row.get("match_score", ""),
                         row.get("Link", ""),
                         row.get("PostID", ""),
+                        row.get("mode", ""),
+                        row.get("opportunity_point", ""),
+                        row.get("original_text", ""),
+                        row.get("outreach_message", ""),
                     ]
                 )

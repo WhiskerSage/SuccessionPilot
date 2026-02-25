@@ -60,7 +60,16 @@ def to_job_record(note: NoteRecord) -> JobRecord:
         position=position,
         location=location,
         requirements=requirements,
+        parse_source="rule",
+        original_text=note.detail_text,
+        arrival_time="",
+        application_method="",
+        author=note.author,
+        risk_line="",
+        match_score=0.0,
+        match_reason="",
         link=note.url,
+        mode="auto",
         publish_time=note.publish_time,
         source_title=note.title,
         comment_count=note.comment_count,
@@ -91,8 +100,24 @@ def normalize_job_record(record: JobRecord) -> JobRecord:
     record.position = _normalize_cell(record.position, fallback="未知", max_len=80)
     record.location = _normalize_cell(record.location, fallback="未知", max_len=40)
     record.requirements = _normalize_cell(record.requirements, fallback="未提取到明确要求", max_len=180)
+    record.arrival_time = _normalize_cell(record.arrival_time, fallback="未明确", max_len=120)
+    record.application_method = _normalize_cell(record.application_method, fallback="未明确", max_len=180)
+    record.author = _normalize_cell(record.author, fallback="未知", max_len=80)
+    record.risk_line = _normalize_cell(record.risk_line, fallback="low", max_len=80)
+    record.match_reason = _normalize_cell(record.match_reason, fallback="", max_len=220)
+    try:
+        record.match_score = max(0.0, min(100.0, float(record.match_score)))
+    except Exception:
+        record.match_score = 0.0
     record.source_title = _normalize_cell(record.source_title, fallback="", max_len=200)
     record.comments_preview = _normalize_cell(record.comments_preview, fallback="", max_len=500)
+    record.original_text = _normalize_cell(record.original_text, fallback="", max_len=4000)
+    record.mode = _normalize_cell(record.mode, fallback="auto", max_len=20)
+    record.outreach_message = _normalize_cell(record.outreach_message, fallback="", max_len=240)
+    parse_source = _normalize_cell(record.parse_source, fallback="rule", max_len=20).lower()
+    if parse_source not in {"rule", "llm"}:
+        parse_source = "rule"
+    record.parse_source = parse_source
 
     link = _normalize_cell(record.link, fallback="", max_len=600)
     if not link.startswith(("http://", "https://")):

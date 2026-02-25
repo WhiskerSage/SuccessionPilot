@@ -1,7 +1,11 @@
 ﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.2.0`
+- 项目版本：`0.3.0`
+|版本|备注|
+|0.3.0|批次摘要链路改造；简历匹配与机会点套磁|
+|0.2.0||
+|0.1.1||
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
@@ -23,7 +27,7 @@ cd <项目根目录>
 
 
 ## 一键配置（首次部署，推荐）
-1. 初始化环境（自动创建 `.venv`、安装依赖、生成 `.env` 与 `config/config.yaml`）。
+1. 初始化环境（自动创建 `.venv`、安装依赖含 dashboard/上传解析相关包、生成 `.env` 与 `config/config.yaml`，并自动创建 `config/resume.txt` 空文件）。
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1
 ```
@@ -122,7 +126,17 @@ notification:
   digest_channels: ["email"]
   attach_excel: false
   attach_jobs_csv: false
+
+resume:
+  source_txt_path: "config/resume.txt"
+  resume_text_path: "data/resume_text.txt"
+  max_chars: 6000
 ```
+
+简历上下文说明。
+- 复制 `config/resume.example.txt` 为 `config/resume.txt`，填写你的真实简历内容（TXT）。
+- 运行时由 `resume_loader` 读取并裁剪，写入 `resume_text_path`，供 LLM 在岗位结构化提取、批次摘要与机会点套磁文案复用。
+- 已预留后续前端 PDF 上传扩展接口（`resume_loader.update_from_upload_bytes` / `parse_pdf_bytes`）。
 
 如果你要“邮箱 + 微信服务号”，改这两处。
 - `wechat_service.enabled: true`

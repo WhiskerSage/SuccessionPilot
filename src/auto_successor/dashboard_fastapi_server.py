@@ -9,7 +9,7 @@ FASTAPI_AVAILABLE = False
 _IMPORT_ERROR: Exception | None = None
 
 try:
-    from fastapi import Body, FastAPI, HTTPException
+    from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.staticfiles import StaticFiles
     import uvicorn
@@ -81,6 +81,84 @@ def create_fastapi_app(backend: DataBackend, web_dir: Path):
     @app.get("/api/runtime")
     async def api_runtime() -> dict[str, Any]:
         return backend.load_runtime()
+
+    @app.get("/api/resume")
+    async def api_resume() -> dict[str, Any]:
+        return backend.load_resume_view()
+
+    @app.post("/api/resume/text")
+    async def api_resume_text(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        try:
+            text = str(payload.get("resume_text") or "")
+            return backend.save_resume_text(text)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.post("/api/resume/upload")
+    async def api_resume_upload(request: Request) -> dict[str, Any]:
+        try:
+            content_type = str(request.headers.get("content-type") or "").lower()
+            if "multipart/form-data" in content_type:
+                form = await request.form()
+                file = form.get("file")
+                if file is None:
+                    raise ValueError("file is required")
+                filename = str(getattr(file, "filename", "resume.txt") or "resume.txt")
+                content = await file.read()
+                if not content:
+                    raise ValueError("empty file")
+                return backend.upload_resume_file(
+                    filename=filename,
+                    content=content,
+                    mime_type=str(getattr(file, "content_type", "") or ""),
+                )
+
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("JSON body must be an object")
+            return backend.upload_resume_base64(
+                filename=str(payload.get("filename") or "resume.txt"),
+                content_base64=str(payload.get("content_base64") or ""),
+                mime_type=str(payload.get("mime_type") or ""),
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.post("/api/resume/parse")
+    async def api_resume_parse(request: Request) -> dict[str, Any]:
+        try:
+            content_type = str(request.headers.get("content-type") or "").lower()
+            if "multipart/form-data" in content_type:
+                form = await request.form()
+                file = form.get("file")
+                if file is None:
+                    raise ValueError("file is required")
+                filename = str(getattr(file, "filename", "resume.txt") or "resume.txt")
+                content = await file.read()
+                if not content:
+                    raise ValueError("empty file")
+                return backend.parse_resume_file(
+                    filename=filename,
+                    content=content,
+                    mime_type=str(getattr(file, "content_type", "") or ""),
+                )
+
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("JSON body must be an object")
+            return backend.parse_resume_base64(
+                filename=str(payload.get("filename") or "resume.txt"),
+                content_base64=str(payload.get("content_base64") or ""),
+                mime_type=str(payload.get("mime_type") or ""),
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     @app.get("/api/config")
     async def api_config() -> dict[str, Any]:

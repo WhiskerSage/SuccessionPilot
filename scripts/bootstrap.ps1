@@ -22,7 +22,7 @@ if (-not (Test-Path ".venv\Scripts\Activate.ps1")) {
 }
 
 . .\.venv\Scripts\Activate.ps1
-python -m pip install -e .
+python -m pip install -e ".[dashboard]"
 
 if (-not (Test-Path ".env") -and (Test-Path ".env.example")) {
   Copy-Item ".env.example" ".env"
@@ -30,6 +30,11 @@ if (-not (Test-Path ".env") -and (Test-Path ".env.example")) {
 
 if (-not (Test-Path $ConfigPath) -and (Test-Path "config/config.example.yaml")) {
   Copy-Item "config/config.example.yaml" $ConfigPath
+}
+
+$resumePath = "config/resume.txt"
+if (-not (Test-Path $resumePath)) {
+  New-Item -Path $resumePath -ItemType File -Force | Out-Null
 }
 
 $xhsRoot = "vendor/xhs-mcp"
@@ -75,6 +80,7 @@ Write-Host ""
 Write-Host "Bootstrap done."
 Write-Host "Next:"
 Write-Host "1) Edit .env"
+Write-Host "   (optional) Fill config/resume.txt with your resume text"
 Write-Host "2) Login: powershell -ExecutionPolicy Bypass -File scripts/xhs_login.ps1 -Timeout 180"
 Write-Host "3) Verify: powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1"
 Write-Host "4) Run once: .\.venv\Scripts\python.exe -m auto_successor.main --config $ConfigPath --run-once"

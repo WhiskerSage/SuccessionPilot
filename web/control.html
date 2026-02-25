@@ -221,6 +221,35 @@
           </article>
 
           <article class="ops-card span-2">
+            <h4>简历管理</h4>
+            <div class="inline-grid cols-2">
+              <label class="field span-2">
+                <span>上传PDF文件 </span>
+                <input id="resumeFileInput" type="file" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" />
+              </label>
+              <div class="btn-row span-2">
+                <button id="resumeParseBtn" class="btn ghost hidden" type="button">解析文件</button>
+              </div>
+              <label class="field">
+                <span>source_txt_path</span>
+                <input id="resumeSourcePath" type="text" readonly />
+              </label>
+              <label class="field">
+                <span>resume_text_path</span>
+                <input id="resumeTextPath" type="text" readonly />
+              </label>
+            </div>
+            <label class="field">
+              <span>简历文本（显示 resume.txt 内容，可自由编辑）</span>
+              <textarea id="resumeTextArea" rows="8" placeholder="这里显示当前简历文本"></textarea>
+            </label>
+            <p class="tip-line">字符数：<strong id="resumeChars">0</strong>；来源文件：<strong id="resumeSourceExists">未知</strong></p>
+            <div class="btn-row">
+              <button id="resumeUploadBtn" class="btn primary" type="button">上传简历</button>
+            </div>
+          </article>
+
+          <article class="ops-card span-2">
             <h4>运行输出</h4>
             <div class="runtime-meta">
               <span>守护：<strong id="runtimeDaemonState">-</strong></span>

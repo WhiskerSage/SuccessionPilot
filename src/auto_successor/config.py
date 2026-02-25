@@ -71,6 +71,13 @@ class StorageConfig:
 
 
 @dataclass
+class ResumeConfig:
+    source_txt_path: str = "config/resume.txt"
+    resume_text_path: str = "data/resume_text.txt"
+    max_chars: int = 6000
+
+
+@dataclass
 class AgentConfig:
     runtime_name: str = "SuccessionPilot"
     mode: str = "auto"
@@ -121,6 +128,7 @@ class Settings:
     wechat_service: WeChatServiceConfig
     email: EmailConfig
     storage: StorageConfig
+    resume: ResumeConfig = field(default_factory=ResumeConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     notification: NotificationConfig = field(default_factory=NotificationConfig)
 
@@ -254,6 +262,7 @@ def load_settings(config_path: str) -> Settings:
     wechat = WeChatServiceConfig(**_section(data, "wechat_service"))
     email = EmailConfig(**_section(data, "email"))
     storage = StorageConfig(**_section(data, "storage"))
+    resume = ResumeConfig(**_section(data, "resume"))
     agent = AgentConfig(**_section(data, "agent"))
     notification = NotificationConfig(**_section(data, "notification"))
     notification.digest_channels = _as_name_list(notification.digest_channels, default=["email"])
@@ -282,6 +291,7 @@ def load_settings(config_path: str) -> Settings:
         wechat_service=wechat,
         email=email,
         storage=storage,
+        resume=resume,
         agent=agent,
         notification=notification,
     )

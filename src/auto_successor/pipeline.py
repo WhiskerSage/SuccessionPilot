@@ -9,11 +9,12 @@ from openpyxl import load_workbook
 from .agents import CommunicationAgent, IntelligenceAgent, PlannerAgent
 from .config import Settings
 from .email_sender import EmailSender
-from .excel_store import ExcelStore, SUMMARY_HEADERS
+from .excel_store import ExcelStore, JOB_HEADERS
 from .llm_client import LLMClient
 from .llm_enricher import LLMEnricher
-from .models import SummaryRecord
+from .models import JobRecord, SummaryRecord
 from .notification_router import NotificationChannel, NotificationRouter
+from .resume_loader import ResumeLoader
 from .run_journal import RunJournal
 from .run_lock import RunLock
 from .runtime_orchestrator import RuntimeOrchestrator
@@ -40,6 +41,7 @@ class AutoSuccessorPipeline:
         self.lock = RunLock()
         self.llm_client = LLMClient(settings=settings, logger=logger)
         self.llm_enricher = LLMEnricher(llm_client=self.llm_client, settings=settings, logger=logger)
+        self.resume_loader = ResumeLoader(settings.resume, logger)
 
         channels = [
             NotificationChannel(name="wechat_service", sender=WeChatServiceSender(settings, logger)),
@@ -48,7 +50,12 @@ class AutoSuccessorPipeline:
         self.router = NotificationRouter(channels=channels, logger=logger)
         self.planner = PlannerAgent(settings=settings, logger=logger)
         self.intelligence = IntelligenceAgent(llm_enricher=self.llm_enricher, logger=logger)
-        self.communication = CommunicationAgent(router=self.router, settings=settings, logger=logger)
+        self.communication = CommunicationAgent(
+            router=self.router,
+            settings=settings,
+            llm_enricher=self.llm_enricher,
+            logger=logger,
+        )
 
     def run_once(self, run_id: str, mode: str = "auto") -> dict:
         keyword = self.settings.xhs.keyword
@@ -65,12 +72,19 @@ class AutoSuccessorPipeline:
             self._log_progress(run_id, 5, "pipeline started")
             self.llm_enricher.reset_stats()
 
+            resume_text = orchestrator.run_stage(
+                "resume.load_text",
+                lambda: self.resume_loader.load_resume_text(),
+                meta={"resume_source": self.settings.resume.source_txt_path},
+            )
+
             orchestrator.run_stage(
                 "collector.ensure_logged_in",
                 lambda: self.collector.ensure_logged_in(),
                 meta={"browser_path": self.settings.xhs.browser_path},
             )
             self._log_progress(run_id, 12, "login state verified")
+
             notes = orchestrator.run_stage(
                 "collector.search_notes",
                 lambda: self.collector.search_notes(
@@ -119,7 +133,6 @@ class AutoSuccessorPipeline:
             )
             target_notes = filter_outcome.targets
             filtered_out = filter_outcome.filtered_out
-            target_scores = filter_outcome.scores
             self._log_progress(
                 run_id,
                 66,
@@ -128,25 +141,40 @@ class AutoSuccessorPipeline:
 
             jobs = orchestrator.run_stage(
                 "agent.intelligence.build_jobs",
-                lambda: self.intelligence.build_jobs(target_notes, max_job_items=plan.max_job_items),
+                lambda: self.intelligence.build_jobs(
+                    target_notes,
+                    max_job_items=plan.max_job_items,
+                    resume_text=resume_text,
+                    mode=mode,
+                ),
                 meta={"max_job_items": plan.max_job_items},
             )
-            self._log_progress(run_id, 74, f"job extraction completed, jobs={len(jobs)}")
 
-            summary_mode = mode if plan.include_jd_full else "auto"
-            summaries = orchestrator.run_stage(
-                "agent.intelligence.build_summaries",
-                lambda: self.intelligence.build_summaries(
-                    target_notes,
-                    max_summary_items=plan.max_summary_items,
-                    mode=summary_mode,
-                ),
-                meta={"max_summary_items": plan.max_summary_items, "mode": summary_mode},
+            jobs = orchestrator.run_stage(
+                "agent.intelligence.mark_opportunities",
+                lambda: self.intelligence.mark_opportunities(jobs),
+                meta={"jobs": len(jobs)},
             )
-            summary_by_note_id = {item.note_id: item for item in summaries}
-            ranked_targets = self.intelligence.rank_targets(target_notes, scores=target_scores, top_n=plan.top_n)
-            ranked_summaries = [summary_by_note_id[note.note_id] for note in ranked_targets if note.note_id in summary_by_note_id]
-            self._log_progress(run_id, 82, f"summary generation completed, summaries={len(summaries)}")
+
+            jobs = orchestrator.run_stage(
+                "agent.intelligence.attach_outreach_messages",
+                lambda: self.intelligence.attach_outreach_messages(jobs, resume_text=resume_text),
+                meta={"opportunity_jobs": sum(1 for item in jobs if item.opportunity_point)},
+            )
+            parse_details: list[dict[str, str]] = []
+            job_parse_rule = 0
+            job_parse_llm = 0
+            for item in jobs:
+                raw_parse_source = str(getattr(item, "parse_source", "") or "").strip().lower()[:20]
+                parse_source = raw_parse_source if raw_parse_source in {"rule", "llm"} else "rule"
+                if parse_source == "llm":
+                    job_parse_llm += 1
+                else:
+                    job_parse_rule += 1
+                parse_details.append({"post_id": item.post_id, "parse_source": parse_source})
+                self.logger.info("run %s job parse_source post_id=%s source=%s", run_id, item.post_id, parse_source)
+            summaries = self._jobs_to_summary_records(run_id=run_id, jobs=jobs)
+            self._log_progress(run_id, 80, f"structured extraction completed, jobs={len(jobs)}")
 
             orchestrator.run_stage(
                 "storage.write_excel",
@@ -167,42 +195,52 @@ class AutoSuccessorPipeline:
             digest_subject = ""
             digest_channels: list[str] = []
             digest_attachments: list[str] = []
+            opportunity_post_ids = [item.post_id for item in jobs if item.opportunity_point]
 
             if notification_mode == "realtime":
-                realtime_candidates = summaries if mode == "auto" else ranked_summaries
-                send_logs = orchestrator.run_stage(
-                    "agent.communication.realtime_dispatch",
-                    lambda: self.communication.dispatch_realtime(
-                        run_id=run_id,
-                        summaries=realtime_candidates,
-                        channel_names=list(self.settings.notification.realtime_channels),
-                    ),
-                    meta={
-                        "mode": mode,
-                        "channels": list(self.settings.notification.realtime_channels),
-                        "summary_count": len(realtime_candidates),
-                    },
-                )
-                notify_note_ids = sorted({log.note_id for log in send_logs})
+                if jobs:
+                    dispatch_result = orchestrator.run_stage(
+                        "agent.communication.batch_dispatch_realtime",
+                        lambda: self._dispatch_batch_with_compat(
+                            run_id=run_id,
+                            mode=mode,
+                            jobs=jobs,
+                            top_n=plan.top_n,
+                            resume_text=resume_text,
+                            channel_names=list(self.settings.notification.realtime_channels),
+                            attachments=[],
+                            digest_style=False,
+                        ),
+                        meta={
+                            "mode": mode,
+                            "channels": list(self.settings.notification.realtime_channels),
+                            "job_count": len(jobs),
+                        },
+                    )
+                    send_logs = dispatch_result["logs"]
+                    notify_note_ids = sorted({log.note_id for log in send_logs})
+                    digest_subject = dispatch_result["subject"]
                 self._log_progress(run_id, 94, f"realtime notification completed, send_logs={len(send_logs)}")
+
             elif notification_mode == "digest":
                 now = datetime.now(timezone.utc)
                 digest_due = self._is_digest_due(now)
                 enough_new = len(new_notes) >= max(0, int(self.settings.notification.digest_min_new_notes))
                 allow_no_new = bool(self.settings.notification.digest_send_when_no_new)
-                if digest_due and (enough_new or allow_no_new):
+                if digest_due and (enough_new or allow_no_new) and jobs:
                     digest_attachments = self._collect_digest_attachments()
                     digest_channels = list(self.settings.notification.digest_channels)
-                    digest_result = orchestrator.run_stage(
-                        "agent.communication.digest_dispatch",
-                        lambda: self.communication.dispatch_digest(
+                    dispatch_result = orchestrator.run_stage(
+                        "agent.communication.batch_dispatch_digest",
+                        lambda: self._dispatch_batch_with_compat(
                             run_id=run_id,
                             mode=mode,
-                            new_notes=new_notes,
-                            target_notes=target_notes,
-                            summaries=ranked_summaries or summaries,
-                            attachments=digest_attachments,
+                            jobs=jobs,
+                            top_n=plan.top_n,
+                            resume_text=resume_text,
                             channel_names=digest_channels,
+                            attachments=digest_attachments,
+                            digest_style=True,
                         ),
                         meta={
                             "channels": digest_channels,
@@ -211,9 +249,9 @@ class AutoSuccessorPipeline:
                             "target_notes": len(target_notes),
                         },
                     )
-                    send_logs = digest_result.logs
+                    send_logs = dispatch_result["logs"]
                     notify_note_ids = sorted({log.note_id for log in send_logs})
-                    digest_subject = digest_result.subject
+                    digest_subject = dispatch_result["subject"]
                     digest_sent = any(
                         str(getattr(log, "send_status", "")).strip().lower() == "success"
                         for log in send_logs
@@ -252,7 +290,8 @@ class AutoSuccessorPipeline:
                 "filtered_out": len(filtered_out),
                 "notify_note_count": len(notify_note_ids),
                 "jobs": len(jobs),
-                "summaries": len(summaries),
+                "opportunities": len(opportunity_post_ids),
+                "summaries": len(jobs),
                 "send_logs": len(send_logs),
                 "stages": len(orchestrator.stage_records()),
                 "llm_enabled": self.llm_client.is_enabled(),
@@ -260,8 +299,12 @@ class AutoSuccessorPipeline:
                 "llm_calls": self.llm_enricher.calls,
                 "llm_success": self.llm_enricher.success,
                 "llm_fail": self.llm_enricher.fail,
+                "job_parse_rule": job_parse_rule,
+                "job_parse_llm": job_parse_llm,
+                "job_parse_details_count": len(parse_details),
                 "digest_due": digest_due,
                 "digest_sent": digest_sent,
+                "resume_chars": len(resume_text),
             }
             self.journal.write(
                 run_id,
@@ -273,6 +316,7 @@ class AutoSuccessorPipeline:
                     "new_note_ids": [note.note_id for note in new_notes],
                     "target_note_ids": [note.note_id for note in target_notes],
                     "notify_note_ids": notify_note_ids,
+                    "opportunity_post_ids": opportunity_post_ids,
                     "filtered_out_samples": filtered_out[:50],
                     "agent_plan": {
                         "detail_fetch_limit": plan.detail_fetch_limit,
@@ -285,6 +329,12 @@ class AutoSuccessorPipeline:
                         "subject": digest_subject,
                         "channels": digest_channels,
                         "attachments": digest_attachments,
+                    },
+                    "job_parse": {
+                        "rule": job_parse_rule,
+                        "llm": job_parse_llm,
+                        "details_count": len(parse_details),
+                        "details": parse_details,
                     },
                     "stage_records": orchestrator.stage_records(),
                 },
@@ -309,15 +359,21 @@ class AutoSuccessorPipeline:
 
         try:
             top_n = max(1, int(limit))
-            summaries = self._load_latest_summaries_from_store(limit=top_n)
+            summaries = list(self._load_latest_summaries_from_store(limit=top_n) or [])
+            if summaries:
+                jobs = self._summaries_to_jobs(summaries)
+            else:
+                jobs = self._load_latest_jobs_from_store(limit=top_n)
+            resume_text = self.resume_loader.load_resume_text()
             digest_attachments = self._collect_digest_attachments()
             digest_channels = list(self.settings.notification.digest_channels)
 
-            if not summaries:
+            if not jobs:
                 stats = {
                     "runtime_name": self.settings.agent.runtime_name,
                     "action": "send_latest_stored",
                     "requested_limit": top_n,
+                    "loaded_jobs": 0,
                     "loaded_summaries": 0,
                     "send_logs": 0,
                     "digest_sent": False,
@@ -340,16 +396,17 @@ class AutoSuccessorPipeline:
                 self.logger.info("manual send %s finished: %s", run_id, stats)
                 return stats
 
-            digest_result = self.communication.dispatch_digest(
+            dispatch_result = self._dispatch_batch_with_compat(
                 run_id=run_id,
                 mode=mode,
-                new_notes=[],
-                target_notes=[],
-                summaries=summaries,
-                attachments=digest_attachments,
+                jobs=jobs,
+                top_n=top_n,
+                resume_text=resume_text,
                 channel_names=digest_channels,
+                attachments=digest_attachments,
+                digest_style=True,
             )
-            send_logs = digest_result.logs
+            send_logs = dispatch_result["logs"]
             digest_sent = any(str(getattr(log, "send_status", "")).strip().lower() == "success" for log in send_logs)
 
             if send_logs:
@@ -365,7 +422,8 @@ class AutoSuccessorPipeline:
                 "runtime_name": self.settings.agent.runtime_name,
                 "action": "send_latest_stored",
                 "requested_limit": top_n,
-                "loaded_summaries": len(summaries),
+                "loaded_jobs": len(jobs),
+                "loaded_summaries": len(summaries) if summaries else len(jobs),
                 "send_logs": len(send_logs),
                 "digest_sent": digest_sent,
             }
@@ -375,10 +433,10 @@ class AutoSuccessorPipeline:
                     "stats": stats,
                     "mode": mode,
                     "notification_mode": "digest",
-                    "target_note_ids": [item.note_id for item in summaries],
+                    "target_note_ids": [item.post_id for item in jobs],
                     "notify_note_ids": notify_note_ids,
                     "digest": {
-                        "subject": digest_result.subject,
+                        "subject": dispatch_result["subject"],
                         "channels": digest_channels,
                         "attachments": digest_attachments,
                     },
@@ -427,54 +485,168 @@ class AutoSuccessorPipeline:
         if hasattr(self.state, "mark_digest_sent"):
             self.state.mark_digest_sent(now, run_id)
 
-    def _load_latest_summaries_from_store(self, limit: int) -> list[SummaryRecord]:
+    def _load_latest_jobs_from_store(self, limit: int) -> list[JobRecord]:
         excel_path = Path(self.settings.storage.excel_path)
         if not excel_path.exists():
             return []
 
         wb = load_workbook(excel_path, read_only=True, data_only=True)
         try:
-            if "succession_summary" not in wb.sheetnames:
+            if "jobs" not in wb.sheetnames:
                 return []
-            ws = wb["succession_summary"]
+            ws = wb["jobs"]
             rows = self._read_sheet_rows(ws)
         finally:
             wb.close()
 
         rows.sort(
             key=lambda item: (
-                int(item.get("publish_timestamp") or 0),
                 str(item.get("publish_time") or ""),
-                str(item.get("created_at") or ""),
+                str(item.get("PostID") or ""),
             ),
             reverse=True,
         )
 
-        summaries: list[SummaryRecord] = []
+        jobs: list[JobRecord] = []
         for row in rows[: max(1, int(limit))]:
-            note_id = str(row.get("note_id") or "").strip()
-            if not note_id:
+            post_id = str(row.get("PostID") or "").strip()
+            if not post_id:
                 continue
-            try:
-                confidence = float(row.get("confidence") or 1.0)
-            except Exception:
-                confidence = 1.0
-            summaries.append(
-                SummaryRecord(
-                    run_id=str(row.get("run_id") or f"from-store:{note_id[:12]}"),
-                    note_id=note_id,
-                    keyword=str(row.get("keyword") or ""),
-                    publish_time=self._to_datetime(row.get("publish_time")),
-                    title=str(row.get("title") or ""),
+            jobs.append(
+                JobRecord(
+                    run_id=str(row.get("run_id") or f"from-store:{post_id[:12]}"),
+                    post_id=post_id,
+                    company=str(row.get("Company") or ""),
+                    position=str(row.get("Position") or ""),
+                    location=str(row.get("Location") or ""),
+                    requirements=str(row.get("Requirements") or ""),
+                    arrival_time=str(row.get("arrival_time") or ""),
+                    application_method=str(row.get("application_method") or ""),
                     author=str(row.get("author") or ""),
-                    summary=str(row.get("summary") or ""),
-                    confidence=confidence,
-                    risk_flags=str(row.get("risk_flags") or ""),
-                    url=str(row.get("url") or ""),
-                    created_at=self._to_datetime(row.get("created_at")),
+                    risk_line=str(row.get("risk_line") or "low"),
+                    match_score=float(row.get("match_score") or 0.0),
+                    match_reason=str(row.get("match_reason") or ""),
+                    link=str(row.get("Link") or ""),
+                    mode=str(row.get("mode") or "auto"),
+                    publish_time=self._to_datetime(row.get("publish_time")),
+                    source_title=str(row.get("source_title") or ""),
+                    comment_count=int(row.get("comment_count") or 0),
+                    comments_preview=str(row.get("comments_preview") or ""),
+                    original_text=str(row.get("original_text") or ""),
+                    opportunity_point=bool(row.get("opportunity_point")),
+                    outreach_message=str(row.get("outreach_message") or ""),
                 )
             )
-        return summaries
+        return jobs
+
+    def _dispatch_batch_with_compat(
+        self,
+        *,
+        run_id: str,
+        mode: str,
+        jobs: list[JobRecord],
+        top_n: int,
+        resume_text: str,
+        channel_names: list[str],
+        attachments: list[str],
+        digest_style: bool,
+    ) -> dict:
+        if hasattr(self.communication, "dispatch_batch"):
+            result = self.communication.dispatch_batch(
+                run_id=run_id,
+                mode=mode,
+                jobs=jobs,
+                resume_text=resume_text,
+                channel_names=channel_names,
+                attachments=attachments,
+            )
+            return {"logs": result.logs, "subject": result.subject}
+
+        realtime_jobs = jobs
+        if not digest_style and mode == "agent":
+            realtime_jobs = sorted(jobs, key=lambda item: float(item.match_score), reverse=True)[: max(1, int(top_n))]
+        summaries = self._jobs_to_summary_records(run_id=run_id, jobs=realtime_jobs)
+        if digest_style:
+            result = self.communication.dispatch_digest(
+                run_id=run_id,
+                mode=mode,
+                new_notes=[],
+                target_notes=[],
+                summaries=summaries,
+                attachments=attachments,
+                channel_names=channel_names,
+            )
+            return {"logs": result.logs, "subject": result.subject}
+
+        logs = self.communication.dispatch_realtime(
+            run_id=run_id,
+            summaries=summaries,
+            channel_names=channel_names,
+        )
+        return {"logs": logs, "subject": ""}
+
+    def _jobs_to_summary_records(self, run_id: str, jobs: list[JobRecord]) -> list[SummaryRecord]:
+        output: list[SummaryRecord] = []
+        for item in jobs:
+            original_text = (item.original_text or "").strip()
+            if not original_text:
+                original_text = item.requirements or ""
+            summary_text = (
+                f"公司：{item.company}\n"
+                f"岗位：{item.position}\n"
+                f"地点：{item.location}\n"
+                f"岗位要求：{item.requirements}\n"
+                f"到岗时间：{item.arrival_time}\n"
+                f"投递方式：{item.application_method}\n"
+                f"风险等级：{item.risk_line}\n"
+                f"简历匹配度：{item.match_score:.2f}\n"
+                f"原文：{original_text}"
+            )
+            output.append(
+                SummaryRecord(
+                    run_id=run_id,
+                    note_id=item.post_id,
+                    keyword=self.settings.xhs.keyword,
+                    publish_time=item.publish_time,
+                    title=item.source_title or item.position,
+                    author=item.author,
+                    summary=summary_text,
+                    confidence=1.0,
+                    risk_flags=item.risk_line,
+                    url=item.link,
+                )
+            )
+        return output
+
+    def _summaries_to_jobs(self, summaries: list[SummaryRecord]) -> list[JobRecord]:
+        jobs: list[JobRecord] = []
+        for item in summaries:
+            jobs.append(
+                JobRecord(
+                    run_id=item.run_id,
+                    post_id=item.note_id,
+                    company="",
+                    position=item.title or "",
+                    location="",
+                    requirements=item.summary or "",
+                    link=item.url,
+                    publish_time=item.publish_time,
+                    source_title=item.title,
+                    comment_count=0,
+                    comments_preview="",
+                    original_text=item.summary or "",
+                    author=item.author,
+                    risk_line=item.risk_flags or "low",
+                    match_score=0.0,
+                    mode=self._normalize_mode(self.settings.agent.mode or "auto"),
+                )
+            )
+        return jobs
+
+    # backward compatibility for tests/callers
+    def _load_latest_summaries_from_store(self, limit: int):
+        jobs = self._load_latest_jobs_from_store(limit=limit)
+        return self._jobs_to_summary_records(run_id="from-store", jobs=jobs)
 
     @staticmethod
     def _read_sheet_rows(ws) -> list[dict[str, Any]]:
@@ -485,7 +657,7 @@ class AutoSuccessorPipeline:
             return []
         headers = [str(x or "").strip() for x in headers_row]
         if not any(headers):
-            headers = list(SUMMARY_HEADERS)
+            headers = list(JOB_HEADERS)
 
         rows: list[dict[str, Any]] = []
         for values in iterator:

@@ -68,3 +68,14 @@ class JobRecord:
     source_title: str
     comment_count: int
     comments_preview: str
+    original_text: str = ""
+    arrival_time: str = ""
+    application_method: str = ""
+    author: str = ""
+    risk_line: str = "low"
+    match_score: float = 0.0
+    match_reason: str = ""
+    parse_source: str = "rule"
+    mode: str = "auto"
+    opportunity_point: bool = False
+    outreach_message: str = ""

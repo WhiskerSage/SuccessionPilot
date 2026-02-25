@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
   "openpyxl>=3.1.0",
+  "pypdf>=5.2.0",
+  "python-docx>=1.1.2",
   "PyYAML>=6.0.0",
   "requests>=2.31.0",
   "tzdata>=2024.1",
@@ -14,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 dashboard = [
   "fastapi>=0.116.0",
+  "python-multipart>=0.0.20",
   "uvicorn>=0.35.0",
 ]
 

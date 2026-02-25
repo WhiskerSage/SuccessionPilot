@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import floor
 from pathlib import Path
 
 from .config import Settings
 from .job_processor import normalize_job_record, to_job_record
 from .llm_enricher import LLMEnricher
-from .models import NoteRecord, SendLogRecord, SummaryRecord
+from .models import JobRecord, NoteRecord, SendLogRecord, SummaryRecord
 from .notification_router import NotificationRouter
-from .succession import build_summary
+
+URGENT_TOKENS = ["急招", "尽快到岗", "马上到岗", "asap", "urgent", "立即入职"]
 
 
 @dataclass
@@ -27,6 +29,15 @@ class FilterOutcome:
     targets: list[NoteRecord]
     filtered_out: list[dict]
     scores: dict[str, float]
+
+
+@dataclass
+class BatchDispatchResult:
+    sent: bool
+    logs: list[SendLogRecord]
+    subject: str
+    body: str
+    opportunity_post_ids: list[str]
 
 
 @dataclass
@@ -136,24 +147,55 @@ class IntelligenceAgent:
 
         return FilterOutcome(targets=targets, filtered_out=filtered_out, scores=scores)
 
-    def build_jobs(self, notes: list[NoteRecord], max_job_items: int) -> list:
-        jobs = []
+    def build_jobs(self, notes: list[NoteRecord], max_job_items: int, resume_text: str, mode: str) -> list[JobRecord]:
+        jobs: list[JobRecord] = []
         for idx, note in enumerate(notes):
             job = to_job_record(note)
+            job.mode = mode
             if idx < max(0, int(max_job_items)):
-                job = self.llm_enricher.enrich_job(note, job)
+                job = self.llm_enricher.enrich_job(note, job, resume_text=resume_text, mode=mode)
             jobs.append(normalize_job_record(job))
         jobs.sort(key=lambda item: item.publish_time, reverse=True)
         return jobs
 
-    def build_summaries(self, notes: list[NoteRecord], max_summary_items: int, mode: str) -> list[SummaryRecord]:
-        summaries: list[SummaryRecord] = []
-        for idx, note in enumerate(notes):
-            summary = build_summary(note)
-            if idx < max(0, int(max_summary_items)):
-                summary = self.llm_enricher.enrich_summary(note, summary, mode=mode)
-            summaries.append(summary)
-        return summaries
+    def mark_opportunities(self, jobs: list[JobRecord]) -> list[JobRecord]:
+        if not jobs:
+            return jobs
+
+        max_score = max(float(item.match_score or 0.0) for item in jobs)
+        if max_score <= 0.0:
+            for job in jobs:
+                job.opportunity_point = False
+            return jobs
+
+        limit = max(1, min(len(jobs), floor(len(jobs) * 0.3)))
+
+        for job in jobs:
+            job.opportunity_point = False
+
+        ranked = sorted(
+            jobs,
+            key=lambda item: (
+                self._is_urgent(item),
+                float(item.match_score),
+            ),
+            reverse=True,
+        )
+
+        selected = ranked[:limit]
+        if selected:
+            selected[0].opportunity_point = True
+        for item in selected:
+            item.opportunity_point = True
+        return jobs
+
+    def attach_outreach_messages(self, jobs: list[JobRecord], resume_text: str) -> list[JobRecord]:
+        for job in jobs:
+            if not job.opportunity_point:
+                job.outreach_message = ""
+                continue
+            job.outreach_message = self.llm_enricher.build_outreach_message(job, resume_text=resume_text)
+        return jobs
 
     @staticmethod
     def rank_targets(targets: list[NoteRecord], scores: dict[str, float], top_n: int) -> list[NoteRecord]:
@@ -171,19 +213,70 @@ class IntelligenceAgent:
         )
         return ranked[: max(1, int(top_n))]
 
+    @staticmethod
+    def _is_urgent(job: JobRecord) -> int:
+        text = "\n".join([job.source_title or "", job.requirements or "", job.arrival_time or ""]).lower()
+        return int(any(token in text for token in URGENT_TOKENS))
+
 
 class CommunicationAgent:
-    def __init__(self, router: NotificationRouter, settings: Settings, logger) -> None:
+    def __init__(
+        self,
+        router: NotificationRouter,
+        settings: Settings,
+        llm_enricher: LLMEnricher | None = None,
+        logger=None,
+    ) -> None:
         self.router = router
         self.settings = settings
+        self.llm_enricher = llm_enricher
         self.logger = logger
 
+    def dispatch_batch(
+        self,
+        run_id: str,
+        mode: str,
+        jobs: list[JobRecord],
+        resume_text: str,
+        channel_names: list[str],
+        attachments: list[str],
+    ) -> BatchDispatchResult:
+        if self.llm_enricher is None:
+            raise RuntimeError("llm_enricher is required for dispatch_batch")
+        summary = self.llm_enricher.summarize_push_batch(run_id=run_id, mode=mode, jobs=jobs, resume_text=resume_text)
+        subject = self._build_subject(run_id=run_id, mode=mode, jobs=jobs, headline=summary.get("headline") or "")
+        body = self._build_body(
+            run_id=run_id,
+            mode=mode,
+            jobs=jobs,
+            headline=summary.get("headline") or "",
+            overview=summary.get("overview") or "",
+            attachments=attachments,
+        )
+        logs = self.router.dispatch_digest(
+            run_id=run_id,
+            subject=subject,
+            text=body,
+            attachments=attachments,
+            channel_names=channel_names,
+        )
+        opportunity_post_ids = [job.post_id for job in jobs if job.opportunity_point]
+        return BatchDispatchResult(
+            sent=bool(logs),
+            logs=logs,
+            subject=subject,
+            body=body,
+            opportunity_post_ids=opportunity_post_ids,
+        )
+
+    # backward compatibility
     def dispatch_realtime(self, run_id: str, summaries: list[SummaryRecord], channel_names: list[str]) -> list[SendLogRecord]:
         logs: list[SendLogRecord] = []
         for summary in summaries:
             logs.extend(self.router.dispatch_summary(run_id=run_id, summary=summary, channel_names=channel_names))
         return logs
 
+    # backward compatibility
     def dispatch_digest(
         self,
         run_id: str,
@@ -194,76 +287,14 @@ class CommunicationAgent:
         attachments: list[str],
         channel_names: list[str],
     ) -> DigestDispatchResult:
-        subject = self._build_digest_subject(run_id=run_id, mode=mode, new_count=len(new_notes), target_count=len(target_notes))
-        body = self._build_digest_body(
-            run_id=run_id,
-            mode=mode,
-            new_notes=new_notes,
-            target_notes=target_notes,
-            summaries=summaries,
-            attachments=attachments,
+        # Legacy dispatch_digest chain has been deprecated and disabled.
+        # Batch notifications should be sent via dispatch_batch.
+        return DigestDispatchResult(
+            sent=False,
+            logs=[],
+            subject="",
+            body="legacy dispatch_digest disabled",
         )
-        logs = self.router.dispatch_digest(
-            run_id=run_id,
-            subject=subject,
-            text=body,
-            attachments=attachments,
-            channel_names=channel_names,
-        )
-        return DigestDispatchResult(sent=bool(logs), logs=logs, subject=subject, body=body)
-
-    def _build_digest_subject(self, run_id: str, mode: str, new_count: int, target_count: int) -> str:
-        return f"SuccessionPilot digest | run={run_id} | new={new_count} | target={target_count} | mode={mode}"
-
-    def _build_digest_body(
-        self,
-        run_id: str,
-        mode: str,
-        new_notes: list[NoteRecord],
-        target_notes: list[NoteRecord],
-        summaries: list[SummaryRecord],
-        attachments: list[str],
-    ) -> str:
-        top_n = max(1, int(self.settings.notification.digest_top_summaries))
-        included = summaries[:top_n]
-        attachment_items = [Path(item).name for item in attachments if str(item).strip()]
-
-        lines = [
-            "SuccessionPilot 定时摘要",
-            "====================",
-            "",
-            "【统计】",
-            f"- 新增线索：{len(new_notes)}",
-            f"- 命中目标：{len(target_notes)}",
-            f"- 收录摘要：{len(included)} / {len(summaries)}",
-            "",
-            "【附件】",
-        ]
-        if attachment_items:
-            lines.extend([f"- {name}" for name in attachment_items])
-        else:
-            lines.append("- 无")
-
-        lines.extend(["", "【岗位详情】"])
-        if not included:
-            lines.append("暂无可发送岗位摘要（本轮可能无新命中或全部被过滤）。")
-            return "\n".join(lines).strip()
-
-        for idx, summary in enumerate(included, start=1):
-            publish = summary.publish_time.strftime("%Y-%m-%d %H:%M")
-            lines.append(f"-------------------- {idx} --------------------")
-            lines.append(f"标题：{summary.title or '（无标题）'}")
-            lines.append(f"作者：{summary.author or '未知'}")
-            lines.append(f"发布时间：{publish}")
-            lines.append(f"链接：{summary.url}")
-            if summary.risk_flags:
-                lines.append(f"风险标签：{summary.risk_flags}")
-            lines.append("")
-            lines.append("摘要内容：")
-            lines.append(self._format_multiline_block(summary.summary))
-            lines.append("")
-
-        return "\n".join(lines).strip()
 
     @staticmethod
     def _format_multiline_block(text: str) -> str:
@@ -283,3 +314,62 @@ class CommunicationAgent:
             compact_lines.append(line)
             blank = False
         return "\n".join(compact_lines).strip()
+
+    def _build_subject(self, run_id: str, mode: str, jobs: list[JobRecord], headline: str) -> str:
+        opp = sum(1 for item in jobs if item.opportunity_point)
+        prefix = f"SuccessionPilot batch | run={run_id} | jobs={len(jobs)} | opp={opp} | mode={mode}"
+        if headline:
+            return f"{prefix} | {headline[:48]}"
+        return prefix
+
+    def _build_body(
+        self,
+        run_id: str,
+        mode: str,
+        jobs: list[JobRecord],
+        headline: str,
+        overview: str,
+        attachments: list[str],
+    ) -> str:
+        att = [Path(item).name for item in attachments if str(item).strip()]
+        opp_jobs = [item for item in jobs if item.opportunity_point]
+
+        lines = [
+            "SuccessionPilot 批次推送",
+            "====================",
+            f"运行ID：{run_id}",
+            f"运行模式：{mode}",
+            f"岗位数量：{len(jobs)}",
+            f"机会点数量：{len(opp_jobs)}",
+            "",
+            f"批次标题：{headline or '-'}",
+            f"批次概览：{overview or '-'}",
+            "",
+            "附件：",
+        ]
+        if att:
+            lines.extend([f"- {name}" for name in att])
+        else:
+            lines.append("- 无")
+
+        lines.extend(["", "岗位详情："])
+        for idx, job in enumerate(jobs, start=1):
+            original_text = (job.original_text or "").strip() or (job.requirements or "")
+            lines.append(f"----- {idx} -----")
+            lines.append(f"公司：{job.company}")
+            lines.append(f"岗位：{job.position}")
+            lines.append(f"发布时间：{job.publish_time.strftime('%Y-%m-%d %H:%M')}")
+            lines.append(f"地点：{job.location}")
+            lines.append(f"岗位要求：{job.requirements}")
+            lines.append(f"到岗时间：{job.arrival_time}")
+            lines.append(f"投递方式：{job.application_method}")
+            lines.append(f"发布者：{job.author}")
+            lines.append(f"简历匹配度：{job.match_score:.2f}")
+            lines.append(f"原文：{original_text}")
+            lines.append(f"链接：{job.link}")
+            lines.append(f"机会点：{job.opportunity_point}")
+            if job.outreach_message:
+                lines.append(f"套磁文案：{job.outreach_message}")
+            lines.append("")
+
+        return "\n".join(lines).strip()

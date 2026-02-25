@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import subprocess
 import sys
 import threading
@@ -11,6 +12,9 @@ from typing import Any
 
 from openpyxl import load_workbook
 import yaml
+
+from .config import ResumeConfig
+from .resume_loader import ResumeLoader
 
 
 class RuntimeManager:
@@ -356,6 +360,9 @@ class DataBackend:
         self.excel_path = self.data_dir / "output.xlsx"
         self.config_path = workspace / "config" / "config.yaml"
         self.runtime = RuntimeManager(workspace=workspace, config_path=self.config_path)
+        self._resume_loader: ResumeLoader | None = None
+        self._resume_source_path = workspace / "config" / "resume.txt"
+        self._resume_text_path = workspace / "data" / "resume_text.txt"
 
     def load_summary(self) -> dict[str, Any]:
         rows = self._load_workbook_rows()
@@ -494,6 +501,78 @@ class DataBackend:
     def load_runtime(self) -> dict[str, Any]:
         return self.runtime.status()
 
+    def load_resume_view(self) -> dict[str, Any]:
+        loader = self._get_resume_loader()
+        source = loader.source_path
+        resume_text_path = loader.resume_text_path
+        resume_text = loader.load_source_text()
+        if not resume_text:
+            resume_text = loader.load_resume_text()
+        preview = resume_text[:400]
+        return {
+            "source_txt_path": str(source),
+            "resume_text_path": str(resume_text_path),
+            "source_exists": source.exists(),
+            "resume_text_exists": resume_text_path.exists(),
+            "resume_chars": len(resume_text),
+            "resume_text": resume_text,
+            "resume_preview": preview,
+        }
+
+    def save_resume_text(self, text: str) -> dict[str, Any]:
+        loader = self._get_resume_loader()
+        normalized = loader.save_resume_text(str(text or ""))
+        return {
+            "ok": True,
+            "message": "resume text saved",
+            "resume_chars": len(normalized),
+            "resume_text_path": str(loader.resume_text_path),
+        }
+
+    def upload_resume_file(self, *, filename: str, content: bytes, mime_type: str = "") -> dict[str, Any]:
+        loader = self._get_resume_loader()
+        normalized = loader.update_from_upload_bytes(filename=filename, content=content, mime_type=mime_type)
+        return {
+            "ok": True,
+            "message": "resume uploaded",
+            "filename": filename,
+            "mime_type": mime_type,
+            "resume_chars": len(normalized),
+            "resume_text_path": str(loader.resume_text_path),
+        }
+
+    def parse_resume_file(self, *, filename: str, content: bytes, mime_type: str = "") -> dict[str, Any]:
+        loader = self._get_resume_loader()
+        parsed_text = loader.parse_upload_bytes(filename=filename, content=content, mime_type=mime_type)
+        return {
+            "ok": True,
+            "message": "resume file parsed",
+            "filename": filename,
+            "mime_type": mime_type,
+            "resume_chars": len(parsed_text),
+            "resume_text": parsed_text,
+        }
+
+    def upload_resume_base64(self, *, filename: str, content_base64: str, mime_type: str = "") -> dict[str, Any]:
+        raw = str(content_base64 or "").strip()
+        if not raw:
+            raise ValueError("content_base64 is required")
+        try:
+            content = base64.b64decode(raw)
+        except Exception as exc:
+            raise ValueError(f"invalid base64 content: {exc}") from exc
+        return self.upload_resume_file(filename=filename, content=content, mime_type=mime_type)
+
+    def parse_resume_base64(self, *, filename: str, content_base64: str, mime_type: str = "") -> dict[str, Any]:
+        raw = str(content_base64 or "").strip()
+        if not raw:
+            raise ValueError("content_base64 is required")
+        try:
+            content = base64.b64decode(raw)
+        except Exception as exc:
+            raise ValueError(f"invalid base64 content: {exc}") from exc
+        return self.parse_resume_file(filename=filename, content=content, mime_type=mime_type)
+
     def load_config_view(self) -> dict[str, Any]:
         config = self._read_config_data()
         app = self._ensure_section(config, "app")
@@ -503,6 +582,7 @@ class DataBackend:
         email = self._ensure_section(config, "email")
         wechat = self._ensure_section(config, "wechat_service")
         llm = self._ensure_section(config, "llm")
+        resume = self._ensure_section(config, "resume")
 
         return {
             "app": {"interval_minutes": self._coerce_int(app.get("interval_minutes"), 15, minimum=1)},
@@ -528,6 +608,11 @@ class DataBackend:
                 "model": str(llm.get("model") or ""),
                 "base_url": str(llm.get("base_url") or ""),
             },
+            "resume": {
+                "source_txt_path": str(resume.get("source_txt_path") or "config/resume.txt"),
+                "resume_text_path": str(resume.get("resume_text_path") or "data/resume_text.txt"),
+                "max_chars": self._coerce_int(resume.get("max_chars"), 6000, minimum=500),
+            },
         }
 
     def save_config_view(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -542,6 +627,7 @@ class DataBackend:
         email = self._ensure_section(config, "email")
         wechat = self._ensure_section(config, "wechat_service")
         llm = self._ensure_section(config, "llm")
+        resume = self._ensure_section(config, "resume")
 
         app_in = payload.get("app")
         if isinstance(app_in, dict):
@@ -598,7 +684,17 @@ class DataBackend:
             if "base_url" in llm_in:
                 llm["base_url"] = str(llm_in.get("base_url") or "").strip()
 
+        resume_in = payload.get("resume")
+        if isinstance(resume_in, dict):
+            if "source_txt_path" in resume_in:
+                resume["source_txt_path"] = str(resume_in.get("source_txt_path") or "config/resume.txt").strip() or "config/resume.txt"
+            if "resume_text_path" in resume_in:
+                resume["resume_text_path"] = str(resume_in.get("resume_text_path") or "data/resume_text.txt").strip() or "data/resume_text.txt"
+            if "max_chars" in resume_in:
+                resume["max_chars"] = self._coerce_int(resume_in.get("max_chars"), 6000, minimum=500)
+
         self._write_config_data(config)
+        self._resume_loader = None  # Invalidate cached resume loader after config updates
         return self.load_config_view()
 
     def run_action(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -728,6 +824,34 @@ class DataBackend:
         if isinstance(data, dict):
             return data
         return {}
+
+    def _get_resume_loader(self) -> ResumeLoader:
+        if self._resume_loader is not None:
+            return self._resume_loader
+        config = self._read_config_data()
+        resume_cfg_raw = config.get("resume", {}) if isinstance(config, dict) else {}
+        if not isinstance(resume_cfg_raw, dict):
+            resume_cfg_raw = {}
+
+        source_txt_path = str(resume_cfg_raw.get("source_txt_path") or "config/resume.txt").strip() or "config/resume.txt"
+        resume_text_path = str(resume_cfg_raw.get("resume_text_path") or "data/resume_text.txt").strip() or "data/resume_text.txt"
+        max_chars = self._coerce_int(resume_cfg_raw.get("max_chars"), 6000, minimum=500)
+
+        source = Path(source_txt_path)
+        if not source.is_absolute():
+            source = self.workspace / source
+        target = Path(resume_text_path)
+        if not target.is_absolute():
+            target = self.workspace / target
+
+        self._resume_source_path = source
+        self._resume_text_path = target
+        cfg = ResumeConfig(source_txt_path=str(source), resume_text_path=str(target), max_chars=max_chars)
+        self._resume_loader = ResumeLoader(cfg, logger=self)
+        return self._resume_loader
+
+    def warning(self, *args, **kwargs) -> None:
+        return
 
     def _write_config_data(self, data: dict[str, Any]) -> None:
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
