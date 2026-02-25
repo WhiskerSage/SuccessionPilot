@@ -39,6 +39,8 @@ class LLMConfig:
     enabled: bool = False
     provider: str = "openai_compatible"
     model: str = "gpt-5-mini"
+    parse_model: str = ""
+    outreach_model: str = ""
     api_key: str = ""
     api_key_env: str = "OPENAI_API_KEY"
     base_url: str = "https://api.openai.com/v1"

@@ -142,6 +142,14 @@ resume:
 如果你要启用 LLM 增强（过滤/岗位抽取/摘要）。
 - `.env` 填 `OPENAI_API_KEY`
 - `config/config.yaml` 设 `llm.enabled: true`
+- 如需拆分“帖子解析模型”和“套磁文案模型”，可在 `llm` 下单独配置：
+```yaml
+llm:
+  enabled: true
+  model: "gpt-5-mini"           # 通用兜底模型
+  parse_model: "deepseek-chat"  # 帖子解析/结构化/摘要
+  outreach_model: "deepseek-chat" # 套磁文案
+```
 
 ### 第 4 步：小红书登录（必须）
 ```powershell
@@ -319,7 +327,9 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 ### llm
 - `enabled`：是否启用 LLM
 - `provider`：当前实现为 OpenAI 兼容接口
-- `model`：模型名
+- `model`：默认模型名（兜底）
+- `parse_model`：帖子解析/结构化/摘要使用的模型；为空时回退 `model`
+- `outreach_model`：套磁文案生成使用的模型；为空时回退 `model`
 - `api_key`：可直接写入密钥（不推荐）
 - `api_key_env`：环境变量名；兼容直接写入密钥字符串
 - `base_url`：兼容接口地址
@@ -626,7 +636,7 @@ pip install -e .[dashboard]
   - `http://127.0.0.1:8787/index.html`（总览）
   - `http://127.0.0.1:8787/control.html`（控制中心）
   - `http://127.0.0.1:8787/leads.html`（线索中心）
-  - `http://127.0.0.1:8787/summary.html`（摘要中心）
+  - `http://127.0.0.1:8787/summary.html`（摘要中心
 - 线索列表默认分页加载，不再一次性展示全部数据。
 - 分页 API：`GET /api/leads?limit=30&page=1&view=all&q=关键词`
   - `view=summary` 表示只返回有摘要的线索。
@@ -635,7 +645,7 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
-| v0.3.0 | 2026-02-25 | 批次摘要链路改造、接入简历、通知新增机会点与快速套磁 |
+| v0.3.0 | 2026-02-25 | 批次摘要链路改造；新增简历解析（前端上传）、双模型配置（解析/套磁）；通知新增机会点与个性化快速套磁 |
 | v0.2.0 | 2026-02-25 | Dashboard 框架化（auto/fastapi/legacy 引擎切换）；前端拆分多页面（总览/控制中心/线索中心/摘要中心）；线索接口与页面支持分页；控制台功能接入页面。 |
 | v0.1.0 | 2026-02-24 | 项目首版：小红书采集、LLM 过滤与摘要、结构化岗位提取、本地 Excel/CSV 落盘、邮件/微信通知、基础 Dashboard。 |
 

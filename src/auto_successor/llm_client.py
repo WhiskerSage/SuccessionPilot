@@ -20,8 +20,8 @@ class LLMClient:
     def is_available(self) -> bool:
         return self.settings.llm.enabled and bool(self.settings.llm_api_key)
 
-    def chat_json(self, system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
-        text = self.chat_text(system_prompt=system_prompt, user_prompt=user_prompt)
+    def chat_json(self, system_prompt: str, user_prompt: str, model: str | None = None) -> dict[str, Any] | None:
+        text = self.chat_text(system_prompt=system_prompt, user_prompt=user_prompt, model=model)
         if not text:
             return None
 
@@ -53,6 +53,7 @@ class LLMClient:
         user_prompt: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        model: str | None = None,
     ) -> str | None:
         if not self.is_available():
             return None
@@ -65,7 +66,7 @@ class LLMClient:
             "Content-Type": "application/json",
         }
         payload = {
-            "model": cfg.model,
+            "model": (model or "").strip() or cfg.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},

@@ -113,7 +113,7 @@ class LLMEnricher:
             f"url: {note.url}\n"
         )
         self.calls += 1
-        obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt)
+        obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=self._parse_model())
         if not obj:
             self.fail += 1
             return rule_decision
@@ -186,7 +186,7 @@ class LLMEnricher:
             f"mode: {mode}\n"
         )
         self.calls += 1
-        obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt)
+        obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=self._parse_model())
         if not obj:
             self.fail += 1
             return current
@@ -255,7 +255,11 @@ class LLMEnricher:
         )
 
         self.calls += 1
-        obj = self.client.chat_json(system_prompt=self._with_memory(system_prompt), user_prompt=user_prompt)
+        obj = self.client.chat_json(
+            system_prompt=self._with_memory(system_prompt),
+            user_prompt=user_prompt,
+            model=self._parse_model(),
+        )
         if not obj:
             self.fail += 1
             return fallback
@@ -302,6 +306,7 @@ class LLMEnricher:
                 user_prompt=user_prompt,
                 temperature=0.4,
                 max_tokens=260,
+                model=self._outreach_model(),
             )
             cleaned = self._clean_line(text or "").replace("\\n", "\n").strip()
             if cleaned:
@@ -318,6 +323,7 @@ class LLMEnricher:
                 user_prompt=retry_prompt,
                 temperature=0.3,
                 max_tokens=260,
+                model=self._outreach_model(),
             )
             cleaned_retry = self._clean_line(text_retry or "").replace("\\n", "\n").strip()
             if cleaned_retry:
@@ -369,6 +375,14 @@ class LLMEnricher:
             reason_parts.append(f"neg={','.join(negative_hits[:2])}")
         reason = " | ".join(reason_parts) if reason_parts else "rule_only"
         return FilterDecision(is_target=is_target, score=score, reason=reason, source="rule")
+
+    def _parse_model(self) -> str:
+        cfg = self.settings.llm
+        return (getattr(cfg, "parse_model", "") or "").strip() or cfg.model
+
+    def _outreach_model(self) -> str:
+        cfg = self.settings.llm
+        return (getattr(cfg, "outreach_model", "") or "").strip() or cfg.model
 
     @staticmethod
     def _note_text(note: NoteRecord) -> str:
@@ -513,7 +527,7 @@ class LLMEnricher:
             "要求：如果正文/评论缺失，要明确说明信息缺口，不要编造。"
         )
         self.calls += 1
-        obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt)
+        obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=self._parse_model())
         if not obj:
             self.fail += 1
             return current
