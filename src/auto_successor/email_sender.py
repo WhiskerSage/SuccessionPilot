@@ -20,7 +20,13 @@ class EmailSender:
     def send_text(self, subject: str, text: str) -> SendResult:
         return self.send_text_with_attachments(subject=subject, text=text, attachments=None)
 
-    def send_text_with_attachments(self, subject: str, text: str, attachments: list[str] | None = None) -> SendResult:
+    def send_text_with_attachments(
+        self,
+        subject: str,
+        text: str,
+        attachments: list[str] | None = None,
+        html: str | None = None,
+    ) -> SendResult:
         cfg = self.settings.email
         if not cfg.enabled:
             return SendResult(status="skipped", response="email.disabled=true")
@@ -36,11 +42,15 @@ class EmailSender:
         if not recipients:
             return SendResult(status="failed", response="missing EMAIL_TO")
 
-        msg = MIMEMultipart()
-        msg["Subject"] = subject[:120]
+        msg = MIMEMultipart("mixed")
+        msg["Subject"] = subject
         msg["From"] = sender
         msg["To"] = ", ".join(recipients)
-        msg.attach(MIMEText(text[:20000], "plain", "utf-8"))
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(text, "plain", "utf-8"))
+        if isinstance(html, str) and html.strip():
+            alt.attach(MIMEText(html, "html", "utf-8"))
+        msg.attach(alt)
 
         attachment_report = []
         for path in attachments or []:

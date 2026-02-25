@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from html import escape as html_escape
 from math import floor
 from pathlib import Path
 
@@ -254,10 +255,19 @@ class CommunicationAgent:
             overview=summary.get("overview") or "",
             attachments=attachments,
         )
+        html = self._build_body_html(
+            run_id=run_id,
+            mode=mode,
+            jobs=jobs,
+            headline=summary.get("headline") or "",
+            overview=summary.get("overview") or "",
+            attachments=attachments,
+        )
         logs = self.router.dispatch_digest(
             run_id=run_id,
             subject=subject,
             text=body,
+            html=html,
             attachments=attachments,
             channel_names=channel_names,
         )
@@ -318,10 +328,8 @@ class CommunicationAgent:
 
     def _build_subject(self, run_id: str, mode: str, jobs: list[JobRecord], headline: str) -> str:
         opp = sum(1 for item in jobs if item.opportunity_point)
-        prefix = f"SuccessionPilot batch | run={run_id} | jobs={len(jobs)} | opp={opp} | mode={mode}"
-        if headline:
-            return f"{prefix} | {headline[:48]}"
-        return prefix
+        # Keep subject short for mobile inbox readability.
+        return f"SuccessionPilot | 岗位{len(jobs)} | 机会点{opp} | {run_id}"
 
     def _build_body(
         self,
@@ -336,41 +344,342 @@ class CommunicationAgent:
         opp_jobs = [item for item in jobs if item.opportunity_point]
 
         lines = [
-            "SuccessionPilot 批次推送",
-            "====================",
+            "SuccessionPilot 岗位批次通知",
+            "========================================",
             f"运行ID：{run_id}",
             f"运行模式：{mode}",
             f"岗位数量：{len(jobs)}",
             f"机会点数量：{len(opp_jobs)}",
             "",
-            f"批次标题：{headline or '-'}",
-            f"批次概览：{overview or '-'}",
+            "【批次标题】",
+            *self._wrap_text(headline or "-"),
             "",
-            "附件：",
+            "【批次概览】",
+            *self._wrap_text(overview or "-"),
+            "",
+            "【附件】",
         ]
         if att:
             lines.extend([f"- {name}" for name in att])
         else:
             lines.append("- 无")
 
-        lines.extend(["", "岗位详情："])
+        if opp_jobs:
+            lines.extend(["", "【机会点（优先跟进）】"])
+            for idx, job in enumerate(opp_jobs, start=1):
+                lines.append(f"[机会点 {idx}] {job.company} | {job.position}")
+                lines.append(f"地点：{job.location}")
+                lines.append(f"到岗：{job.arrival_time}")
+                lines.append(f"投递：{job.application_method}")
+                lines.append(f"匹配度：{job.match_score:.2f}")
+                lines.append(f"链接：{job.link}")
+                if job.outreach_message:
+                    lines.append("套磁文案：")
+                    lines.extend(self._indent_lines(self._wrap_text(job.outreach_message), prefix="  "))
+                lines.append("")
+
+        lines.extend(["【岗位详情】"])
         for idx, job in enumerate(jobs, start=1):
             original_text = (job.original_text or "").strip() or (job.requirements or "")
-            lines.append(f"----- {idx} -----")
-            lines.append(f"公司：{job.company}")
-            lines.append(f"岗位：{job.position}")
+            lines.append(f"----------------------------------------")
+            lines.append(f"[{idx}] {job.company} | {job.position}")
             lines.append(f"发布时间：{job.publish_time.strftime('%Y-%m-%d %H:%M')}")
             lines.append(f"地点：{job.location}")
-            lines.append(f"岗位要求：{job.requirements}")
+            lines.append("岗位要求：")
+            lines.extend(self._indent_lines(self._wrap_text(job.requirements), prefix="  "))
             lines.append(f"到岗时间：{job.arrival_time}")
             lines.append(f"投递方式：{job.application_method}")
             lines.append(f"发布者：{job.author}")
             lines.append(f"简历匹配度：{job.match_score:.2f}")
-            lines.append(f"原文：{original_text}")
+            lines.append("原文：")
+            lines.extend(self._indent_lines(self._wrap_text(original_text), prefix="  "))
             lines.append(f"链接：{job.link}")
-            lines.append(f"机会点：{job.opportunity_point}")
+            lines.append(f"机会点：{'是' if job.opportunity_point else '否'}")
             if job.outreach_message:
-                lines.append(f"套磁文案：{job.outreach_message}")
+                lines.append("套磁文案：")
+                lines.extend(self._indent_lines(self._wrap_text(job.outreach_message), prefix="  "))
             lines.append("")
 
         return "\n".join(lines).strip()
+
+    def _build_body_html(
+        self,
+        run_id: str,
+        mode: str,
+        jobs: list[JobRecord],
+        headline: str,
+        overview: str,
+        attachments: list[str],
+    ) -> str:
+        att = [Path(item).name for item in attachments if str(item).strip()]
+        opp_jobs = [item for item in jobs if item.opportunity_point]
+
+        def esc(v: object) -> str:
+            return html_escape(str(v or ""))
+
+        def esc_multiline(v: object) -> str:
+            value = str(v or "").strip()
+            if not value:
+                return "-"
+            value = value.replace("\r\n", "\n")
+            return "<br>".join(esc(line) for line in value.split("\n"))
+
+        def esc_singleline(v: object) -> str:
+            value = str(v or "").strip()
+            return esc(value) if value else "-"
+
+        summary_rows = "".join(
+            [
+                f"<tr><td class=\"label\">运行ID</td><td class=\"value\">{esc(run_id)}</td></tr>",
+                f"<tr><td class=\"label\">运行模式</td><td class=\"value\">{esc(mode)}</td></tr>",
+                f"<tr><td class=\"label\">岗位数量</td><td class=\"value\">{len(jobs)}</td></tr>",
+                f"<tr><td class=\"label\">机会点数量</td><td class=\"value\">{len(opp_jobs)}</td></tr>",
+            ]
+        )
+
+        attach_rows = "".join([f"<tr><td class=\"value\">{esc(name)}</td></tr>" for name in att]) if att else "<tr><td class=\"value\">无</td></tr>"
+
+        opp_blocks = []
+        for idx, job in enumerate(opp_jobs, start=1):
+            outreach_row = ""
+            if job.outreach_message:
+                outreach_row = (
+                    "<tr><td class=\"label\">套磁文案</td>"
+                    f"<td class=\"value pre\">{esc_multiline(job.outreach_message)}</td></tr>"
+                )
+            opp_blocks.append(
+                (
+                    "<table role=\"presentation\" class=\"item\" cellpadding=\"0\" cellspacing=\"0\">"
+                    f"<tr><td class=\"item-head\" colspan=\"2\">机会点 {idx} | {esc(job.company)} | {esc(job.position)}</td></tr>"
+                    f"<tr><td class=\"label\">地点</td><td class=\"value\">{esc_singleline(job.location)}</td></tr>"
+                    f"<tr><td class=\"label\">到岗时间</td><td class=\"value\">{esc_singleline(job.arrival_time)}</td></tr>"
+                    f"<tr><td class=\"label\">投递方式</td><td class=\"value pre\">{esc_multiline(job.application_method)}</td></tr>"
+                    f"<tr><td class=\"label\">匹配度</td><td class=\"value\">{float(job.match_score or 0.0):.2f}</td></tr>"
+                    f"<tr><td class=\"label\">链接</td><td class=\"value link\"><a href=\"{esc(job.link)}\">{esc(job.link)}</a></td></tr>"
+                    f"{outreach_row}"
+                    "</table>"
+                )
+            )
+        opportunity_html = "".join(opp_blocks) if opp_blocks else "<table role=\"presentation\" class=\"empty\" cellpadding=\"0\" cellspacing=\"0\"><tr><td>无机会点。</td></tr></table>"
+
+        detail_blocks = []
+        for idx, job in enumerate(jobs, start=1):
+            original_text = (job.original_text or "").strip() or (job.requirements or "")
+            outreach_row = ""
+            if job.outreach_message:
+                outreach_row = (
+                    "<tr><td class=\"label\">套磁文案</td>"
+                    f"<td class=\"value pre\">{esc_multiline(job.outreach_message)}</td></tr>"
+                )
+            detail_blocks.append(
+                (
+                    "<table role=\"presentation\" class=\"item\" cellpadding=\"0\" cellspacing=\"0\">"
+                    f"<tr><td class=\"item-head\" colspan=\"2\">[{idx}] {esc(job.company)} | {esc(job.position)}</td></tr>"
+                    f"<tr><td class=\"label\">发布时间</td><td class=\"value\">{esc(job.publish_time.strftime('%Y-%m-%d %H:%M'))}</td></tr>"
+                    f"<tr><td class=\"label\">发布者</td><td class=\"value\">{esc_singleline(job.author)}</td></tr>"
+                    f"<tr><td class=\"label\">地点</td><td class=\"value\">{esc_singleline(job.location)}</td></tr>"
+                    f"<tr><td class=\"label\">机会点</td><td class=\"value\">{'是' if job.opportunity_point else '否'}</td></tr>"
+                    f"<tr><td class=\"label\">到岗时间</td><td class=\"value\">{esc_singleline(job.arrival_time)}</td></tr>"
+                    f"<tr><td class=\"label\">匹配度</td><td class=\"value\">{float(job.match_score or 0.0):.2f}</td></tr>"
+                    f"<tr><td class=\"label\">投递方式</td><td class=\"value pre\">{esc_multiline(job.application_method)}</td></tr>"
+                    f"<tr><td class=\"label\">岗位要求</td><td class=\"value pre\">{esc_multiline(job.requirements)}</td></tr>"
+                    f"<tr><td class=\"label\">原文摘要</td><td class=\"value pre\">{esc_multiline(original_text)}</td></tr>"
+                    f"<tr><td class=\"label\">链接</td><td class=\"value link\"><a href=\"{esc(job.link)}\">{esc(job.link)}</a></td></tr>"
+                    f"{outreach_row}"
+                    "</table>"
+                )
+            )
+        details_html = "".join(detail_blocks) if detail_blocks else "<table role=\"presentation\" class=\"empty\" cellpadding=\"0\" cellspacing=\"0\"><tr><td>无岗位数据。</td></tr></table>"
+
+        return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SuccessionPilot 岗位批次通知</title>
+  <style>
+    html, body {{
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      background-color: #eef2f6;
+    }}
+    body, table, td, a {{
+      -webkit-text-size-adjust: 100%;
+      -ms-text-size-adjust: 100%;
+    }}
+    table {{
+      border-collapse: collapse;
+      border-spacing: 0;
+    }}
+    body {{
+      color: #1f2937;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      font-size: 96%;
+      line-height: 1.6;
+    }}
+    .shell {{
+      width: 100%;
+      background-color: #eef2f6;
+    }}
+    .container {{
+      width: 100%;
+      max-width: 54rem;
+      margin: 0 auto;
+      background-color: #ffffff;
+      border: 1px solid #d7dde7;
+    }}
+    .pad {{
+      padding: 1.125rem 1.25rem;
+    }}
+    .title {{
+      margin: 0;
+      font-size: 1.25em;
+      font-weight: 700;
+      line-height: 1.35;
+      color: #0f172a;
+    }}
+    .section-title {{
+      margin: 1.125rem 0 0.625rem;
+      font-size: 1em;
+      font-weight: 700;
+      line-height: 1.35;
+      color: #111827;
+    }}
+    .meta, .item, .empty {{
+      width: 100%;
+      margin-bottom: 0.875rem;
+      border: 1px solid #d7dde7;
+    }}
+    .item-head {{
+      padding: 0.625rem 0.75rem;
+      background-color: #f2f5fa;
+      border-bottom: 1px solid #d7dde7;
+      font-size: 1em;
+      font-weight: 700;
+      color: #0f172a;
+    }}
+    .label {{
+      width: 24%;
+      min-width: 5rem;
+      padding: 0.5625rem 0.6875rem;
+      border-top: 1px solid #e2e8f0;
+      background-color: #f8fafc;
+      color: #111827;
+      font-weight: 600;
+      vertical-align: top;
+      white-space: nowrap;
+    }}
+    .value {{
+      padding: 0.5625rem 0.6875rem;
+      border-top: 1px solid #e2e8f0;
+      background-color: #ffffff;
+      color: #1f2937;
+      vertical-align: top;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }}
+    .pre {{
+      white-space: pre-wrap;
+    }}
+    .link a {{
+      color: #0b57d0;
+      text-decoration: none;
+      word-break: break-all;
+    }}
+    .empty td {{
+      padding: 0.6875rem 0.75rem;
+      color: #6b7280;
+      background-color: #fbfcfe;
+    }}
+    .footer {{
+      margin: 0.75rem 0 0;
+      color: #6b7280;
+      font-size: 0.875em;
+    }}
+    @media screen and (max-width: 40rem) {{
+      .pad {{
+        padding: 0.875rem 0.75rem !important;
+      }}
+      .title {{
+        font-size: 1.0625em !important;
+      }}
+      .section-title {{
+        font-size: 1em !important;
+      }}
+      .label {{
+        width: 32% !important;
+        white-space: normal !important;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <table role="presentation" class="shell" width="100%" cellpadding="0" cellspacing="0">
+    <tr>
+      <td align="center" style="padding: 0.875rem 0.5rem;">
+        <!--[if mso]>
+        <table role="presentation" width="864" cellpadding="0" cellspacing="0"><tr><td>
+        <![endif]-->
+        <table role="presentation" class="container" width="100%" cellpadding="0" cellspacing="0">
+          <tr>
+            <td class="pad">
+              <p class="title">SuccessionPilot 岗位批次通知</p>
+
+              <p class="section-title">运行摘要</p>
+              <table role="presentation" class="meta" cellpadding="0" cellspacing="0">
+                {summary_rows}
+              </table>
+
+              <p class="section-title">批次标题</p>
+              <table role="presentation" class="meta" cellpadding="0" cellspacing="0">
+                <tr><td class="value pre">{esc_multiline(headline or "-")}</td></tr>
+              </table>
+
+              <p class="section-title">批次概览</p>
+              <table role="presentation" class="meta" cellpadding="0" cellspacing="0">
+                <tr><td class="value pre">{esc_multiline(overview or "-")}</td></tr>
+              </table>
+
+              <p class="section-title">附件</p>
+              <table role="presentation" class="meta" cellpadding="0" cellspacing="0">
+                {attach_rows}
+              </table>
+
+              <p class="section-title">机会点（优先跟进）</p>
+              {opportunity_html}
+
+              <p class="section-title">岗位详情</p>
+              {details_html}
+
+              <p class="footer">由 SuccessionPilot 自动生成。</p>
+            </td>
+          </tr>
+        </table>
+        <!--[if mso]></td></tr></table><![endif]-->
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+
+    @staticmethod
+    def _wrap_text(text: str, width: int = 70) -> list[str]:
+        value = str(text or "").replace("\r\n", "\n").strip()
+        if not value:
+            return ["-"]
+        out: list[str] = []
+        for raw in value.split("\n"):
+            line = raw.strip()
+            if not line:
+                out.append("")
+                continue
+            while len(line) > width:
+                out.append(line[:width])
+                line = line[width:]
+            out.append(line)
+        return out or ["-"]
+
+    @staticmethod
+    def _indent_lines(lines: list[str], prefix: str = "  ") -> list[str]:
+        return [f"{prefix}{line}" if line else "" for line in lines]

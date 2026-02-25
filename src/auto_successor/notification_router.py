@@ -17,9 +17,20 @@ class NotificationChannel:
             return self.sender.send_text(subject=subject, text=body)
         return self.sender.send_text(body)
 
-    def send_digest(self, subject: str, text: str, attachments: list[str] | None = None) -> SendResult:
+    def send_digest(
+        self,
+        subject: str,
+        text: str,
+        attachments: list[str] | None = None,
+        html: str | None = None,
+    ) -> SendResult:
         if self.name == "email":
-            return self.sender.send_text_with_attachments(subject=subject, text=text, attachments=attachments)
+            return self.sender.send_text_with_attachments(
+                subject=subject,
+                text=text,
+                attachments=attachments,
+                html=html,
+            )
         return self.sender.send_text(text)
 
     @staticmethod
@@ -99,6 +110,7 @@ class NotificationRouter:
         run_id: str,
         subject: str,
         text: str,
+        html: str | None = None,
         attachments: list[str] | None = None,
         channel_names: list[str] | None = None,
     ) -> list[SendLogRecord]:
@@ -106,7 +118,7 @@ class NotificationRouter:
         digest_note_id = f"digest:{run_id}"
         for channel in self._iter_channels(channel_names):
             try:
-                result = channel.send_digest(subject=subject, text=text, attachments=attachments)
+                result = channel.send_digest(subject=subject, text=text, attachments=attachments, html=html)
             except Exception as exc:
                 result = SendResult(status="failed", response=f"unexpected error: {exc}")
             logs.append(

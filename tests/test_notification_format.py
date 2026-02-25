@@ -35,6 +35,7 @@ class _CaptureSender:
     def __init__(self):
         self.subject = ""
         self.text = ""
+        self.html = ""
         self.attachments = []
 
     def send_text(self, subject: str = "", text: str = "") -> SendResult:
@@ -42,9 +43,10 @@ class _CaptureSender:
         self.text = text
         return SendResult(status="success", response="ok")
 
-    def send_text_with_attachments(self, subject: str, text: str, attachments=None) -> SendResult:
+    def send_text_with_attachments(self, subject: str, text: str, attachments=None, html=None) -> SendResult:
         self.subject = subject
         self.text = text
+        self.html = str(html or "")
         self.attachments = list(attachments or [])
         return SendResult(status="success", response="ok")
 
@@ -53,11 +55,13 @@ class _CaptureRouter:
     def __init__(self):
         self.subject = ""
         self.text = ""
+        self.html = ""
         self.attachments = []
 
-    def dispatch_digest(self, run_id: str, subject: str, text: str, attachments=None, channel_names=None):
+    def dispatch_digest(self, run_id: str, subject: str, text: str, html=None, attachments=None, channel_names=None):
         self.subject = subject
         self.text = text
+        self.html = str(html or "")
         self.attachments = list(attachments or [])
         return [
             SendLogRecord(
@@ -138,6 +142,21 @@ class TestNotificationFormat(unittest.TestCase):
         self.assertIn("【摘要详情】", sender.text)
         self.assertIn("- 风险标签：信息不完整", sender.text)
         self.assertIn("正文信息（详细）：第一段", sender.text)
+
+    def test_email_sender_supports_html_alternative(self):
+        sender = _CaptureSender()
+        channel = NotificationChannel(name="email", sender=sender)
+
+        result = channel.send_digest(
+            subject="test",
+            text="plain text",
+            html="<html><body><h1>HTML</h1></body></html>",
+            attachments=[],
+        )
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(sender.text, "plain text")
+        self.assertIn("<h1>HTML</h1>", sender.html)
 
     def test_digest_body_uses_blocks_and_spacing(self):
         settings = _build_settings()
