@@ -8,7 +8,7 @@ from .agent_memory import AgentMemoryLoader
 from .llm_client import LLMClient
 from .models import JobRecord, NoteRecord, SummaryRecord
 from .succession import extract_apply_info, extract_arrival_info, extract_jd_full, extract_poster_comment_update
-from .text_utils import clean_line
+from .text_utils import clean_line, clean_line_with_fallback, is_unreadable_text
 
 TARGET_TOKENS = [
     "继任",
@@ -151,7 +151,9 @@ class LLMEnricher:
         try:
             llm_target = self._to_bool(obj.get("is_target"))
             llm_score = self._clamp_score(obj.get("relevance_score", rule_decision.score))
-            reason = self._clean_line(str(obj.get("reason") or ""))[:120] or rule_decision.reason
+            reason = clean_line_with_fallback(str(obj.get("reason") or ""), fallback=rule_decision.reason)[:120]
+            if is_unreadable_text(reason):
+                reason = rule_decision.reason or "LLM原因文本异常，已回退规则原因。"
             self.success += 1
         except Exception:
             self.fail += 1
@@ -541,9 +543,9 @@ class LLMEnricher:
         )
 
     def _pick_text(self, obj: dict, key: str, default: str, max_len: int) -> str:
-        text = self._clean_line(str(obj.get(key) or default or ""))
-        if not text:
-            text = self._clean_line(str(default or ""))
+        text = clean_line_with_fallback(str(obj.get(key) or ""), fallback=str(default or ""))
+        if is_unreadable_text(text):
+            text = clean_line_with_fallback(str(default or ""), fallback="")
         return text[:max_len]
 
     def _infer_risk_line(self, note: NoteRecord) -> str:

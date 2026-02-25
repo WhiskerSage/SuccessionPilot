@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from .models import NoteRecord, SummaryRecord
+from .text_utils import clean_line as normalize_line
 
 RISK_TOKENS = ["诈骗", "警惕", "已招到", "避雷", "坑"]
 JD_TOKENS = ["岗位职责", "工作内容", "岗位要求", "任职要求", "职位描述", "岗位JD", "jd"]
@@ -61,7 +62,7 @@ def build_summary(note: NoteRecord) -> SummaryRecord:
 
 
 def clean_line(text: str) -> str:
-    return re.sub(r"\s+", " ", text or "").strip()
+    return normalize_line(text)
 
 
 def extract_poster_comment_update(comments_preview: str, comment_count: int) -> str:

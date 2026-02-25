@@ -3,6 +3,16 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+try {
+  [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+  [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+  $OutputEncoding = [Console]::OutputEncoding
+  chcp 65001 > $null
+} catch {}
+
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 $ProjectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location -LiteralPath $ProjectRoot
 

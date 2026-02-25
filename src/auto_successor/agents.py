@@ -405,7 +405,7 @@ class CommunicationAgent:
 
         lines.extend(["【岗位详情】"])
         for idx, job in enumerate(jobs, start=1):
-            original_text = (job.original_text or "").strip() or (job.requirements or "")
+            original_text = self._display_original_text(job)
             lines.append(f"----------------------------------------")
             lines.append(f"[{idx}] {job.company} | {job.position}")
             lines.append(f"发布时间：{job.publish_time.strftime('%Y-%m-%d %H:%M')}")
@@ -489,7 +489,7 @@ class CommunicationAgent:
 
         detail_blocks = []
         for idx, job in enumerate(jobs, start=1):
-            original_text = (job.original_text or "").strip() or (job.requirements or "")
+            original_text = self._display_original_text(job)
             outreach_row = ""
             if job.outreach_message:
                 outreach_row = (
@@ -687,6 +687,47 @@ class CommunicationAgent:
   </table>
 </body>
 </html>"""
+
+    @classmethod
+    def _display_original_text(cls, job: JobRecord) -> str:
+        original_text = str(job.original_text or "").strip()
+        requirements = str(job.requirements or "").strip()
+        if original_text:
+            if cls._is_duplicate_text(original_text, requirements):
+                return "原文与岗位要求高度重合，建议查看原帖链接获取完整上下文。"
+            return original_text
+
+        extras: list[str] = []
+        title = str(job.source_title or "").strip()
+        comments = str(job.comments_preview or "").strip()
+        if title:
+            extras.append(f"标题：{title}")
+        if comments:
+            extras.append(f"评论线索：{comments}")
+        if extras:
+            return "；".join(extras)[:700]
+        return "未抓取到可用原文摘要，请查看原帖链接/图片。"
+
+    @staticmethod
+    def _is_duplicate_text(a: str, b: str) -> bool:
+        left = CommunicationAgent._normalize_compare_text(a)
+        right = CommunicationAgent._normalize_compare_text(b)
+        if not left or not right:
+            return False
+        if left == right:
+            return True
+        short, long = (left, right) if len(left) <= len(right) else (right, left)
+        if len(short) >= 24 and short in long:
+            overlap = len(short) / max(1, len(long))
+            return overlap >= 0.7
+        return False
+
+    @staticmethod
+    def _normalize_compare_text(text: str) -> str:
+        value = str(text or "").lower().strip()
+        if not value:
+            return ""
+        return "".join(ch for ch in value if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
 
     @staticmethod
     def _wrap_text(text: str, width: int = 70) -> list[str]:

@@ -16,7 +16,7 @@ from auto_successor.config import (
     WeChatServiceConfig,
     XHSConfig,
 )
-from auto_successor.models import NoteRecord, SendLogRecord, SummaryRecord
+from auto_successor.models import JobRecord, NoteRecord, SendLogRecord, SummaryRecord
 from auto_successor.pipeline import AutoSuccessorPipeline
 
 
@@ -428,6 +428,37 @@ class TestPipelineFlow(unittest.TestCase):
         self.assertFalse(pipeline.state.digest_marked)
         self.assertFalse(pipeline.state.saved)
         self.assertEqual(len(pipeline.communication.digest_calls), 0)
+
+    def test_jobs_to_summary_records_avoid_duplicate_original_text(self):
+        settings = _build_settings()
+        logger = _NullLogger()
+        pipeline = AutoSuccessorPipeline(settings, logger)
+
+        job = JobRecord(
+            run_id="r-dup",
+            post_id="n-dup",
+            company="测试公司",
+            position="测试岗位",
+            location="上海",
+            requirements="岗位职责：整理日报，维护台账",
+            link="https://www.xiaohongshu.com/explore/n-dup",
+            publish_time=datetime.now(timezone.utc),
+            source_title="找继任：测试岗位",
+            comment_count=0,
+            comments_preview="",
+            original_text="岗位职责：整理日报，维护台账",
+            author="tester",
+            risk_line="low",
+            match_score=88.0,
+            mode="auto",
+        )
+
+        records = pipeline._jobs_to_summary_records(run_id="r-dup", jobs=[job])
+        self.assertEqual(len(records), 1)
+        summary_text = records[0].summary
+        self.assertIn("岗位要求：岗位职责：整理日报，维护台账", summary_text)
+        self.assertIn("原文：原文与岗位要求高度重合", summary_text)
+        self.assertNotIn("原文：岗位职责：整理日报，维护台账", summary_text)
 
 
 if __name__ == "__main__":

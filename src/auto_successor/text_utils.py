@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+_SUSPECT_CHARS_RE = re.compile(r"[\u0100-\u02FF\u0370-\u04FF]")
+
 
 def repair_mojibake(text: str) -> str:
     """
@@ -31,7 +33,48 @@ def repair_mojibake(text: str) -> str:
 
 def clean_line(text: str) -> str:
     value = re.sub(r"\s+", " ", str(text or "")).strip()
-    return repair_mojibake(value)
+    repaired = repair_mojibake(value)
+    if not repaired:
+        return ""
+
+    # If text still looks like mojibake, strip suspicious runs as a final fallback.
+    if is_unreadable_text(repaired):
+        compact = _strip_suspect_runs(repaired)
+        if compact and not is_unreadable_text(compact):
+            return compact
+    return repaired
+
+
+def clean_line_with_fallback(text: str, fallback: str = "") -> str:
+    cleaned = clean_line(text)
+    if cleaned and not is_unreadable_text(cleaned):
+        return cleaned
+    fb = clean_line(fallback)
+    if fb:
+        return fb
+    return cleaned
+
+
+def is_unreadable_text(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    if "�" in value:
+        return True
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", value))
+    suspect = len(_SUSPECT_CHARS_RE.findall(value))
+    ascii_ok = len(re.findall(r"[A-Za-z0-9_\-:/.@ ]", value))
+    total = max(1, len(value))
+    suspect_ratio = suspect / total
+    # Typical mojibake contains long runs of Greek/Cyrillic-like chars with very low CJK ratio.
+    if suspect >= 3 and cjk <= 1 and suspect_ratio >= 0.18:
+        return True
+    if re.search(r"(?:Ã.|Â.|¤|�)", value):
+        return True
+    # If almost no meaningful chars exist, treat as unreadable.
+    if cjk == 0 and ascii_ok <= 2 and suspect >= 2:
+        return True
+    return False
 
 
 def _try_utf8_to_gbk(value: str) -> str:
@@ -80,3 +123,10 @@ def _repair_segments(value: str) -> str:
 
     # Typical mojibake runs after GBK<->UTF-8 mismatch.
     return re.sub(r"[\u0100-\u04ff]{2,}", repl, value)
+
+
+def _strip_suspect_runs(value: str) -> str:
+    # Keep CJK/ASCII/punctuation and collapse suspicious runs to a single space.
+    cleaned = re.sub(r"[\u0100-\u04ff]{2,}", " ", value)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned

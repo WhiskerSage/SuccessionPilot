@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import base64
+import os
 import subprocess
 import sys
 import threading
@@ -15,6 +16,7 @@ import yaml
 
 from .config import ResumeConfig
 from .resume_loader import ResumeLoader
+from .text_utils import repair_mojibake
 
 
 class RuntimeManager:
@@ -61,6 +63,13 @@ class RuntimeManager:
         if sys.platform.startswith("win"):
             return "powershell"
         return "pwsh"
+
+    @staticmethod
+    def _build_subprocess_env() -> dict[str, str]:
+        env = os.environ.copy()
+        env.setdefault("PYTHONUTF8", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        return env
 
     def _build_main_command(
         self,
@@ -123,6 +132,7 @@ class RuntimeManager:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                env=self._build_subprocess_env(),
             )
         except Exception as exc:
             with self._lock:
@@ -147,7 +157,7 @@ class RuntimeManager:
         try:
             if proc.stdout is not None:
                 for raw in proc.stdout:
-                    line = raw.rstrip()
+                    line = repair_mojibake(raw.rstrip())
                     if not line:
                         continue
                     with self._lock:
@@ -218,8 +228,10 @@ class RuntimeManager:
                 encoding="utf-8",
                 errors="replace",
                 timeout=90,
+                env=self._build_subprocess_env(),
             )
-            raw = "\n".join([result.stdout.strip(), result.stderr.strip()]).strip()
+            raw_lines = [repair_mojibake(x.strip()) for x in [result.stdout, result.stderr] if str(x or "").strip()]
+            raw = "\n".join(raw_lines).strip()
             parsed: dict[str, Any] | None = None
             for line in reversed([x for x in raw.splitlines() if x.strip()]):
                 text = line.strip()
@@ -261,6 +273,7 @@ class RuntimeManager:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                env=self._build_subprocess_env(),
             )
         except Exception as exc:
             return {"ok": False, "message": f"启动自动运行失败: {exc}", "runtime": self.status()}
@@ -281,7 +294,7 @@ class RuntimeManager:
         if proc.stdout is None:
             return
         for raw in proc.stdout:
-            line = raw.rstrip()
+            line = repair_mojibake(raw.rstrip())
             if not line:
                 continue
             with self._lock:

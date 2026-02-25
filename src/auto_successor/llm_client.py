@@ -133,7 +133,7 @@ class LLMClient:
                     timeout=(connect_timeout, read_timeout),
                 )
                 resp.raise_for_status()
-                data = resp.json()
+                data = self._parse_json_payload(resp)
             except Exception as exc:
                 code, retryable = self._classify_error(exc)
                 if attempt < attempts and retryable:
@@ -203,6 +203,24 @@ class LLMClient:
             if isinstance(data.get("text"), str):
                 return data["text"]
         return None
+
+    @staticmethod
+    def _parse_json_payload(resp: requests.Response) -> dict[str, Any]:
+        # Prefer strict UTF-8 decoding to avoid provider charset/header mismatches.
+        raw = getattr(resp, "content", b"") or b""
+        if raw:
+            for encoding in ("utf-8", "utf-8-sig", "gb18030"):
+                try:
+                    text = raw.decode(encoding)
+                    data = json.loads(text)
+                    if isinstance(data, dict):
+                        return data
+                except Exception:
+                    continue
+        data = resp.json()
+        if isinstance(data, dict):
+            return data
+        raise ValueError("llm response json is not an object")
 
     @staticmethod
     def _classify_error(exc: Exception) -> tuple[str, bool]:

@@ -638,14 +638,13 @@ class AutoSuccessorPipeline:
     def _jobs_to_summary_records(self, run_id: str, jobs: list[JobRecord]) -> list[SummaryRecord]:
         output: list[SummaryRecord] = []
         for item in jobs:
-            original_text = (item.original_text or "").strip()
-            if not original_text:
-                original_text = item.requirements or ""
+            requirements = (item.requirements or "").strip()
+            original_text = self._build_original_text_summary(item)
             summary_text = (
                 f"公司：{item.company}\n"
                 f"岗位：{item.position}\n"
                 f"地点：{item.location}\n"
-                f"岗位要求：{item.requirements}\n"
+                f"岗位要求：{requirements or '未提取到明确要求'}\n"
                 f"到岗时间：{item.arrival_time}\n"
                 f"投递方式：{item.application_method}\n"
                 f"风险等级：{item.risk_line}\n"
@@ -667,6 +666,48 @@ class AutoSuccessorPipeline:
                 )
             )
         return output
+
+    @classmethod
+    def _build_original_text_summary(cls, item: JobRecord) -> str:
+        original_text = str(item.original_text or "").strip()
+        requirements = str(item.requirements or "").strip()
+        if original_text:
+            if cls._is_duplicate_text(original_text, requirements):
+                return "原文与岗位要求高度重合，建议查看原帖链接获取完整上下文。"
+            return original_text
+
+        fallbacks: list[str] = []
+        title = str(item.source_title or "").strip()
+        comments = str(item.comments_preview or "").strip()
+        if title:
+            fallbacks.append(f"标题：{title}")
+        if comments:
+            fallbacks.append(f"评论线索：{comments}")
+        if fallbacks:
+            return "；".join(fallbacks)[:700]
+        return "未抓取到可用原文摘要，请查看原帖链接/图片。"
+
+    @staticmethod
+    def _is_duplicate_text(a: str, b: str) -> bool:
+        left = AutoSuccessorPipeline._normalize_compare_text(a)
+        right = AutoSuccessorPipeline._normalize_compare_text(b)
+        if not left or not right:
+            return False
+        if left == right:
+            return True
+        short, long = (left, right) if len(left) <= len(right) else (right, left)
+        if len(short) >= 24 and short in long:
+            overlap = len(short) / max(1, len(long))
+            return overlap >= 0.7
+        return False
+
+    @staticmethod
+    def _normalize_compare_text(text: str) -> str:
+        value = str(text or "").lower().strip()
+        if not value:
+            return ""
+        value = "".join(ch for ch in value if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
+        return value
 
     def _summaries_to_jobs(self, summaries: list[SummaryRecord]) -> list[JobRecord]:
         jobs: list[JobRecord] = []
