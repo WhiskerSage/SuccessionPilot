@@ -113,6 +113,7 @@ body {
 }
 
 .nav-item {
+  display: block;
   text-align: left;
   border: 1px solid transparent;
   border-radius: 10px;
@@ -121,6 +122,7 @@ body {
   padding: 9px 10px;
   cursor: pointer;
   font-size: 14px;
+  text-decoration: none;
 }
 
 .nav-item.active,
@@ -233,6 +235,11 @@ body {
   font-family: inherit;
 }
 
+.btn:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
 .btn.primary {
   border: 1px solid var(--accent);
   background: var(--accent);
@@ -278,6 +285,123 @@ body {
   gap: 10px;
 }
 
+.hidden {
+  display: none !important;
+}
+
+.ops {
+  padding: 12px;
+}
+
+.ops-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.ops-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  padding: 10px;
+}
+
+.ops-card h4 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.inline-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.inline-grid.cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.inline-grid.cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--sub);
+}
+
+.field input,
+.field select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px 9px;
+  color: var(--text);
+  font: inherit;
+}
+
+.field.checkbox {
+  flex-direction: row;
+  align-items: center;
+  margin-top: 18px;
+  gap: 8px;
+}
+
+.field.checkbox input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.tip-line {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--sub);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.span-2 {
+  grid-column: span 2;
+}
+
+.runtime-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--sub);
+  margin-bottom: 8px;
+}
+
+.runtime-log {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fbff;
+  padding: 10px;
+  min-height: 120px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 12px/1.5 var(--font-mono);
+}
+
 .table-panel,
 .detail-panel {
   padding: 12px;
@@ -317,6 +441,35 @@ body {
   border-radius: 12px;
   background: #fff;
   overflow: auto;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.pager #leadPageInfo {
+  color: var(--sub);
+  font-size: 12px;
+}
+
+.pager-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--sub);
+  font-size: 12px;
+}
+
+.pager-size select {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  padding: 5px 8px;
 }
 
 table {
@@ -458,6 +611,18 @@ tbody tr.active { background: var(--accent-soft); }
     grid-template-columns: 1fr;
   }
 
+  .ops-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .span-2 {
+    grid-column: span 1;
+  }
+
+  .form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .top {
     flex-direction: column;
     align-items: flex-start;
@@ -479,6 +644,12 @@ tbody tr.active { background: var(--accent-soft); }
   }
 
   .kpis {
+    grid-template-columns: 1fr;
+  }
+
+  .inline-grid.cols-3,
+  .inline-grid.cols-2,
+  .form-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -585,4 +756,39 @@ tbody tr.active { background: var(--accent-soft); }
   .detail-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.toast {
+  position: fixed;
+  right: 18px;
+  top: 16px;
+  z-index: 100;
+  min-width: 220px;
+  max-width: 360px;
+  border-radius: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: #fff;
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 13px;
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none;
+  transition: all 180ms ease;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast.success {
+  border-color: #a8d9c4;
+  background: #eefaf4;
+}
+
+.toast.error {
+  border-color: #efc0c0;
+  background: #fff3f3;
 }

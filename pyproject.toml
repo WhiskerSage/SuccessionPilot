@@ -1,6 +1,6 @@
 [project]
 name = "successionpilot"
-version = "0.1.0"
+version = "0.2.0"
 description = "SuccessionPilot: Xiaohongshu successor tracking runtime with agent-style orchestration"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -9,6 +9,12 @@ dependencies = [
   "PyYAML>=6.0.0",
   "requests>=2.31.0",
   "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dashboard = [
+  "fastapi>=0.116.0",
+  "uvicorn>=0.35.0",
 ]
 
 [project.scripts]

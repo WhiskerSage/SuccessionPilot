@@ -1,7 +1,7 @@
-# SuccessionPilot 自动找继任系统
+﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.1.0`
+- 项目版本：`0.2.0`
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
@@ -157,9 +157,10 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 
 ### 第 7 步：查看前端 Dashboard
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/start_dashboard.ps1 -BindHost 127.0.0.1 -Port 8787
+powershell -ExecutionPolicy Bypass -File scripts/start_dashboard.ps1 -Engine auto -BindHost 127.0.0.1 -Port 8787
 ```
 浏览器打开 `http://127.0.0.1:8787`。
+如需启用 FastAPI 引擎，可先执行：`pip install -e .[dashboard]`。
 
 ### 第 8 步：常用运维命令
 手动发送已存最新 5 条摘要（不抓取）。
@@ -257,22 +258,22 @@ Copy-Item .env.example .env
 
 Dashboard 启动。
 ```powershell
-.\.venv\Scripts\python.exe -m auto_successor.dashboard --host 127.0.0.1 --port 8787
+.\.venv\Scripts\python.exe -m auto_successor.dashboard --engine auto --host 127.0.0.1 --port 8787
 ```
 
 或使用模块入口。
 ```powershell
-succession-pilot-dashboard --host 127.0.0.1 --port 8787
+succession-pilot-dashboard --engine auto --host 127.0.0.1 --port 8787
 ```
 
 或使用脚本。
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/start_dashboard.ps1
+powershell -ExecutionPolicy Bypass -File scripts/start_dashboard.ps1 -Engine auto
 ```
 
 指定地址与端口示例。
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/start_dashboard.ps1 -BindHost 127.0.0.1 -Port 8787
+powershell -ExecutionPolicy Bypass -File scripts/start_dashboard.ps1 -Engine auto -BindHost 127.0.0.1 -Port 8787
 ```
 
 守护运行快捷脚本。
@@ -584,4 +585,44 @@ python -m unittest discover -s tests -v
 
 ## 许可
 项目为本地自用工程，请按实际团队规范管理代码与密钥。
+
+
+## Dashboard 引擎切换（框架化）
+
+现在 Dashboard 支持三种引擎：
+- `auto`：优先 FastAPI（若未安装则自动回退 legacy）
+- `fastapi`：强制 FastAPI
+- `legacy`：原生内置 HTTP 服务
+
+### 启动方式
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start_dashboard.ps1 -Engine auto
+powershell -ExecutionPolicy Bypass -File scripts/start_dashboard.ps1 -Engine fastapi
+powershell -ExecutionPolicy Bypass -File scripts/start_dashboard.ps1 -Engine legacy
+```
+
+### 安装 FastAPI 引擎依赖（可选）
+```powershell
+pip install -e .[dashboard]
+```
+
+说明：未安装 FastAPI 时，`-Engine auto` 会自动回退到 legacy，不影响使用。
+
+## Dashboard 多页面与分页
+
+- 页面入口：
+  - `http://127.0.0.1:8787/index.html`（总览）
+  - `http://127.0.0.1:8787/control.html`（控制中心）
+  - `http://127.0.0.1:8787/leads.html`（线索中心）
+  - `http://127.0.0.1:8787/summary.html`（摘要中心）
+- 线索列表默认分页加载，不再一次性展示全部数据。
+- 分页 API：`GET /api/leads?limit=30&page=1&view=all&q=关键词`
+  - `view=summary` 表示只返回有摘要的线索。
+  - 响应字段包含：`items`、`total`、`page`、`page_size`、`total_pages`。
+## 版本更新记录
+
+| 版本 | 日期 | 更新内容 |
+|---|---|---|
+| v0.2.0 | 2026-02-25 | Dashboard 框架化（auto/fastapi/legacy 引擎切换）；前端拆分多页面（总览/控制中心/线索中心/摘要中心）；线索接口与页面支持分页；控制台功能接入页面。 |
+| v0.1.0 | 2026-02-24 | 项目首版：小红书采集、LLM 过滤与摘要、结构化岗位提取、本地 Excel/CSV 落盘、邮件/微信通知、基础 Dashboard。 |
 
