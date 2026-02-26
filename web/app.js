@@ -394,7 +394,7 @@
 
     const title = toText(lead.title);
     const author = toText(lead.author);
-    const publish = toText(lead.publish_time_text || lead.publish_time);
+    const publish = toText(lead.publish_time_display || fmtTime(lead.publish_time));
     const company = toText(lead.company);
     const position = toText(lead.position);
     const location = toText(lead.location);
@@ -442,7 +442,7 @@
     dom.leadBody.innerHTML = state.leads
       .map((lead) => {
         const active = lead.note_id === state.selectedNoteId ? "active" : "";
-        const publish = toText(lead.publish_time_text || fmtTime(lead.publish_time));
+        const publish = toText(lead.publish_time_display || fmtTime(lead.publish_time));
         const jobLine = `${toText(lead.position, "岗位待补充")} / ${toText(lead.company, "公司待补充")}`;
         const location = toText(lead.location);
         const interact = `赞 ${fmtInt(lead.like_count)} / 评 ${fmtInt(lead.comment_count)}`;

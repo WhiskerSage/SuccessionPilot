@@ -420,6 +420,10 @@ class DataBackend:
             like_count = self._to_int(item.get("like_count"))
             comment_count = self._to_int(item.get("comment_count"))
             publish_ts = self._to_int(item.get("publish_timestamp"))
+            if publish_ts <= 0:
+                publish_ts = self._to_epoch(item.get("publish_time"))
+            publish_time_value = str(item.get("publish_time") or "")
+            publish_time_display = self._format_time_from_epoch_or_iso(publish_ts, publish_time_value)
             status = self._resolve_status(
                 like_count=like_count,
                 comment_count=comment_count,
@@ -430,9 +434,10 @@ class DataBackend:
             merged.append(
                 {
                     "note_id": note_id,
-                    "publish_time": str(item.get("publish_time") or ""),
+                    "publish_time": publish_time_value,
                     "publish_time_text": str(item.get("publish_time_text") or ""),
                     "publish_timestamp": publish_ts,
+                    "publish_time_display": publish_time_display,
                     "title": str(item.get("title") or ""),
                     "author": str(item.get("author") or ""),
                     "like_count": like_count,
@@ -1337,6 +1342,38 @@ class DataBackend:
             return int(float(text))
         except Exception:
             return 0
+
+    @staticmethod
+    def _to_epoch(value: Any) -> int:
+        if isinstance(value, datetime):
+            try:
+                return int(value.timestamp())
+            except Exception:
+                return 0
+        text = str(value or "").strip()
+        if not text:
+            return 0
+        try:
+            return int(datetime.fromisoformat(text).timestamp())
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _format_time_from_epoch_or_iso(epoch: int, iso_text: str) -> str:
+        try:
+            if int(epoch) > 0:
+                dt = datetime.fromtimestamp(int(epoch))
+                return dt.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            pass
+        text = str(iso_text or "").strip()
+        if text:
+            try:
+                dt = datetime.fromisoformat(text)
+                return dt.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                return text
+        return "-"
 
     def _read_digest_interval(self) -> int:
         if not self.config_path.exists():

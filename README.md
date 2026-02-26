@@ -1,10 +1,16 @@
 ﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.3.5`
+- 项目版本：`0.3.6`
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
+
+### v0.3.6 更新要点
+- 增量写入升级：每轮抓取到的帖子都会写入 `raw_notes`，按 `note_id` 做 upsert，不重复新增行；智能处理仍只针对“新帖子”执行。
+- 数据追踪增强：`raw_notes` 新增 `publish_time_quality`、`first_seen_at`、`updated_at` 字段，便于区分首见时间与最近更新时间。
+- 时间稳定性优化：发布时间解析失败时保留历史 `publish_timestamp`，避免同一帖子在多轮运行中因回退“当前时间”而排序抖动。
+- 前端发布时间统一为绝对时间（`YYYY-MM-DD HH:MM`），避免“分钟前/昨天”等相对时间造成阅读混乱。
 
 ### v0.3.5 更新要点
 - 新增配置向导：控制中心新增“应用推荐配置 + 标记完成”流程，降低初始配置门槛。
@@ -528,11 +534,12 @@ node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 ## 智能处理规则
 执行流程。
 1. 抓取帖子列表并按发布时间排序。
-2. 仅对“状态文件中不存在”的帖子执行增量处理。
-3. 过滤非目标帖子。
-4. 提取岗位结构化字段。
-5. 生成摘要并写入存储。
-6. 按通知策略发送。
+2. 所有抓取到的帖子都会按 `note_id` 增量写入 `raw_notes`（用于更新互动数、正文补全等字段）。
+3. 仅对“状态文件中不存在”的帖子执行智能处理（过滤、岗位提取、摘要、通知）。
+4. 过滤非目标帖子。
+5. 提取岗位结构化字段。
+6. 生成摘要并写入存储。
+7. 按通知策略发送。
 
 `auto` 与 `agent` 区别。
 - `auto`：按 `llm.max_*` 限额执行，适合稳定低成本运行。
@@ -572,6 +579,11 @@ node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 - `succession_summary`：摘要数据（按 `note_id` 去重更新）
 - `jobs`：岗位结构化数据（按 `PostID` 去重更新）
 - `send_log`：发送日志（追加）
+
+`raw_notes` 关键字段说明。
+- `publish_time_quality`：发布时间解析质量（`parsed` / `fallback`）。
+- `first_seen_at`：该 `note_id` 首次入库时间。
+- `updated_at`：该 `note_id` 最近一次刷新时间。
 
 ### 状态与快照
 - `data/state.json`
@@ -617,6 +629,7 @@ node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 - `GET /api/health`
 - `GET /api/summary`
 - `GET /api/leads?limit=200&q=关键词`
+- `GET /api/leads` 返回 `publish_time_display`（绝对时间显示字段）。
 - `GET /api/runs?limit=20`
 - `GET /api/setup/check`
 - `POST /api/setup/check`
@@ -706,6 +719,7 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
+| v0.3.6 | 2026-02-26 | `raw_notes` 升级为“每轮全量抓取结果按 `note_id` upsert”并新增 `first_seen_at/updated_at/publish_time_quality`；发布时间解析失败时保留历史时间，排序更稳定；Dashboard 线索发布时间统一为绝对时间显示。 |
 | v0.3.5 | 2026-02-26 | 新增控制中心“配置向导”（应用推荐配置/标记完成）；新增“一键自检”并覆盖配置、写入权限、XHS、邮件、LLM 检查；新增 `GET/POST /api/setup/check`。 |
 | v0.3.4 | 2026-02-26 | Dashboard 皮肤升级：`graphite-office` 改为深色办公主题；前端改为适度圆角；移除 `PYTHONUTF8=1` 强制设置，修复部分 Conda 环境启动报错。 |
 | v0.3.3 | 2026-02-26 | 中文乱码修复增强（脚本/日志/子进程/解码链路统一 UTF-8）；LLM 文本回退策略增强；岗位通知中“岗位要求/原文摘要”去重，避免重复展示。 |
