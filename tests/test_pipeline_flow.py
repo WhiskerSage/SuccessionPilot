@@ -267,6 +267,42 @@ class TestPipelineFlow(unittest.TestCase):
         self.assertEqual(pipeline.state.processed_note_ids, {"n1", "n2"})
         self.assertEqual(len(pipeline.journal.writes), 1)
 
+    def test_pipeline_upserts_all_fetched_notes_while_processing_only_new_notes(self):
+        settings = _build_settings()
+        logger = _NullLogger()
+        pipeline = AutoSuccessorPipeline(settings, logger)
+
+        existing_note = _note(
+            note_id="n-existing",
+            title="找继任：历史帖子",
+            detail="历史帖子正文。",
+        )
+        new_note = _note(
+            note_id="n-new",
+            title="找继任：新增岗位，实习岗位上海",
+            detail="新增岗位正文。",
+        )
+
+        state = _DummyState()
+        state.processed_note_ids.add("n-existing")
+
+        pipeline.collector = _DummyCollector([existing_note, new_note])
+        pipeline.store = _DummyStore()
+        pipeline.state = state
+        pipeline.communication = _DummyCommunication()
+        pipeline.journal = _DummyJournal()
+        pipeline.lock = _DummyLock()
+
+        stats = pipeline.run_once(run_id="r-upsert")
+
+        self.assertEqual(stats["fetched"], 2)
+        self.assertEqual(stats["new_notes"], 1)
+        self.assertEqual(stats["updated_existing_notes"], 1)
+        self.assertEqual(stats["target_notes"], 1)
+        self.assertEqual(stats["jobs"], 1)
+        self.assertEqual(len(pipeline.store.raw), 2)
+        self.assertEqual(state.processed_note_ids, {"n-existing", "n-new"})
+
     def test_agent_mode_realtime_dispatches_top_n_only(self):
         settings = _build_settings()
         settings.agent.mode = "agent"

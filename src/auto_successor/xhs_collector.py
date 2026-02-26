@@ -47,7 +47,7 @@ class XHSMcpCliCollector:
             feeds = []
 
         notes: list[NoteRecord] = []
-        for feed in feeds:
+        for index, feed in enumerate(feeds):
             if not isinstance(feed, dict):
                 continue
             model_type = str(feed.get("modelType") or feed.get("model_type") or "").strip().lower()
@@ -77,7 +77,10 @@ class XHSMcpCliCollector:
             share_count = self._to_int(self._pick(interact, "sharedCount", "shared_count"))
 
             publish_text = clean_line(self._extract_publish_time_text(note_card))
-            publish_time = self._parse_publish_time(publish_text)
+            publish_time, publish_time_quality = self._parse_publish_time_with_quality(publish_text)
+            if publish_time_quality != "parsed":
+                # Keep source list order for notes with unparsed time text.
+                publish_time = publish_time - timedelta(seconds=max(0, int(index)))
 
             xsec_token = str(feed.get("xsecToken") or feed.get("xsec_token") or "").strip()
             note_url = f"https://www.xiaohongshu.com/explore/{note_id}"
@@ -94,6 +97,7 @@ class XHSMcpCliCollector:
                     author=author,
                     publish_time=publish_time,
                     publish_time_text=publish_text,
+                    publish_time_quality=publish_time_quality,
                     like_count=like_count,
                     comment_count=comment_count,
                     share_count=share_count,
@@ -103,7 +107,7 @@ class XHSMcpCliCollector:
                 )
             )
 
-        notes.sort(key=lambda item: item.publish_time, reverse=True)
+        notes.sort(key=lambda item: (item.publish_time, item.note_id), reverse=True)
         return notes[:max_results]
 
     def enrich_note_details(self, notes: list[NoteRecord], max_notes: int) -> None:
@@ -471,62 +475,137 @@ class XHSMcpCliCollector:
         return clean_line(" | ".join(uniq[:8]))
 
     def _parse_publish_time(self, text: str) -> datetime:
-        now = datetime.now(self.tz)
-        if not text:
-            return now
+        value, _ = self._parse_publish_time_with_quality(text)
+        return value
 
-        # Common CN relative time formats.
-        if re.match(r"^(刚刚|刚才)$", text):
-            return now
+    def _parse_publish_time_with_quality(
+        self,
+        text: str,
+        reference: datetime | None = None,
+    ) -> tuple[datetime, str]:
+        now = reference.astimezone(self.tz) if isinstance(reference, datetime) else datetime.now(self.tz)
+        raw = clean_line(text)
+        if not raw:
+            return now, "fallback"
 
-        m = re.match(r"^(\d+)\s*秒前$", text)
+        normalized = self._normalize_publish_time_text(raw)
+        if not normalized:
+            return now, "fallback"
+
+        if re.match(r"^(刚刚|刚才)$", normalized):
+            return now, "parsed"
+
+        m = re.match(r"^(\d+)\s*秒前$", normalized)
         if m:
-            return now - timedelta(seconds=int(m.group(1)))
+            return now - timedelta(seconds=int(m.group(1))), "parsed"
 
-        m = re.match(r"^(\d+)\s*分钟前$", text)
+        m = re.match(r"^(\d+)\s*分钟前$", normalized)
         if m:
-            return now - timedelta(minutes=int(m.group(1)))
+            return now - timedelta(minutes=int(m.group(1))), "parsed"
 
-        m = re.match(r"^(\d+)\s*小时前$", text)
+        m = re.match(r"^(\d+)\s*小时前$", normalized)
         if m:
-            return now - timedelta(hours=int(m.group(1)))
+            return now - timedelta(hours=int(m.group(1))), "parsed"
 
-        m = re.match(r"^(\d+)\s*天前$", text)
+        m = re.match(r"^(\d+)\s*天前$", normalized)
         if m:
-            return now - timedelta(days=int(m.group(1)))
-
-        m = re.match(r"^昨天\s*(\d{1,2}):(\d{2})$", text)
-        if m:
-            hour = int(m.group(1))
-            minute = int(m.group(2))
-            yday = now - timedelta(days=1)
-            return datetime(yday.year, yday.month, yday.day, hour, minute, tzinfo=self.tz)
+            return now - timedelta(days=int(m.group(1))), "parsed"
 
         # Backward compatibility for legacy mojibake time text.
-        m = re.match(r"^(\d+)\s*澶╁墠$", text)
+        m = re.match(r"^(\d+)\s*澶╁墠$", normalized)
         if m:
-            return now - timedelta(days=int(m.group(1)))
+            return now - timedelta(days=int(m.group(1))), "parsed"
 
-        m = re.match(r"^(\d+)\s*灏忔椂鍓?", text)
+        m = re.match(r"^(\d+)\s*灏忔椂鍓?", normalized)
         if m:
-            return now - timedelta(hours=int(m.group(1)))
+            return now - timedelta(hours=int(m.group(1))), "parsed"
 
-        m = re.match(r"^(\d+)\s*鍒嗛挓鍓?", text)
+        m = re.match(r"^(\d+)\s*鍒嗛挓鍓?", normalized)
         if m:
-            return now - timedelta(minutes=int(m.group(1)))
+            return now - timedelta(minutes=int(m.group(1))), "parsed"
 
-        m = re.match(r"^(\d{2})-(\d{2})$", text)
+        m = re.match(r"^今天\s*(\d{1,2}):(\d{2})$", normalized)
+        if m:
+            candidate = self._build_datetime(now.year, now.month, now.day, int(m.group(1)), int(m.group(2)))
+            if candidate is not None:
+                return candidate, "parsed"
+
+        m = re.match(r"^昨天\s*(\d{1,2}):(\d{2})$", normalized)
+        if m:
+            yday = now - timedelta(days=1)
+            candidate = self._build_datetime(yday.year, yday.month, yday.day, int(m.group(1)), int(m.group(2)))
+            if candidate is not None:
+                return candidate, "parsed"
+
+        m = re.match(r"^前天\s*(\d{1,2}):(\d{2})$", normalized)
+        if m:
+            d2 = now - timedelta(days=2)
+            candidate = self._build_datetime(d2.year, d2.month, d2.day, int(m.group(1)), int(m.group(2)))
+            if candidate is not None:
+                return candidate, "parsed"
+
+        # yyyy-mm-dd[ HH:MM]
+        m = re.search(
+            r"(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})(?:日)?(?:\s+(\d{1,2}):(\d{2}))?",
+            normalized,
+        )
+        if m:
+            year = int(m.group(1))
+            month = int(m.group(2))
+            day = int(m.group(3))
+            hour = int(m.group(4)) if m.group(4) else 0
+            minute = int(m.group(5)) if m.group(5) else 0
+            candidate = self._build_datetime(year, month, day, hour, minute)
+            if candidate is not None:
+                return candidate, "parsed"
+
+        # mm-dd[ HH:MM], mm/dd[ HH:MM], mm.dd[ HH:MM], m月d日[ HH:MM]
+        m = re.search(
+            r"(?<!\d)(\d{1,2})\s*[-/.月]\s*(\d{1,2})(?:日)?(?:\s+(\d{1,2}):(\d{2}))?(?!\d)",
+            normalized,
+        )
         if m:
             month = int(m.group(1))
             day = int(m.group(2))
-            year = now.year
-            candidate = datetime(year, month, day, tzinfo=self.tz)
-            if candidate > now + timedelta(days=1):
-                candidate = datetime(year - 1, month, day, tzinfo=self.tz)
-            return candidate
+            hour = int(m.group(3)) if m.group(3) else 0
+            minute = int(m.group(4)) if m.group(4) else 0
+            candidate = self._build_datetime(now.year, month, day, hour, minute)
+            if candidate is not None:
+                if candidate > now + timedelta(days=1):
+                    candidate = self._build_datetime(now.year - 1, month, day, hour, minute)
+                if candidate is not None:
+                    return candidate, "parsed"
 
-        m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", text)
-        if m:
-            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), tzinfo=self.tz)
+        return now, "fallback"
 
-        return now
+    @staticmethod
+    def _normalize_publish_time_text(text: str) -> str:
+        value = clean_line(text)
+        if not value:
+            return ""
+
+        value = value.replace("：", ":")
+        value = value.replace("／", "/")
+        value = value.replace("．", ".")
+        value = value.replace("—", "-")
+        value = value.replace("–", "-")
+        value = value.replace("·", " ")
+        value = value.replace("|", " ")
+
+        # Remove common prefixes.
+        value = re.sub(r"^(发布于|发表于|更新于|编辑于|发布|更新)\s*", "", value, flags=re.IGNORECASE)
+        value = re.sub(r"\s+", " ", value)
+        return value.strip()
+
+    def _build_datetime(
+        self,
+        year: int,
+        month: int,
+        day: int,
+        hour: int = 0,
+        minute: int = 0,
+    ) -> datetime | None:
+        try:
+            return datetime(year, month, day, hour, minute, tzinfo=self.tz)
+        except Exception:
+            return None

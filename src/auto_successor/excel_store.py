@@ -19,6 +19,7 @@ RAW_HEADERS = [
     "publish_time",
     "publish_timestamp",
     "publish_time_text",
+    "publish_time_quality",
     "like_count",
     "comment_count",
     "share_count",
@@ -27,6 +28,8 @@ RAW_HEADERS = [
     "detail_text",
     "comments_preview",
     "fetched_at",
+    "first_seen_at",
+    "updated_at",
     "raw_json",
 ]
 
@@ -167,28 +170,68 @@ class ExcelStore:
         by_note: dict[str, dict] = {str(r.get("note_id") or ""): r for r in existing if r.get("note_id")}
 
         for note in raw:
+            prev = by_note.get(note.note_id, {})
+
+            prev_publish_ts = self._safe_int(prev.get("publish_timestamp"))
+            prev_publish_time = str(prev.get("publish_time") or "")
+            prev_publish_text = str(prev.get("publish_time_text") or "")
+            prev_publish_quality = str(prev.get("publish_time_quality") or "").strip().lower()
+
+            incoming_publish_ts = int(note.publish_time.timestamp())
+            incoming_publish_time = note.publish_time.isoformat()
+            incoming_publish_text = note.publish_time_text
+            incoming_publish_quality = str(getattr(note, "publish_time_quality", "parsed") or "").strip().lower()
+            if incoming_publish_quality not in {"parsed", "fallback"}:
+                incoming_publish_quality = "fallback"
+
+            # Keep previous publish time when current parsing falls back.
+            if incoming_publish_quality != "parsed" and prev_publish_ts > 0:
+                publish_timestamp = prev_publish_ts
+                publish_time = prev_publish_time or incoming_publish_time
+                publish_time_text = prev_publish_text or incoming_publish_text
+                publish_time_quality = prev_publish_quality or "fallback"
+            else:
+                publish_timestamp = incoming_publish_ts
+                publish_time = incoming_publish_time
+                publish_time_text = incoming_publish_text
+                publish_time_quality = incoming_publish_quality
+
+            first_seen_at = str(prev.get("first_seen_at") or prev.get("fetched_at") or note.fetched_at.isoformat())
+            updated_at = note.fetched_at.isoformat()
+
             by_note[note.note_id] = {
                 "run_id": note.run_id,
-                "keyword": note.keyword,
+                "keyword": note.keyword or str(prev.get("keyword") or ""),
                 "note_id": note.note_id,
-                "title": note.title,
-                "author": note.author,
-                "publish_time": note.publish_time.isoformat(),
-                "publish_timestamp": int(note.publish_time.timestamp()),
-                "publish_time_text": note.publish_time_text,
-                "like_count": note.like_count,
-                "comment_count": note.comment_count,
-                "share_count": note.share_count,
-                "url": note.url,
-                "xsec_token": note.xsec_token,
-                "detail_text": note.detail_text,
-                "comments_preview": note.comments_preview,
-                "fetched_at": note.fetched_at.isoformat(),
-                "raw_json": note.raw_json,
+                "title": note.title or str(prev.get("title") or ""),
+                "author": note.author or str(prev.get("author") or ""),
+                "publish_time": publish_time,
+                "publish_timestamp": publish_timestamp,
+                "publish_time_text": publish_time_text,
+                "publish_time_quality": publish_time_quality,
+                "like_count": self._prefer_latest_int(note.like_count, self._safe_int(prev.get("like_count"))),
+                "comment_count": self._prefer_latest_int(note.comment_count, self._safe_int(prev.get("comment_count"))),
+                "share_count": self._prefer_latest_int(note.share_count, self._safe_int(prev.get("share_count"))),
+                "url": note.url or str(prev.get("url") or ""),
+                "xsec_token": note.xsec_token or str(prev.get("xsec_token") or ""),
+                "detail_text": note.detail_text or str(prev.get("detail_text") or ""),
+                "comments_preview": note.comments_preview or str(prev.get("comments_preview") or ""),
+                # Keep legacy fetched_at column for backward compatibility.
+                "fetched_at": updated_at,
+                "first_seen_at": first_seen_at,
+                "updated_at": updated_at,
+                "raw_json": note.raw_json or str(prev.get("raw_json") or ""),
             }
 
         rows = list(by_note.values())
-        rows.sort(key=lambda x: int(x.get("publish_timestamp") or 0), reverse=True)
+        rows.sort(
+            key=lambda x: (
+                self._safe_int(x.get("publish_timestamp")),
+                str(x.get("updated_at") or x.get("fetched_at") or ""),
+                str(x.get("note_id") or ""),
+            ),
+            reverse=True,
+        )
         return rows
 
     def _merge_summary_rows(self, ws, summaries: list[SummaryRecord]) -> list[dict]:
@@ -263,8 +306,46 @@ class ExcelStore:
                 "outreach_message": job.outreach_message,
             }
         rows = list(by_post.values())
-        rows.sort(key=lambda x: str(x.get("publish_time") or ""), reverse=True)
+        rows.sort(
+            key=lambda x: (
+                self._iso_to_timestamp(x.get("publish_time")),
+                str(x.get("PostID") or ""),
+            ),
+            reverse=True,
+        )
         return rows
+
+    @staticmethod
+    def _safe_int(value) -> int:
+        try:
+            if value is None:
+                return 0
+            text = str(value).strip().replace(",", "")
+            if not text:
+                return 0
+            return int(float(text))
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _prefer_latest_int(current: int, previous: int) -> int:
+        if int(current or 0) > 0:
+            return int(current)
+        if int(previous or 0) > 0:
+            return int(previous)
+        return int(current or 0)
+
+    @staticmethod
+    def _iso_to_timestamp(value) -> int:
+        if isinstance(value, datetime):
+            return int(value.timestamp())
+        text = str(value or "").strip()
+        if not text:
+            return 0
+        try:
+            return int(datetime.fromisoformat(text).timestamp())
+        except Exception:
+            return 0
 
     def export_jobs_csv(self, csv_path: str) -> None:
         if not self.path.exists():

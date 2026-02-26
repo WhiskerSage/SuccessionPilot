@@ -19,6 +19,7 @@ class NoteRecord:
     url: str
     raw_json: str
     xsec_token: str = ""
+    publish_time_quality: str = "parsed"
     detail_text: str = ""
     comments_preview: str = ""
     fetched_at: datetime = field(default_factory=datetime.utcnow)

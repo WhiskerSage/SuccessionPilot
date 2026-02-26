@@ -95,7 +95,7 @@ class AutoSuccessorPipeline:
                 ),
                 meta={"keyword": keyword, "max_results": self.settings.xhs.max_results},
             )
-            notes = sorted(notes, key=lambda n: n.publish_time, reverse=True)
+            notes = sorted(notes, key=lambda n: (n.publish_time, n.note_id), reverse=True)
             self._log_progress(run_id, 28, f"搜索完成，抓取到 {len(notes)} 条")
 
             pre_new_notes = orchestrator.run_stage(
@@ -103,6 +103,7 @@ class AutoSuccessorPipeline:
                 lambda: [note for note in notes if not self.state.has(note.note_id)],
                 meta={"existing_state_size": len(self.state.processed_note_ids)},
             )
+            updated_existing_notes = max(0, len(notes) - len(pre_new_notes))
             self._log_progress(run_id, 36, f"预过滤完成，候选新增 {len(pre_new_notes)} 条")
 
             initial_plan = self.planner.build_plan(mode=mode, fetched_count=len(notes), new_count=len(pre_new_notes))
@@ -118,7 +119,7 @@ class AutoSuccessorPipeline:
                 lambda: [note for note in pre_new_notes if not self.state.has(note.note_id)],
                 meta={"prefiltered_count": len(pre_new_notes)},
             )
-            new_notes = sorted(new_notes, key=lambda n: n.publish_time, reverse=True)
+            new_notes = sorted(new_notes, key=lambda n: (n.publish_time, n.note_id), reverse=True)
             self._log_progress(run_id, 55, f"增量过滤完成，新增 {len(new_notes)} 条")
 
             plan = orchestrator.run_stage(
@@ -195,15 +196,24 @@ class AutoSuccessorPipeline:
 
             orchestrator.run_stage(
                 "storage.write_excel",
-                lambda: self.store.write(new_notes, summaries, [], jobs=jobs),
-                meta={"excel_path": self.settings.storage.excel_path},
+                lambda: self.store.write(notes, summaries, [], jobs=jobs),
+                meta={
+                    "excel_path": self.settings.storage.excel_path,
+                    "upsert_notes": len(notes),
+                    "new_notes": len(new_notes),
+                    "updated_existing_notes": updated_existing_notes,
+                },
             )
             orchestrator.run_stage(
                 "storage.export_jobs_csv",
                 lambda: self.store.export_jobs_csv(self.settings.storage.jobs_csv_path),
                 meta={"jobs_csv_path": self.settings.storage.jobs_csv_path},
             )
-            self._log_progress(run_id, 88, "本地存储已更新（Excel/CSV）")
+            self._log_progress(
+                run_id,
+                88,
+                f"本地存储已更新（新增 {len(new_notes)}，更新 {updated_existing_notes}，Excel/CSV）",
+            )
 
             send_logs = []
             notify_note_ids: list[str] = []
@@ -311,6 +321,7 @@ class AutoSuccessorPipeline:
                 "notification_mode": notification_mode,
                 "fetched": len(notes),
                 "new_notes": len(new_notes),
+                "updated_existing_notes": updated_existing_notes,
                 "target_notes": len(target_notes),
                 "filtered_out": len(filtered_out),
                 "notify_note_count": len(notify_note_ids),
@@ -551,7 +562,7 @@ class AutoSuccessorPipeline:
 
         rows.sort(
             key=lambda item: (
-                str(item.get("publish_time") or ""),
+                self._to_datetime(item.get("publish_time")),
                 str(item.get("PostID") or ""),
             ),
             reverse=True,
@@ -766,16 +777,17 @@ class AutoSuccessorPipeline:
 
     @staticmethod
     def _to_datetime(value: Any) -> datetime:
+        epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
         if isinstance(value, datetime):
             dt = value
         else:
             text = str(value or "").strip()
             if not text:
-                return datetime.now(timezone.utc)
+                return epoch
             try:
                 dt = datetime.fromisoformat(text)
             except Exception:
-                return datetime.now(timezone.utc)
+                return epoch
         if dt.tzinfo is None:
             return dt.replace(tzinfo=timezone.utc)
         return dt

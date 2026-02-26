@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
 
 from auto_successor.config import XHSConfig
 from auto_successor.xhs_collector import XHSMcpCliCollector
@@ -119,6 +120,42 @@ class TestXHSCollectorSearchSort(unittest.TestCase):
         self.assertEqual(collector.fallback_called, 1)
         self.assertEqual(len(notes), 1)
         self.assertEqual(notes[0].note_id, "note-fallback")
+
+    def test_publish_time_parser_supports_relative_and_absolute_formats(self):
+        collector = _FakeCollector(
+            cfg=XHSConfig(search_sort="time_descending"),
+            timezone="Asia/Shanghai",
+            logger=_NullLogger(),
+        )
+        base = datetime(2026, 2, 26, 15, 30, tzinfo=collector.tz)
+
+        dt1, q1 = collector._parse_publish_time_with_quality("昨天 09:15", reference=base)
+        self.assertEqual(q1, "parsed")
+        self.assertEqual(dt1.year, 2026)
+        self.assertEqual(dt1.month, 2)
+        self.assertEqual(dt1.day, 25)
+        self.assertEqual(dt1.hour, 9)
+        self.assertEqual(dt1.minute, 15)
+
+        dt2, q2 = collector._parse_publish_time_with_quality("发布于 2026-02-23 20:01", reference=base)
+        self.assertEqual(q2, "parsed")
+        self.assertEqual(dt2.year, 2026)
+        self.assertEqual(dt2.month, 2)
+        self.assertEqual(dt2.day, 23)
+        self.assertEqual(dt2.hour, 20)
+        self.assertEqual(dt2.minute, 1)
+
+        dt3, q3 = collector._parse_publish_time_with_quality("2月24日 08:40", reference=base)
+        self.assertEqual(q3, "parsed")
+        self.assertEqual(dt3.year, 2026)
+        self.assertEqual(dt3.month, 2)
+        self.assertEqual(dt3.day, 24)
+        self.assertEqual(dt3.hour, 8)
+        self.assertEqual(dt3.minute, 40)
+
+        dt4, q4 = collector._parse_publish_time_with_quality("未知时间格式", reference=base)
+        self.assertEqual(q4, "fallback")
+        self.assertEqual(dt4, base)
 
 
 if __name__ == "__main__":
