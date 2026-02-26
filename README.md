@@ -1,10 +1,20 @@
 ﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.3.7`
+- 项目版本：`0.3.9`
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
+
+### v0.3.9 更新要点
+- LLM 超时参数优化：默认 `connect_timeout_seconds=8`、`request_timeout_seconds=20`，兼顾稳定性与速度。
+- 套磁文案开关新增：`llm.enabled_for_outreach`（默认 `true`），可按需关闭文案生成以节省调用与耗时。
+- 文档与示例配置同步：`README.md` 与 `config/config.example.yaml` 已补充上述参数说明。
+
+### v0.3.8 更新要点
+- 提取链路优化为“单次直提”：对每条已补全 `detail_text` 的帖子，优先用一次 LLM 同时完成目标判断（`is_target`）+ 岗位结构化提取（公司/岗位/地点/要求等）。
+- 速度优化：默认不再对同一帖子分别做 LLM 筛选和 LLM 岗位提取，减少重复调用。
+- 质量兜底：直提失败会回退规则提取；支持开关 `llm.single_pass_extract`（默认 `true`）。
 
 ### v0.3.7 更新要点
 - 摘要中心视图优化：默认只展示 `发布时间 / 岗位公司 / 岗位要求 / 摘要`，隐藏互动状态、评论预览、原帖正文等噪声字段。
@@ -176,13 +186,18 @@ resume:
 如果你要启用 LLM 增强（过滤/岗位抽取/摘要）。
 - `.env` 填 `OPENAI_API_KEY`
 - `config/config.yaml` 设 `llm.enabled: true`
+- 建议保持 `llm.single_pass_extract: true`（默认），启用“单次直提”减少重复调用
 - 如需拆分“帖子解析模型”和“套磁文案模型”，可在 `llm` 下单独配置：
 ```yaml
 llm:
   enabled: true
+  single_pass_extract: true
+  request_timeout_seconds: 20
+  connect_timeout_seconds: 8
   model: "gpt-5-mini"           # 通用兜底模型
   parse_model: "deepseek-chat"  # 帖子解析/结构化/摘要
   outreach_model: "deepseek-chat" # 套磁文案
+  enabled_for_outreach: true
 ```
 
 ### 第 4 步：小红书登录（必须）
@@ -374,11 +389,13 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - `api_key`：可直接写入密钥（不推荐）
 - `api_key_env`：环境变量名；兼容直接写入密钥字符串
 - `base_url`：兼容接口地址
-- `timeout_seconds` `max_tokens` `temperature`：请求参数
+- `timeout_seconds` `request_timeout_seconds` `connect_timeout_seconds` `max_tokens` `temperature`：请求参数
 - `enabled_for_filter`：是否用于帖子过滤
 - `enabled_for_jobs`：是否用于岗位抽取
 - `enabled_for_summary`：是否用于摘要增强
+- `enabled_for_outreach`：是否生成套磁文案（关闭后机会点岗位不再生成文案）
 - `max_filter_items` `max_job_items` `max_summary_items`：每轮 LLM 处理上限
+- `single_pass_extract`：是否启用“单次直提”（每条帖子一次 LLM 完成目标判断+岗位提取，默认 `true`）
 - `filter_threshold`：过滤阈值
 - `strict_filter`：严格过滤开关
 
@@ -541,8 +558,8 @@ node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 1. 抓取帖子列表并按发布时间排序。
 2. 所有抓取到的帖子都会按 `note_id` 增量写入 `raw_notes`（用于更新互动数、正文补全等字段）。
 3. 仅对“状态文件中不存在”的帖子执行智能处理（过滤、岗位提取、摘要、通知）。
-4. 过滤非目标帖子。
-5. 提取岗位结构化字段。
+4. 对每条新增帖子（已补正文）执行“单次直提”：一次 LLM 同时完成目标判断 + 岗位结构化提取。
+5. LLM 超时或不可用时回退规则提取，并继续主流程。
 6. 生成摘要并写入存储。
 7. 按通知策略发送。
 
@@ -551,7 +568,7 @@ node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 - `agent`：对更多样本做过滤/抽取/摘要，并按 `agent_send_top_n` 发送重点结果。
 
 过滤质量控制。
-- 先做规则过滤，再在启用时叠加 LLM 过滤。
+- 默认走“单次直提”（LLM 一次返回 `is_target + 结构化字段`）；失败时回退规则。
 - 针对军事、政治等非岗位语境会强制降权或过滤。
 - `strict_filter=true` 时采用更保守策略，降低误报。
 
@@ -727,6 +744,8 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
+| v0.3.9 | 2026-02-26 | LLM 超时参数默认调整为 `connect=8s/read=20s`；新增 `llm.enabled_for_outreach` 开关并默认开启（`true`）；README 与示例配置同步更新。 |
+| v0.3.8 | 2026-02-26 | 提取链路升级为“单次直提”：每条帖子一次 LLM 同时完成目标判断+岗位结构化提取；减少重复 LLM 调用提升速度；新增 `llm.single_pass_extract` 开关（默认开启）并保留规则回退。 |
 | v0.3.7 | 2026-02-26 | 摘要中心默认改为“岗位/公司/要求/摘要”成品视图，详情面板隐藏原帖噪声字段并聚焦结构化摘要；前端脚本版本号更新以规避缓存旧布局。 |
 | v0.3.6 | 2026-02-26 | `raw_notes` 升级为“每轮全量抓取结果按 `note_id` upsert”并新增 `first_seen_at/updated_at/publish_time_quality`；发布时间解析失败时保留历史时间，排序更稳定；Dashboard 线索发布时间统一为绝对时间显示。 |
 | v0.3.5 | 2026-02-26 | 新增控制中心“配置向导”（应用推荐配置/标记完成）；新增“一键自检”并覆盖配置、写入权限、XHS、邮件、LLM 检查；新增 `GET/POST /api/setup/check`。 |

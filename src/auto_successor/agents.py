@@ -33,6 +33,14 @@ class FilterOutcome:
 
 
 @dataclass
+class ExtractOutcome:
+    targets: list[NoteRecord]
+    jobs: list[JobRecord]
+    filtered_out: list[dict]
+    scores: dict[str, float]
+
+
+@dataclass
 class BatchDispatchResult:
     sent: bool
     logs: list[SendLogRecord]
@@ -183,6 +191,68 @@ class IntelligenceAgent:
         jobs.sort(key=lambda item: item.publish_time, reverse=True)
         return jobs
 
+    def extract_target_jobs(self, notes: list[NoteRecord], max_job_items: int, resume_text: str, mode: str) -> ExtractOutcome:
+        """
+        Fast path:
+        - one pass over notes
+        - one LLM call per note (budgeted) for target decision + structured job fields
+        """
+        targets: list[NoteRecord] = []
+        jobs: list[JobRecord] = []
+        filtered_out: list[dict] = []
+        scores: dict[str, float] = {}
+
+        total = len(notes)
+        llm_budget = max(0, int(max_job_items))
+        progress_step = max(1, total // 5) if total > 0 else 1
+        self.logger.info("[阶段] 直接提取开始：总条数=%s，LLM配额=%s", total, llm_budget)
+
+        for idx, note in enumerate(notes):
+            allow_llm = idx < llm_budget
+            decision, job = self.llm_enricher.extract_target_job(
+                note,
+                resume_text=resume_text,
+                mode=mode,
+                allow_llm=allow_llm,
+            )
+            scores[note.note_id] = float(decision.score)
+
+            if decision.is_target:
+                targets.append(note)
+                jobs.append(normalize_job_record(job))
+            else:
+                filtered_out.append(
+                    {
+                        "note_id": note.note_id,
+                        "title": note.title[:100],
+                        "score": round(decision.score, 4),
+                        "reason": decision.reason,
+                        "source": decision.source,
+                    }
+                )
+                self.logger.info(
+                    "过滤帖子 | note=%s | score=%.2f | source=%s | reason=%s",
+                    note.note_id,
+                    decision.score,
+                    decision.source,
+                    decision.reason,
+                )
+
+            current = idx + 1
+            if current == total or current % progress_step == 0:
+                pct = int(round(current * 100 / max(1, total)))
+                self.logger.info(
+                    "[阶段进度] 直接提取 %s/%s (%s%%) | 命中=%s | 过滤=%s",
+                    current,
+                    total,
+                    pct,
+                    len(targets),
+                    len(filtered_out),
+                )
+
+        jobs.sort(key=lambda item: item.publish_time, reverse=True)
+        return ExtractOutcome(targets=targets, jobs=jobs, filtered_out=filtered_out, scores=scores)
+
     def mark_opportunities(self, jobs: list[JobRecord]) -> list[JobRecord]:
         if not jobs:
             return jobs
@@ -216,6 +286,12 @@ class IntelligenceAgent:
 
     def attach_outreach_messages(self, jobs: list[JobRecord], resume_text: str) -> list[JobRecord]:
         opp_total = sum(1 for item in jobs if item.opportunity_point)
+        enabled_for_outreach = bool(getattr(self.llm_enricher.settings.llm, "enabled_for_outreach", True))
+        if not enabled_for_outreach:
+            self.logger.info("[阶段] 套磁生成已关闭：enabled_for_outreach=false")
+            for job in jobs:
+                job.outreach_message = ""
+            return jobs
         self.logger.info("[阶段] 套磁生成开始：机会点岗位=%s", opp_total)
         for job in jobs:
             if not job.opportunity_point:

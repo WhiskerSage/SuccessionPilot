@@ -5,6 +5,7 @@ import json
 import re
 
 from .agent_memory import AgentMemoryLoader
+from .job_processor import to_job_record
 from .llm_client import LLMClient
 from .models import JobRecord, NoteRecord, SummaryRecord
 from .succession import extract_apply_info, extract_arrival_info, extract_jd_full, extract_poster_comment_update
@@ -159,31 +160,13 @@ class LLMEnricher:
             self.fail += 1
             return rule_decision
 
-        threshold = self._clamp_score(getattr(cfg, "filter_threshold", 0.62))
-        strict_filter = bool(getattr(cfg, "strict_filter", True))
-        text = self._note_text(note)
-        has_hard_negative = any(token in text for token in HARD_NEGATIVE_TOKENS)
-        has_job_context = any(token in text for token in JOB_CONTEXT_TOKENS)
-        has_non_job_negation = bool(re.search(r"(不是|非|无关).{0,3}(招聘|招人|岗位|实习)", text))
-
-        if has_hard_negative and (not has_job_context or has_non_job_negation):
-            return FilterDecision(
-                is_target=False,
-                score=min(rule_decision.score, llm_score),
-                reason="命中政治/军事类非目标主题",
-                source="hybrid",
-            )
-
-        if strict_filter:
-            is_target = llm_target and llm_score >= threshold and (rule_decision.is_target or rule_decision.score >= 0.45)
-            score = max(llm_score, rule_decision.score) if is_target else min(llm_score, rule_decision.score)
-            return FilterDecision(is_target=is_target, score=score, reason=reason, source="hybrid")
-
-        score = max(llm_score, rule_decision.score) if (llm_target or rule_decision.is_target) else min(
-            llm_score, rule_decision.score
+        return self._merge_filter_decision(
+            note=note,
+            rule_decision=rule_decision,
+            llm_target=llm_target,
+            llm_score=llm_score,
+            reason=reason,
         )
-        is_target = score >= threshold and (llm_target or rule_decision.is_target)
-        return FilterDecision(is_target=is_target, score=score, reason=reason, source="hybrid")
 
     def enrich_job(self, note: NoteRecord, current: JobRecord, resume_text: str, mode: str) -> JobRecord:
         cfg = self.settings.llm
@@ -259,6 +242,113 @@ class LLMEnricher:
             self.fail += 1
         return current
 
+    def extract_target_job(
+        self,
+        note: NoteRecord,
+        *,
+        resume_text: str,
+        mode: str,
+        allow_llm: bool = True,
+    ) -> tuple[FilterDecision, JobRecord]:
+        """
+        Single-pass extraction:
+        - decide whether target
+        - extract structured job fields in the same LLM response
+        """
+        cfg = self.settings.llm
+        rule_decision = self._rule_classify(note)
+        current = to_job_record(note)
+        current.mode = (mode or "auto").strip().lower() or "auto"
+        current.parse_source = "rule"
+        current.author = note.author
+        current.arrival_time = current.arrival_time or extract_arrival_info(note.detail_text or "")[:120]
+        current.application_method = current.application_method or extract_apply_info(note.detail_text or "")[:180]
+        current.risk_line = current.risk_line or self._infer_risk_line(note)
+        current.match_score = self._fallback_match_score(note, resume_text)
+        current.match_reason = current.match_reason or "rule fallback"
+
+        if not (allow_llm and cfg.enabled and cfg.enabled_for_jobs and self.client.is_available()):
+            if allow_llm and cfg.enabled and cfg.enabled_for_jobs and (not self._degrade_notice_job):
+                self.logger.warning(
+                    "[LLM降级] 直接提取不可用，回退规则提取（原因=%s）",
+                    self._client_error_reason(),
+                )
+                self._degrade_notice_job = True
+            return rule_decision, current
+
+        system_prompt = (
+            "你是继任岗位提取助手。"
+            "基于帖子文本一步完成目标判断与字段提取，输出严格 JSON（英文字段名，不要 markdown）。"
+            "字段: is_target, relevance_score, reason, company, position, publish_time, location, requirements, arrival_time, application_method, author, risk_line, match_score, match_reason, link, post_id, mode。"
+            "is_target 表示是否属于“找继任/接任的招聘岗位”；政治/军事/历史/剧情语境必须 false。"
+            "risk_line 只能是 low|medium|high；match_score 范围 0-100。"
+        )
+        system_prompt = self._with_memory(system_prompt)
+        user_prompt = (
+            f"resume_text: {resume_text}\n"
+            f"title: {note.title}\n"
+            f"author: {note.author}\n"
+            f"publish_time: {note.publish_time.isoformat()}\n"
+            f"detail_text: {note.detail_text}\n"
+            f"poster_comments_preview: {note.comments_preview}\n"
+            f"url: {note.url}\n"
+            f"mode: {mode}\n"
+        )
+        parse_model = self._parse_model()
+        self._register_llm_call(stage="job", target_id=note.note_id, model=parse_model)
+        obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=parse_model)
+        if not obj:
+            self._register_rule_fallback(
+                stage="job",
+                target_id=note.note_id,
+                fallback_to="规则提取",
+                reason=self._client_error_reason(),
+            )
+            self.fail += 1
+            return rule_decision, current
+
+        try:
+            llm_target = self._to_bool(obj.get("is_target"))
+            llm_score = self._clamp_score(obj.get("relevance_score", rule_decision.score))
+            reason = clean_line_with_fallback(str(obj.get("reason") or ""), fallback=rule_decision.reason)[:120]
+            if is_unreadable_text(reason):
+                reason = rule_decision.reason or "LLM原因文本异常，已回退规则原因。"
+
+            decision = self._merge_filter_decision(
+                note=note,
+                rule_decision=rule_decision,
+                llm_target=llm_target,
+                llm_score=llm_score,
+                reason=reason,
+            )
+
+            if not decision.is_target:
+                self.success += 1
+                return decision, current
+
+            current.company = self._pick_text(obj, "company", current.company, 60)
+            current.position = self._pick_text(obj, "position", current.position, 80)
+            current.location = self._pick_text(obj, "location", current.location, 40)
+            current.requirements = self._pick_text(obj, "requirements", current.requirements, 380)
+            current.arrival_time = self._pick_text(obj, "arrival_time", current.arrival_time, 120)
+            current.application_method = self._pick_text(obj, "application_method", current.application_method, 180)
+            current.author = self._pick_text(obj, "author", current.author, 80)
+            risk_line = self._pick_text(obj, "risk_line", current.risk_line, 20).lower()
+            if risk_line not in {"low", "medium", "high"}:
+                risk_line = self._infer_risk_line(note)
+            current.risk_line = risk_line
+            current.match_score = self._clamp_score_100(obj.get("match_score"), default=current.match_score)
+            current.match_reason = self._pick_text(obj, "match_reason", current.match_reason, 220)
+            current.link = self._pick_text(obj, "link", current.link or note.url, 600)
+            current.post_id = self._pick_text(obj, "post_id", current.post_id or note.note_id, 120)
+            current.mode = self._pick_text(obj, "mode", current.mode or mode, 20)
+            current.parse_source = "llm"
+            self.success += 1
+            return decision, current
+        except Exception:
+            self.fail += 1
+            return rule_decision, current
+
     def summarize_push_batch(self, *, run_id: str, mode: str, jobs: list[JobRecord], resume_text: str) -> dict:
         if not jobs:
             return {
@@ -332,6 +422,8 @@ class LLMEnricher:
             return fallback
 
     def build_outreach_message(self, job: JobRecord, resume_text: str) -> str:
+        if not bool(getattr(self.settings.llm, "enabled_for_outreach", True)):
+            return ""
         system_prompt = self._with_memory(
             "你是一名求职邮件撰写助手。"
             "请根据候选人简历与岗位信息，生成一封简短、专业、真诚的中文套磁邮件。"
@@ -446,6 +538,42 @@ class LLMEnricher:
             reason_parts.append(f"neg={','.join(negative_hits[:2])}")
         reason = " | ".join(reason_parts) if reason_parts else "rule_only"
         return FilterDecision(is_target=is_target, score=score, reason=reason, source="rule")
+
+    def _merge_filter_decision(
+        self,
+        *,
+        note: NoteRecord,
+        rule_decision: FilterDecision,
+        llm_target: bool,
+        llm_score: float,
+        reason: str,
+    ) -> FilterDecision:
+        cfg = self.settings.llm
+        threshold = self._clamp_score(getattr(cfg, "filter_threshold", 0.62))
+        strict_filter = bool(getattr(cfg, "strict_filter", True))
+        text = self._note_text(note)
+        has_hard_negative = any(token in text for token in HARD_NEGATIVE_TOKENS)
+        has_job_context = any(token in text for token in JOB_CONTEXT_TOKENS)
+        has_non_job_negation = bool(re.search(r"(不是|非|无关).{0,3}(招聘|招人|岗位|实习)", text))
+
+        if has_hard_negative and (not has_job_context or has_non_job_negation):
+            return FilterDecision(
+                is_target=False,
+                score=min(rule_decision.score, llm_score),
+                reason="命中政治/军事类非目标主题",
+                source="hybrid",
+            )
+
+        if strict_filter:
+            is_target = llm_target and llm_score >= threshold and (rule_decision.is_target or rule_decision.score >= 0.45)
+            score = max(llm_score, rule_decision.score) if is_target else min(llm_score, rule_decision.score)
+            return FilterDecision(is_target=is_target, score=score, reason=reason, source="hybrid")
+
+        score = max(llm_score, rule_decision.score) if (llm_target or rule_decision.is_target) else min(
+            llm_score, rule_decision.score
+        )
+        is_target = score >= threshold and (llm_target or rule_decision.is_target)
+        return FilterDecision(is_target=is_target, score=score, reason=reason, source="hybrid")
 
     def _parse_model(self) -> str:
         cfg = self.settings.llm

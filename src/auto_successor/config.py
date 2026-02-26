@@ -45,7 +45,8 @@ class LLMConfig:
     api_key_env: str = "OPENAI_API_KEY"
     base_url: str = "https://api.openai.com/v1"
     timeout_seconds: int = 45
-    request_timeout_seconds: int = 12
+    request_timeout_seconds: int = 20
+    connect_timeout_seconds: int = 8
     max_retries: int = 1
     retry_backoff_seconds: float = 0.6
     failure_threshold: int = 2
@@ -55,9 +56,11 @@ class LLMConfig:
     enabled_for_jobs: bool = True
     enabled_for_summary: bool = True
     enabled_for_filter: bool = True
+    enabled_for_outreach: bool = True
     max_job_items: int = 8
     max_summary_items: int = 8
     max_filter_items: int = 20
+    single_pass_extract: bool = True
     filter_threshold: float = 0.62
     strict_filter: bool = True
 

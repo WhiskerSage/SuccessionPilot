@@ -29,7 +29,8 @@ llm:
   api_key_env: "OPENAI_API_KEY"
   base_url: "https://api.openai.com/v1"
   timeout_seconds: 45
-  request_timeout_seconds: 12 # 单次请求读超时（建议 8-15）
+  request_timeout_seconds: 20 # 单次请求读超时（建议 15-20）
+  connect_timeout_seconds: 8 # 连接超时
   max_retries: 1 # 最多一次重试，避免单条阻塞太久
   retry_backoff_seconds: 0.6
   failure_threshold: 2 # 连续失败达到阈值后进入降级冷却
@@ -39,6 +40,7 @@ llm:
   enabled_for_jobs: true
   enabled_for_summary: true
   enabled_for_filter: true
+  enabled_for_outreach: true # 是否生成套磁文案
   max_job_items: 8
   max_summary_items: 8
   max_filter_items: 20

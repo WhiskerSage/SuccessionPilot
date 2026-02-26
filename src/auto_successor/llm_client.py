@@ -108,19 +108,20 @@ class LLMClient:
             "max_tokens": cfg.max_tokens if max_tokens is None else int(max_tokens),
         }
 
-        # Keep each request short, and retry at most once on transient failures.
-        read_timeout = max(4, min(int(getattr(cfg, "request_timeout_seconds", cfg.timeout_seconds or 12)), 15))
-        connect_timeout = 3
+        # Keep each request bounded, and retry at most once on transient failures.
+        read_timeout = max(6, min(int(getattr(cfg, "request_timeout_seconds", cfg.timeout_seconds or 20)), 30))
+        connect_timeout = max(2, min(int(getattr(cfg, "connect_timeout_seconds", 8)), 15))
         max_retries = max(0, min(int(getattr(cfg, "max_retries", 1)), 1))
         retry_backoff = max(0.0, min(float(getattr(cfg, "retry_backoff_seconds", 0.6)), 2.0))
         attempts = 1 + max_retries
         self._request_seq += 1
         request_id = self._request_seq
         self.logger.info(
-            "[LLM请求] 第%s次 | model=%s | max_tokens=%s | timeout=%ss",
+            "[LLM请求] 第%s次 | model=%s | max_tokens=%s | connect=%ss read=%ss",
             request_id,
             payload.get("model"),
             payload.get("max_tokens"),
+            connect_timeout,
             read_timeout,
         )
 

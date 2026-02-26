@@ -127,36 +127,64 @@ class AutoSuccessorPipeline:
                 lambda: self.planner.build_plan(mode=mode, fetched_count=len(notes), new_count=len(new_notes)),
                 meta={"mode": mode},
             )
+            use_single_pass_extract = bool(getattr(self.settings.llm, "single_pass_extract", True)) and bool(
+                self.settings.llm.enabled
+            )
+            if use_single_pass_extract:
+                extract_outcome = orchestrator.run_stage(
+                    "agent.intelligence.extract_target_jobs",
+                    lambda: self.intelligence.extract_target_jobs(
+                        new_notes,
+                        max_job_items=plan.max_job_items,
+                        resume_text=resume_text,
+                        mode=mode,
+                    ),
+                    meta={"max_job_items": plan.max_job_items, "single_pass_extract": True},
+                )
+                target_notes = extract_outcome.targets
+                filtered_out = extract_outcome.filtered_out
+                jobs = extract_outcome.jobs
+                llm_stage_calls = self.llm_enricher.stage_call_counts()
+                llm_stage_fallbacks = self.llm_enricher.stage_fallback_counts()
+                self._log_progress(
+                    run_id,
+                    66,
+                    (
+                        f"直接提取完成，命中 {len(target_notes)} 条，过滤 {len(filtered_out)} 条，"
+                        f"LLM提取调用 {int(llm_stage_calls.get('job', 0))} 次，"
+                        f"规则回退 {int(llm_stage_fallbacks.get('job', 0))} 次"
+                    ),
+                )
+            else:
+                filter_outcome = orchestrator.run_stage(
+                    "agent.intelligence.filter_target_notes",
+                    lambda: self.intelligence.filter_target_notes(new_notes, max_filter_items=plan.max_filter_items),
+                    meta={"max_filter_items": plan.max_filter_items},
+                )
+                target_notes = filter_outcome.targets
+                filtered_out = filter_outcome.filtered_out
+                llm_stage_calls = self.llm_enricher.stage_call_counts()
+                llm_stage_fallbacks = self.llm_enricher.stage_fallback_counts()
+                self._log_progress(
+                    run_id,
+                    66,
+                    (
+                        f"目标筛选完成，命中 {len(target_notes)} 条，过滤 {len(filtered_out)} 条，"
+                        f"LLM筛选调用 {int(llm_stage_calls.get('filter', 0))} 次，"
+                        f"规则回退 {int(llm_stage_fallbacks.get('filter', 0))} 次"
+                    ),
+                )
 
-            filter_outcome = orchestrator.run_stage(
-                "agent.intelligence.filter_target_notes",
-                lambda: self.intelligence.filter_target_notes(new_notes, max_filter_items=plan.max_filter_items),
-                meta={"max_filter_items": plan.max_filter_items},
-            )
-            target_notes = filter_outcome.targets
-            filtered_out = filter_outcome.filtered_out
-            llm_stage_calls = self.llm_enricher.stage_call_counts()
-            llm_stage_fallbacks = self.llm_enricher.stage_fallback_counts()
-            self._log_progress(
-                run_id,
-                66,
-                (
-                    f"目标筛选完成，命中 {len(target_notes)} 条，过滤 {len(filtered_out)} 条，"
-                    f"LLM筛选调用 {int(llm_stage_calls.get('filter', 0))} 次，"
-                    f"规则回退 {int(llm_stage_fallbacks.get('filter', 0))} 次"
-                ),
-            )
-
-            jobs = orchestrator.run_stage(
-                "agent.intelligence.build_jobs",
-                lambda: self.intelligence.build_jobs(
-                    target_notes,
-                    max_job_items=plan.max_job_items,
-                    resume_text=resume_text,
-                    mode=mode,
-                ),
-                meta={"max_job_items": plan.max_job_items},
-            )
+                jobs = orchestrator.run_stage(
+                    "agent.intelligence.build_jobs",
+                    lambda: self.intelligence.build_jobs(
+                        target_notes,
+                        max_job_items=plan.max_job_items,
+                        resume_text=resume_text,
+                        mode=mode,
+                    ),
+                    meta={"max_job_items": plan.max_job_items},
+                )
 
             jobs = orchestrator.run_stage(
                 "agent.intelligence.mark_opportunities",
