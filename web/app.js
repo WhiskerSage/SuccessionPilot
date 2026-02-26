@@ -34,6 +34,10 @@
     leadCount: document.getElementById("leadCount"),
     leadBody: document.getElementById("leadBody"),
     detailBox: document.getElementById("detailBox"),
+    leadHeadRow: document.querySelector(".table-wrap thead tr"),
+    leadPanelTitle: document.querySelector(".table-panel .head-row h3"),
+    detailPanelTitle: document.querySelector(".detail-panel .head-row h3"),
+    detailPanelChip: document.querySelector(".detail-panel .head-row .chip"),
     runList: document.getElementById("runList"),
     searchInput: document.getElementById("searchInput"),
     refreshBtn: document.getElementById("refreshBtn"),
@@ -108,9 +112,13 @@
     }
     return candidates;
   })();
-  const DEFAULT_DETAIL = `
+  const DEFAULT_DETAIL_LEADS = `
     <h4>请选择一条线索</h4>
     <p>这里会展示岗位摘要、JD、评论预览和原帖详情内容。</p>
+  `;
+  const DEFAULT_DETAIL_SUMMARY = `
+    <h4>请选择一条摘要</h4>
+    <p>摘要中心默认仅展示岗位、公司、岗位要求与摘要，不展示原帖噪声字段。</p>
   `;
 
   function escapeHtml(value) {
@@ -272,6 +280,56 @@
     return view !== "control";
   }
 
+  function isSummaryView() {
+    return state.view === "summary";
+  }
+
+  function tableColumnCount() {
+    return isSummaryView() ? 4 : 5;
+  }
+
+  function defaultDetailHtml() {
+    return isSummaryView() ? DEFAULT_DETAIL_SUMMARY : DEFAULT_DETAIL_LEADS;
+  }
+
+  function compactOneLine(value, fallback = "-", maxLen = 120) {
+    const text = String(value ?? "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!text) return fallback;
+    if (text.length <= maxLen) return text;
+    return `${text.slice(0, maxLen)}…`;
+  }
+
+  function renderWorkspaceLayout() {
+    const summaryView = isSummaryView();
+    if (dom.leadHeadRow) {
+      dom.leadHeadRow.innerHTML = summaryView
+        ? `
+            <th>发布时间</th>
+            <th>岗位 / 公司</th>
+            <th>岗位要求</th>
+            <th>摘要</th>
+          `
+        : `
+            <th>发布时间</th>
+            <th>岗位 / 公司</th>
+            <th>地点</th>
+            <th>互动</th>
+            <th>状态</th>
+          `;
+    }
+    if (dom.leadPanelTitle) {
+      dom.leadPanelTitle.textContent = summaryView ? "摘要列表" : "线索列表";
+    }
+    if (dom.detailPanelTitle) {
+      dom.detailPanelTitle.textContent = summaryView ? "摘要详情" : "详情与摘要";
+    }
+    if (dom.detailPanelChip) {
+      dom.detailPanelChip.textContent = summaryView ? "结构化视图" : "实时数据";
+    }
+  }
+
   function renderSummary(summary) {
     if (dom.kpiRaw) dom.kpiRaw.textContent = fmtInt(summary.raw_count);
     if (dom.kpiSummary) dom.kpiSummary.textContent = fmtInt(summary.summary_count);
@@ -388,7 +446,7 @@
   function renderDetail(lead) {
     if (!dom.detailBox) return;
     if (!lead) {
-      dom.detailBox.innerHTML = DEFAULT_DETAIL;
+      dom.detailBox.innerHTML = defaultDetailHtml();
       return;
     }
 
@@ -404,6 +462,24 @@
     const detailText = compactText(lead.detail_text, 2600) || "暂无正文详情";
     const risk = compactText(lead.risk_flags, 360) || "无";
     const url = String(lead.url || "").trim();
+
+    if (isSummaryView()) {
+      const summaryTitle = `${toText(lead.position, "岗位待补充")} / ${toText(lead.company, "公司待补充")}`;
+      dom.detailBox.innerHTML = `
+        <h4>${escapeHtml(summaryTitle)}</h4>
+        <div class="meta-line">发布时间：${escapeHtml(publish)} | 作者：${escapeHtml(author)} | ID：<span class="mono">${escapeHtml(toText(lead.note_id))}</span></div>
+        <div class="detail-grid">
+          <div class="detail-item"><span>公司</span><strong>${escapeHtml(company)}</strong></div>
+          <div class="detail-item"><span>岗位</span><strong>${escapeHtml(position)}</strong></div>
+          <div class="detail-item"><span>地点</span><strong>${escapeHtml(location)}</strong></div>
+          <div class="detail-item"><span>标题</span><strong>${escapeHtml(title)}</strong></div>
+        </div>
+        <div class="detail-block"><h5>岗位要求</h5><pre>${escapeHtml(req)}</pre></div>
+        <div class="detail-block"><h5>摘要</h5><pre>${escapeHtml(summary)}</pre></div>
+        ${url ? `<div class="detail-link"><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">打开原帖链接</a></div>` : ""}
+      `;
+      return;
+    }
 
     dom.detailBox.innerHTML = `
       <h4>${escapeHtml(title)}</h4>
@@ -429,7 +505,7 @@
 
     if (!dom.leadBody) return;
     if (!state.leads.length) {
-      dom.leadBody.innerHTML = '<tr><td colspan="5" class="table-tip">暂无匹配线索</td></tr>';
+      dom.leadBody.innerHTML = `<tr><td colspan="${tableColumnCount()}" class="table-tip">暂无匹配线索</td></tr>`;
       state.selectedNoteId = "";
       renderDetail(null);
       return;
@@ -444,10 +520,23 @@
         const active = lead.note_id === state.selectedNoteId ? "active" : "";
         const publish = toText(lead.publish_time_display || fmtTime(lead.publish_time));
         const jobLine = `${toText(lead.position, "岗位待补充")} / ${toText(lead.company, "公司待补充")}`;
+
+        if (isSummaryView()) {
+          const requirementLine = compactOneLine(lead.requirements, "岗位要求待补充", 90);
+          const summaryLine = compactOneLine(lead.summary, "暂无摘要", 130);
+          return `
+            <tr class="${active}" data-id="${escapeHtml(lead.note_id)}">
+              <td>${escapeHtml(publish)}</td>
+              <td><div class="title-cell">${escapeHtml(jobLine)}</div><div class="sub-cell">${escapeHtml(toText(lead.location))}</div></td>
+              <td>${escapeHtml(requirementLine)}</td>
+              <td>${escapeHtml(summaryLine)}</td>
+            </tr>
+          `;
+        }
+
         const location = toText(lead.location);
         const interact = `赞 ${fmtInt(lead.like_count)} / 评 ${fmtInt(lead.comment_count)}`;
         const badge = statusBadge(lead.status, lead.like_count, lead.comment_count);
-
         return `
           <tr class="${active}" data-id="${escapeHtml(lead.note_id)}">
             <td>${escapeHtml(publish)}</td>
@@ -472,12 +561,12 @@
 
   function setLoadingTable(message = "加载中...") {
     if (!dom.leadBody) return;
-    dom.leadBody.innerHTML = `<tr><td colspan="5" class="table-tip">${escapeHtml(message)}</td></tr>`;
+    dom.leadBody.innerHTML = `<tr><td colspan="${tableColumnCount()}" class="table-tip">${escapeHtml(message)}</td></tr>`;
   }
 
   function setTableError(message) {
     if (!dom.leadBody) return;
-    dom.leadBody.innerHTML = `<tr><td colspan="5" class="table-tip error">${escapeHtml(message)}</td></tr>`;
+    dom.leadBody.innerHTML = `<tr><td colspan="${tableColumnCount()}" class="table-tip error">${escapeHtml(message)}</td></tr>`;
   }
 
   function renderRuntime(runtime) {
@@ -821,6 +910,8 @@
     state.pagination.pageSize = pageSizeForView(state.view);
     state.pagination.page = 1;
     if (dom.leadPageSize) dom.leadPageSize.value = String(state.pagination.pageSize);
+    renderWorkspaceLayout();
+    if (dom.detailBox) dom.detailBox.innerHTML = defaultDetailHtml();
     renderPagination();
   }
 
