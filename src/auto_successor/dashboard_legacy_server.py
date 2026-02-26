@@ -69,6 +69,10 @@ def make_handler(backend: DataBackend, web_dir: Path):
                     self._json({"config": backend.load_config_view()})
                     return
 
+                if path == "/api/setup/check":
+                    self._json(backend.run_setup_check(include_network=True, include_xhs_status=True))
+                    return
+
                 self._json({"error": "not_found", "path": path}, status=HTTPStatus.NOT_FOUND)
             except Exception as exc:
                 self._json(
@@ -87,6 +91,16 @@ def make_handler(backend: DataBackend, web_dir: Path):
                 if path == "/api/config":
                     config = backend.save_config_view(payload)
                     self._json({"ok": True, "message": "配置已保存", "config": config})
+                    return
+                if path == "/api/setup/check":
+                    include_network = bool(payload.get("include_network", True))
+                    include_xhs_status = bool(payload.get("include_xhs_status", True))
+                    self._json(
+                        backend.run_setup_check(
+                            include_network=include_network,
+                            include_xhs_status=include_xhs_status,
+                        )
+                    )
                     return
                 if path == "/api/resume/text":
                     text = str(payload.get("resume_text") or "")

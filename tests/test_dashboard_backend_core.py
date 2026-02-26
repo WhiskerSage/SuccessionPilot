@@ -168,6 +168,38 @@ def test_load_runs_fallback_stage_metrics_from_stage_records(tmp_path: Path) -> 
     assert item["error_codes"]["network_error"] == 1
 
 
+def test_setup_check_offline_mode(tmp_path: Path) -> None:
+    workspace = tmp_path
+    _write_config(workspace / "config" / "config.yaml")
+
+    cfg_path = workspace / "config" / "config.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    cfg.setdefault("xhs", {})
+    cfg["xhs"]["command"] = "python"
+    cfg["xhs"]["args"] = ["vendor/xhs-mcp/dist/xhs-mcp.js"]
+    cfg.setdefault("email", {})
+    cfg["email"]["enabled"] = False
+    cfg.setdefault("llm", {})
+    cfg["llm"]["enabled"] = False
+    cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+    script = workspace / "vendor" / "xhs-mcp" / "dist" / "xhs-mcp.js"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("// fake script for setup check\n", encoding="utf-8")
+
+    backend = DataBackend(workspace=workspace)
+    result = backend.run_setup_check(include_network=False, include_xhs_status=False)
+    assert result["ok"] is True
+    assert result["summary"]["failed"] == 0
+    keys = {item["key"]: item for item in result["items"]}
+    assert keys["config_file"]["status"] == "pass"
+    assert keys["storage_write"]["status"] == "pass"
+    assert keys["xhs_runtime"]["status"] == "pass"
+    assert keys["xhs_login"]["status"] == "warn"
+    assert keys["email_enabled"]["status"] == "warn"
+    assert keys["llm_enabled"]["status"] == "warn"
+
+
 class TestDashboardBackendCore(unittest.TestCase):
     def test_load_runs_with_stage_observability_from_stats_unittest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -176,3 +208,7 @@ class TestDashboardBackendCore(unittest.TestCase):
     def test_load_runs_fallback_stage_metrics_from_stage_records_unittest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             test_load_runs_fallback_stage_metrics_from_stage_records(Path(tmp_dir))
+
+    def test_setup_check_offline_mode_unittest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            test_setup_check_offline_mode(Path(tmp_dir))

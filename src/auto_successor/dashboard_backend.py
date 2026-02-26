@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import base64
 import os
+import shutil
+import smtplib
 import subprocess
 import sys
 import threading
@@ -14,7 +16,7 @@ from typing import Any
 from openpyxl import load_workbook
 import yaml
 
-from .config import ResumeConfig
+from .config import ResumeConfig, load_settings
 from .resume_loader import ResumeLoader
 from .text_utils import repair_mojibake
 
@@ -732,6 +734,456 @@ class DataBackend:
         if value == "stop_job":
             return self.runtime.stop_job()
         raise ValueError(f"unsupported action: {action}")
+
+    def run_setup_check(self, *, include_network: bool = True, include_xhs_status: bool = True) -> dict[str, Any]:
+        checked_at = datetime.now().isoformat(timespec="seconds")
+        items: list[dict[str, Any]] = []
+
+        def push_item(
+            key: str,
+            name: str,
+            status: str,
+            message: str,
+            detail: str = "",
+            suggestion: str = "",
+        ) -> None:
+            items.append(
+                {
+                    "key": key,
+                    "name": name,
+                    "status": status,
+                    "message": message,
+                    "detail": detail,
+                    "suggestion": suggestion,
+                }
+            )
+
+        config_data: dict[str, Any] = {}
+        config_ok = False
+        try:
+            if not self.config_path.exists():
+                raise FileNotFoundError(f"配置文件不存在: {self.config_path}")
+            config_data = self._read_config_data()
+            if not isinstance(config_data, dict):
+                raise ValueError("配置文件内容不是对象")
+            config_ok = True
+            push_item(
+                key="config_file",
+                name="配置文件",
+                status="pass",
+                message="config/config.yaml 可读取",
+                detail=str(self.config_path),
+            )
+        except Exception as exc:
+            push_item(
+                key="config_file",
+                name="配置文件",
+                status="fail",
+                message=f"配置文件异常: {exc}",
+                detail=str(self.config_path),
+                suggestion="请先执行 scripts/bootstrap.ps1 生成并检查 config/config.yaml",
+            )
+
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            probe = self.data_dir / ".setup_probe_write.tmp"
+            probe.write_text("ok", encoding="utf-8")
+            try:
+                probe.unlink()
+            except Exception:
+                pass
+            push_item(
+                key="storage_write",
+                name="本地写入权限",
+                status="pass",
+                message="data 目录可写",
+                detail=str(self.data_dir),
+            )
+        except Exception as exc:
+            push_item(
+                key="storage_write",
+                name="本地写入权限",
+                status="fail",
+                message=f"写入失败: {exc}",
+                detail=str(self.data_dir),
+                suggestion="检查 data 目录权限或关闭占用该目录/文件的程序",
+            )
+
+        settings = None
+        if config_ok:
+            try:
+                settings = load_settings(str(self.config_path))
+            except Exception as exc:
+                push_item(
+                    key="config_parse",
+                    name="配置解析",
+                    status="fail",
+                    message=f"配置解析失败: {exc}",
+                    suggestion="检查 config/config.yaml 字段类型和缩进格式",
+                )
+
+        env_map = self._read_env_values()
+
+        xhs_command = "node"
+        xhs_script = self.workspace / "vendor" / "xhs-mcp" / "dist" / "xhs-mcp.js"
+        if settings is not None:
+            xhs_command = str(settings.xhs.command or "node").strip() or "node"
+            xhs_script = self._resolve_xhs_script_path(settings.xhs.args)
+        else:
+            xhs_cfg = config_data.get("xhs", {}) if isinstance(config_data, dict) else {}
+            if isinstance(xhs_cfg, dict):
+                xhs_command = str(xhs_cfg.get("command") or "node").strip() or "node"
+                xhs_script = self._resolve_xhs_script_path(xhs_cfg.get("args"))
+
+        cmd_path = shutil.which(xhs_command)
+        xhs_script_exists = xhs_script.exists()
+        if cmd_path and xhs_script_exists:
+            push_item(
+                key="xhs_runtime",
+                name="XHS 运行依赖",
+                status="pass",
+                message="xhs-mcp 依赖就绪",
+                detail=f"command={xhs_command} | script={xhs_script}",
+            )
+        else:
+            missing_parts = []
+            if not cmd_path:
+                missing_parts.append(f"命令不存在: {xhs_command}")
+            if not xhs_script_exists:
+                missing_parts.append(f"脚本不存在: {xhs_script}")
+            push_item(
+                key="xhs_runtime",
+                name="XHS 运行依赖",
+                status="fail",
+                message="；".join(missing_parts) or "xhs 运行依赖缺失",
+                detail=f"command={xhs_command} | script={xhs_script}",
+                suggestion="确认 Node.js 已安装，且 vendor/xhs-mcp 已完整放入项目目录",
+            )
+
+        if include_xhs_status:
+            status_resp = self.runtime.check_xhs_status()
+            status_obj = status_resp.get("status") if isinstance(status_resp, dict) else {}
+            if not isinstance(status_obj, dict):
+                status_obj = {}
+            logged_in = bool(
+                status_obj.get("loggedIn")
+                or status_obj.get("logged_in")
+                or status_obj.get("isLogin")
+                or status_obj.get("is_login")
+            )
+            if status_resp.get("ok") and logged_in:
+                push_item(
+                    key="xhs_login",
+                    name="XHS 登录状态",
+                    status="pass",
+                    message="登录状态正常",
+                    detail=self._compact_json(status_obj),
+                )
+            elif status_resp.get("ok"):
+                push_item(
+                    key="xhs_login",
+                    name="XHS 登录状态",
+                    status="fail",
+                    message="未登录，请扫码登录",
+                    detail=self._compact_json(status_obj),
+                    suggestion="在控制中心点击“扫码登录”，完成后再次自检",
+                )
+            else:
+                push_item(
+                    key="xhs_login",
+                    name="XHS 登录状态",
+                    status="fail",
+                    message=str(status_resp.get("message") or "状态检查失败"),
+                    detail=str(status_resp.get("output") or "")[:280],
+                    suggestion="先执行 scripts/xhs_login.ps1 完成扫码后重试",
+                )
+        else:
+            push_item(
+                key="xhs_login",
+                name="XHS 登录状态",
+                status="warn",
+                message="已跳过登录检查",
+                suggestion="建议首次部署完成后执行一次登录检查",
+            )
+
+        email_enabled = False
+        email_host = "smtp.126.com"
+        email_port = 465
+        email_use_ssl = True
+        username_env = "EMAIL_SMTP_USERNAME"
+        password_env = "EMAIL_SMTP_PASSWORD"
+        from_env = "EMAIL_FROM"
+        to_env = "EMAIL_TO"
+        if settings is not None:
+            email_enabled = bool(settings.email.enabled)
+            email_host = str(settings.email.smtp_host or email_host)
+            email_port = int(settings.email.smtp_port or email_port)
+            email_use_ssl = bool(settings.email.use_ssl)
+            username_env = str(settings.email.username_env or username_env)
+            password_env = str(settings.email.password_env or password_env)
+            from_env = str(settings.email.from_env or from_env)
+            to_env = str(settings.email.to_env or to_env)
+        elif isinstance(config_data.get("email"), dict):
+            email_cfg = config_data.get("email") or {}
+            email_enabled = bool(email_cfg.get("enabled", False))
+            email_host = str(email_cfg.get("smtp_host") or email_host)
+            email_port = self._coerce_int(email_cfg.get("smtp_port"), email_port, minimum=1)
+            email_use_ssl = bool(email_cfg.get("use_ssl", True))
+            username_env = str(email_cfg.get("username_env") or username_env)
+            password_env = str(email_cfg.get("password_env") or password_env)
+            from_env = str(email_cfg.get("from_env") or from_env)
+            to_env = str(email_cfg.get("to_env") or to_env)
+
+        email_creds = {
+            username_env: self._get_env_value(username_env, env_map),
+            password_env: self._get_env_value(password_env, env_map),
+            from_env: self._get_env_value(from_env, env_map),
+            to_env: self._get_env_value(to_env, env_map),
+        }
+        if not email_enabled:
+            push_item(
+                key="email_enabled",
+                name="邮件通知开关",
+                status="warn",
+                message="email.enabled=false，邮件通知未启用",
+                suggestion="如需邮件摘要，请在控制中心启用邮件并保存",
+            )
+        else:
+            missing_email = [key for key, value in email_creds.items() if not str(value or "").strip()]
+            if missing_email:
+                push_item(
+                    key="email_env",
+                    name="邮件环境变量",
+                    status="fail",
+                    message=f"缺少: {', '.join(missing_email)}",
+                    suggestion="请在 .env 中补齐邮件账号、授权码、收件人",
+                )
+            else:
+                push_item(
+                    key="email_env",
+                    name="邮件环境变量",
+                    status="pass",
+                    message="邮件变量已配置",
+                    detail=f"host={email_host}:{email_port} ssl={email_use_ssl}",
+                )
+
+            if include_network:
+                if missing_email:
+                    push_item(
+                        key="email_connect",
+                        name="邮件 SMTP 连接",
+                        status="fail",
+                        message="连接检查未执行（变量缺失）",
+                    )
+                else:
+                    connect_ok, connect_msg = self._check_email_connectivity(
+                        host=email_host,
+                        port=email_port,
+                        use_ssl=email_use_ssl,
+                        username=str(email_creds.get(username_env) or ""),
+                        password=str(email_creds.get(password_env) or ""),
+                    )
+                    push_item(
+                        key="email_connect",
+                        name="邮件 SMTP 连接",
+                        status="pass" if connect_ok else "fail",
+                        message=connect_msg,
+                        suggestion="" if connect_ok else "检查 SMTP 主机/端口、授权码和网络连通性",
+                    )
+            else:
+                push_item(
+                    key="email_connect",
+                    name="邮件 SMTP 连接",
+                    status="warn",
+                    message="已跳过网络连通检查",
+                )
+
+        llm_enabled = False
+        llm_model = ""
+        llm_base_url = "https://api.openai.com/v1"
+        llm_api_key = ""
+        llm_api_key_env = "OPENAI_API_KEY"
+        if settings is not None:
+            llm_enabled = bool(settings.llm.enabled)
+            llm_model = str(settings.llm.model or "")
+            llm_base_url = str(settings.llm.base_url or llm_base_url)
+            llm_api_key = str(settings.llm_api_key or "")
+            llm_api_key_env = str(settings.llm.api_key_env or llm_api_key_env)
+        elif isinstance(config_data.get("llm"), dict):
+            llm_cfg = config_data.get("llm") or {}
+            llm_enabled = bool(llm_cfg.get("enabled", False))
+            llm_model = str(llm_cfg.get("model") or "")
+            llm_base_url = str(llm_cfg.get("base_url") or llm_base_url)
+            llm_api_key_env = str(llm_cfg.get("api_key_env") or llm_api_key_env)
+            llm_api_key = str(llm_cfg.get("api_key") or "").strip() or self._get_env_value(llm_api_key_env, env_map)
+
+        if not llm_enabled:
+            push_item(
+                key="llm_enabled",
+                name="LLM 开关",
+                status="warn",
+                message="llm.enabled=false，LLM 功能未启用",
+                suggestion="如需 LLM 过滤/摘要，请开启 LLM 并配置 API Key",
+            )
+        else:
+            llm_missing = []
+            if not llm_model.strip():
+                llm_missing.append("llm.model")
+            if not llm_base_url.strip():
+                llm_missing.append("llm.base_url")
+            if not llm_api_key.strip():
+                llm_missing.append(llm_api_key_env or "OPENAI_API_KEY")
+
+            if llm_missing:
+                push_item(
+                    key="llm_config",
+                    name="LLM 配置",
+                    status="fail",
+                    message=f"缺少: {', '.join(llm_missing)}",
+                    suggestion="请在 config/.env 中补齐模型、地址与 API Key",
+                )
+            else:
+                push_item(
+                    key="llm_config",
+                    name="LLM 配置",
+                    status="pass",
+                    message="LLM 基础配置已就绪",
+                    detail=f"model={llm_model} | base={llm_base_url}",
+                )
+
+            if include_network:
+                if llm_missing:
+                    push_item(
+                        key="llm_connect",
+                        name="LLM 连接测试",
+                        status="fail",
+                        message="连接检查未执行（配置缺失）",
+                    )
+                else:
+                    ok, status, detail = self._check_llm_connectivity(
+                        base_url=llm_base_url,
+                        api_key=llm_api_key,
+                    )
+                    if ok:
+                        push_item(
+                            key="llm_connect",
+                            name="LLM 连接测试",
+                            status="pass",
+                            message=f"连接成功（HTTP {status}）",
+                            detail=detail,
+                        )
+                    else:
+                        push_item(
+                            key="llm_connect",
+                            name="LLM 连接测试",
+                            status="fail" if status in {0, 401, 403} else "warn",
+                            message=f"连接失败（HTTP {status}）" if status else "连接失败",
+                            detail=detail,
+                            suggestion="检查 API Key、base_url、代理和证书设置",
+                        )
+            else:
+                push_item(
+                    key="llm_connect",
+                    name="LLM 连接测试",
+                    status="warn",
+                    message="已跳过网络连通检查",
+                )
+
+        passed = sum(1 for item in items if item.get("status") == "pass")
+        warned = sum(1 for item in items if item.get("status") == "warn")
+        failed = sum(1 for item in items if item.get("status") == "fail")
+
+        return {
+            "ok": failed == 0,
+            "checked_at": checked_at,
+            "summary": {
+                "total": len(items),
+                "passed": passed,
+                "warned": warned,
+                "failed": failed,
+            },
+            "items": items,
+        }
+
+    def _check_email_connectivity(self, *, host: str, port: int, use_ssl: bool, username: str, password: str) -> tuple[bool, str]:
+        try:
+            if use_ssl:
+                with smtplib.SMTP_SSL(host, int(port), timeout=8) as server:
+                    server.login(username, password)
+            else:
+                with smtplib.SMTP(host, int(port), timeout=8) as server:
+                    server.starttls()
+                    server.login(username, password)
+            return True, "SMTP 登录成功"
+        except Exception as exc:
+            return False, f"SMTP 登录失败: {exc}"
+
+    def _check_llm_connectivity(self, *, base_url: str, api_key: str) -> tuple[bool, int, str]:
+        try:
+            import requests
+
+            target = base_url.rstrip("/") + "/models"
+            resp = requests.get(
+                target,
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=(3, 8),
+            )
+            detail = str(resp.text or "")[:220].strip()
+            if resp.ok:
+                return True, int(resp.status_code), detail
+            return False, int(resp.status_code), detail
+        except Exception as exc:
+            return False, 0, str(exc)
+
+    def _resolve_xhs_script_path(self, args: Any) -> Path:
+        values: list[str] = []
+        if isinstance(args, list):
+            values = [str(item).strip() for item in args if str(item).strip()]
+        elif isinstance(args, str):
+            text = args.strip()
+            if text:
+                values = [text]
+        first = values[0] if values else "vendor/xhs-mcp/dist/xhs-mcp.js"
+        script = Path(first)
+        if not script.is_absolute():
+            script = self.workspace / script
+        return script
+
+    def _read_env_values(self) -> dict[str, str]:
+        env_path = self.workspace / ".env"
+        out: dict[str, str] = {}
+        if not env_path.exists():
+            return out
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                text = str(line or "").strip()
+                if not text or text.startswith("#") or "=" not in text:
+                    continue
+                key, value = text.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip("\"'")
+                if key:
+                    out[key] = value
+        except Exception:
+            return out
+        return out
+
+    @staticmethod
+    def _get_env_value(name: str, env_map: dict[str, str]) -> str:
+        key = str(name or "").strip()
+        if not key:
+            return ""
+        runtime = str(os.getenv(key, "") or "").strip()
+        if runtime:
+            return runtime
+        return str(env_map.get(key, "") or "").strip()
+
+    @staticmethod
+    def _compact_json(value: Any) -> str:
+        try:
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))[:280]
+        except Exception:
+            return str(value)[:280]
 
     def _load_runs(self, limit: int) -> list[dict[str, Any]]:
         if not self.runs_dir.exists():

@@ -90,6 +90,23 @@
         </div>
 
         <div class="ops-grid">
+          <article class="ops-card span-2">
+            <div class="head-row">
+              <h4>首次配置向导</h4>
+              <span id="wizardGuideBadge" class="chip">未完成</span>
+            </div>
+            <div id="wizardGuideSteps" class="wizard-steps"></div>
+            <div class="btn-row">
+              <button id="wizardApplyBtn" class="btn ghost" type="button">应用推荐配置</button>
+              <button id="wizardCheckBtn" class="btn primary" type="button">一键自检</button>
+              <button id="wizardMarkDoneBtn" class="btn ghost" type="button">标记向导完成</button>
+            </div>
+            <p id="wizardCheckSummary" class="tip-line">首次部署建议先执行“应用推荐配置”与“一键自检”。</p>
+            <div id="wizardCheckList" class="wizard-check-list">
+              <p class="wizard-check-empty">暂无自检结果</p>
+            </div>
+          </article>
+
           <article class="ops-card">
             <h4>即时操作</h4>
             <div class="inline-grid cols-3">

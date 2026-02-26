@@ -1,10 +1,15 @@
 ﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.3.4`
+- 项目版本：`0.3.5`
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
+
+### v0.3.5 更新要点
+- 新增首次配置向导：控制中心新增“应用推荐配置 + 标记完成”流程，降低初始配置门槛。
+- 新增一键自检：支持对配置文件、数据写入、XHS 依赖、XHS 登录、邮件配置/连接、LLM 配置/连接进行统一检查并给出修复建议。
+- 新增自检 API：`GET/POST /api/setup/check`，前端与脚本可复用同一检查能力。
 
 ### v0.3.4 更新要点
 - Dashboard 皮肤优化：`graphite-office` 升级为明显深色办公主题，表格/按钮/输入框/卡片统一深色化，切换后视觉差异更明确。
@@ -199,7 +204,14 @@ powershell -ExecutionPolicy Bypass -File scripts/start_dashboard.ps1 -Engine aut
 浏览器打开 `http://127.0.0.1:8787`。
 如需启用 FastAPI 引擎，可先执行：`pip install -e .[dashboard]`。
 
-### 第 8 步：常用运维命令
+### 第 8 步：首次配置向导（推荐）
+打开 `http://127.0.0.1:8787/control.html`，按顺序操作。
+1. 点击“应用推荐配置”（自动设置关键词、排序、周期等建议值）。
+2. 点击“一键自检”（检查配置、写入权限、XHS、邮件、LLM）。
+3. 按建议修复后再次自检，直到失败项为 0。
+4. 点击“标记向导完成”。
+
+### 第 9 步：常用运维命令
 手动发送已存最新 5 条摘要（不抓取）。
 ```powershell
 .\.venv\Scripts\python.exe -m auto_successor.main --config config/config.yaml --send-latest 5
@@ -588,13 +600,26 @@ node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 - 岗位/摘要/正文详情联动查看
 - 最近运行记录
 - 可观测性统计（阶段耗时、慢阶段、错误码）
+- 首次配置向导（推荐配置 + 一键自检 + 修复建议）
 - 30 秒自动刷新汇总
+
+首次配置向导使用流程（控制中心）。
+1. 点击“应用推荐配置”，自动写入关键词/排序/周期等建议值。
+2. 点击“一键自检”，系统会按项检查并给出问题与修复建议。
+3. 按建议修复后再次自检，全部通过后可点击“标记向导完成”。
+
+自检状态说明。
+- `pass`：当前项检查通过。
+- `warn`：可运行但建议调整（如功能开关关闭、跳过网络检查）。
+- `fail`：会影响功能，建议按修复建议处理后重试。
 
 后端 API。
 - `GET /api/health`
 - `GET /api/summary`
 - `GET /api/leads?limit=200&q=关键词`
 - `GET /api/runs?limit=20`
+- `GET /api/setup/check`
+- `POST /api/setup/check`
 - `GET /api/runs` 关键字段：`stage_total_ms`、`stage_avg_ms`、`stage_failed_count`、`slow_stages`、`error_codes`
 
 ## 常见问题
@@ -630,6 +655,11 @@ node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 - 直接运行 Python 时优先设置：`PYTHONIOENCODING=utf-8`；不建议在 Conda 环境全局强制 `PYTHONUTF8=1`。
 - 若出现 `init_import_site` 或 `UnicodeDecodeError`，先清理当前终端中的 `PYTHONUTF8` 环境变量再重试。
 - 如果是历史日志文件中的旧乱码，可忽略；新运行日志会按新策略输出。
+
+### 8. 一键自检里有失败项怎么办
+- 先看失败项下方“建议”字段，按提示修复。
+- 常见顺序：先修复配置文件和环境变量，再处理 XHS 登录，最后检查邮件/LLM 连通性。
+- 如果只想先验证本地配置，可在 API 调用中禁用网络检查：`POST /api/setup/check` with `include_network=false`。
 
 ## 测试
 ```powershell
@@ -676,6 +706,7 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
+| v0.3.5 | 2026-02-26 | 新增控制中心“首次配置向导”（应用推荐配置/标记完成）；新增“一键自检”并覆盖配置、写入权限、XHS、邮件、LLM 检查；新增 `GET/POST /api/setup/check`。 |
 | v0.3.4 | 2026-02-26 | Dashboard 皮肤升级：`graphite-office` 改为深色办公主题；前端改为适度圆角；移除 `PYTHONUTF8=1` 强制设置，修复部分 Conda 环境启动报错。 |
 | v0.3.3 | 2026-02-26 | 中文乱码修复增强（脚本/日志/子进程/解码链路统一 UTF-8）；LLM 文本回退策略增强；岗位通知中“岗位要求/原文摘要”去重，避免重复展示。 |
 | v0.3.2 | 2026-02-25 | 新增可观测性面板：最近运行展示阶段总耗时/平均耗时/失败阶段数/慢阶段 Top/错误码分布；`/api/runs` 与 run stats 增加阶段观测字段并兼容历史快照解析。 |

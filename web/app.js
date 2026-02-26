@@ -80,6 +80,13 @@
     cfgLlmEnabled: document.getElementById("cfgLlmEnabled"),
     cfgLlmModel: document.getElementById("cfgLlmModel"),
     cfgLlmBaseUrl: document.getElementById("cfgLlmBaseUrl"),
+    wizardGuideBadge: document.getElementById("wizardGuideBadge"),
+    wizardGuideSteps: document.getElementById("wizardGuideSteps"),
+    wizardApplyBtn: document.getElementById("wizardApplyBtn"),
+    wizardCheckBtn: document.getElementById("wizardCheckBtn"),
+    wizardMarkDoneBtn: document.getElementById("wizardMarkDoneBtn"),
+    wizardCheckSummary: document.getElementById("wizardCheckSummary"),
+    wizardCheckList: document.getElementById("wizardCheckList"),
     resumeFileInput: document.getElementById("resumeFileInput"),
     resumeParseBtn: document.getElementById("resumeParseBtn"),
     resumeUploadBtn: document.getElementById("resumeUploadBtn"),
@@ -93,6 +100,7 @@
   let selectedResumeFile = null;
 
   const SKINS = ["business-blue", "graphite-office"];
+  const WIZARD_DONE_KEY = "successor_setup_wizard_done";
   const API_BASES = (() => {
     const candidates = ["", "http://127.0.0.1:8787", "http://localhost:8787"];
     if (window.location.protocol === "file:") {
@@ -540,6 +548,124 @@
     if (dom.runModeSelect) dom.runModeSelect.value = String(agent.mode || "auto");
     if (dom.daemonModeSelect) dom.daemonModeSelect.value = String(agent.mode || "auto");
     if (dom.daemonIntervalInput) dom.daemonIntervalInput.value = String(toInt(app.interval_minutes, 15));
+    renderWizardGuide(state.config);
+  }
+
+  function renderWizardGuide(config) {
+    if (!dom.wizardGuideSteps) return;
+
+    const app = (config && config.app) || {};
+    const xhs = (config && config.xhs) || {};
+    const notify = (config && config.notification) || {};
+    const email = (config && config.email) || {};
+    const wechat = (config && config.wechat_service) || {};
+    const llm = (config && config.llm) || {};
+
+    const keyword = String(xhs.keyword || "").trim();
+    const sort = String(xhs.search_sort || "");
+    const step1 = Boolean(keyword.includes("继任") && sort === "time_descending");
+    const step2 = Boolean(toInt(app.interval_minutes, 0) > 0 && toInt(notify.digest_interval_minutes, 0) > 0);
+    const step3 = Boolean(notify.mode && String(notify.mode) !== "off");
+    const step4 = Boolean(email.enabled || wechat.enabled);
+    const step5 = Boolean(!llm.enabled || (String(llm.model || "").trim() && String(llm.base_url || "").trim()));
+
+    const steps = [
+      { label: "抓取参数：关键词=继任 + 时间排序", done: step1 },
+      { label: "定时参数：主循环/摘要周期已填写", done: step2 },
+      { label: "通知模式：digest 或 realtime", done: step3 },
+      { label: "通知通道：至少启用邮件或微信", done: step4 },
+      { label: "LLM 参数：启用时模型与地址完整", done: step5 },
+    ];
+
+    const doneCount = steps.filter((item) => item.done).length;
+    const allDoneByConfig = doneCount === steps.length;
+    const manualDone = localStorage.getItem(WIZARD_DONE_KEY) === "1";
+    const finished = allDoneByConfig || manualDone;
+
+    dom.wizardGuideSteps.innerHTML = steps
+      .map((item) => {
+        const cls = item.done ? "wizard-step done" : "wizard-step todo";
+        const tag = item.done ? "完成" : "待处理";
+        return `<div class="${cls}"><span class="wizard-step-tag">${tag}</span><span>${escapeHtml(item.label)}</span></div>`;
+      })
+      .join("");
+
+    if (dom.wizardGuideBadge) {
+      dom.wizardGuideBadge.textContent = finished ? "已完成" : `进行中 ${doneCount}/${steps.length}`;
+    }
+  }
+
+  function renderSetupCheckResult(result) {
+    const data = result || {};
+    const summary = data.summary || {};
+    const items = Array.isArray(data.items) ? data.items : [];
+    const checkedAt = fmtTime(data.checked_at);
+    const passed = toInt(summary.passed, 0);
+    const warned = toInt(summary.warned, 0);
+    const failed = toInt(summary.failed, 0);
+    const total = toInt(summary.total, items.length);
+
+    if (dom.wizardCheckSummary) {
+      dom.wizardCheckSummary.textContent = `最近自检：${checkedAt} | 通过 ${passed} / ${total}，警告 ${warned}，失败 ${failed}`;
+    }
+    if (!dom.wizardCheckList) return;
+    if (!items.length) {
+      dom.wizardCheckList.innerHTML = '<p class="wizard-check-empty">暂无自检结果</p>';
+      return;
+    }
+
+    dom.wizardCheckList.innerHTML = items
+      .map((item) => {
+        const status = String(item.status || "warn").toLowerCase();
+        const statusText = status === "pass" ? "通过" : status === "fail" ? "失败" : "警告";
+        const detail = String(item.detail || "").trim();
+        const suggestion = String(item.suggestion || "").trim();
+        return [
+          '<div class="wizard-check-item">',
+          `<div class="wizard-check-head"><strong>${escapeHtml(String(item.name || "-"))}</strong><span class="wizard-check-status ${status}">${statusText}</span></div>`,
+          `<p>${escapeHtml(String(item.message || "-"))}</p>`,
+          detail ? `<p class="wizard-check-detail">${escapeHtml(detail)}</p>` : "",
+          suggestion ? `<p class="wizard-check-tip">建议：${escapeHtml(suggestion)}</p>` : "",
+          "</div>",
+        ].join("");
+      })
+      .join("");
+  }
+
+  async function saveConfigForm(successMsg = "配置已保存") {
+    const data = await postJson("/api/config", collectConfigPayload());
+    renderConfig((data && data.config) || {});
+    showToast((data && data.message) || successMsg, "success");
+    await loadSummaryAndRuns();
+  }
+
+  function applyWizardPresetFields() {
+    if (dom.cfgKeyword) dom.cfgKeyword.value = "继任";
+    if (dom.cfgSearchSort) dom.cfgSearchSort.value = "time_descending";
+    if (dom.cfgMaxResults) dom.cfgMaxResults.value = String(Math.max(20, toInt(dom.cfgMaxResults.value, 20)));
+    if (dom.cfgMaxDetailFetch) dom.cfgMaxDetailFetch.value = String(Math.max(5, toInt(dom.cfgMaxDetailFetch.value, 5)));
+    if (dom.cfgAppInterval) dom.cfgAppInterval.value = String(Math.max(15, toInt(dom.cfgAppInterval.value, 15)));
+    if (dom.cfgNotifyMode) dom.cfgNotifyMode.value = "digest";
+    if (dom.cfgDigestInterval) dom.cfgDigestInterval.value = String(Math.max(30, toInt(dom.cfgDigestInterval.value, 30)));
+    if (dom.cfgDigestTop) dom.cfgDigestTop.value = String(Math.max(5, toInt(dom.cfgDigestTop.value, 5)));
+    if (dom.cfgDigestNoNew) dom.cfgDigestNoNew.checked = false;
+    if (dom.cfgAgentMode) dom.cfgAgentMode.value = "auto";
+  }
+
+  async function runSetupCheck() {
+    if (dom.wizardCheckBtn) dom.wizardCheckBtn.disabled = true;
+    if (dom.wizardCheckSummary) dom.wizardCheckSummary.textContent = "正在执行一键自检，请稍候...";
+    try {
+      const result = await postJson("/api/setup/check", { include_network: true, include_xhs_status: true });
+      renderSetupCheckResult(result || {});
+      if (result && result.ok) {
+        localStorage.setItem(WIZARD_DONE_KEY, "1");
+      }
+      renderWizardGuide(state.config || {});
+      showToast(result && result.ok ? "自检通过" : "自检发现问题，请按建议处理", result && result.ok ? "success" : "error");
+    } finally {
+      if (dom.wizardCheckBtn) dom.wizardCheckBtn.disabled = false;
+    }
   }
 
   function collectConfigPayload() {
@@ -877,13 +1003,37 @@
     if (dom.saveConfigBtn) {
       dom.saveConfigBtn.addEventListener("click", async () => {
         try {
-          const data = await postJson("/api/config", collectConfigPayload());
-          renderConfig((data && data.config) || {});
-          showToast((data && data.message) || "配置已保存", "success");
-          await loadSummaryAndRuns();
+          await saveConfigForm("配置已保存");
         } catch (err) {
           showToast(err instanceof Error ? err.message : String(err), "error");
         }
+      });
+    }
+    if (dom.wizardApplyBtn) {
+      dom.wizardApplyBtn.addEventListener("click", async () => {
+        try {
+          applyWizardPresetFields();
+          await saveConfigForm("向导推荐配置已应用");
+          showToast("推荐配置已应用，可继续执行一键自检", "success");
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : String(err), "error");
+        }
+      });
+    }
+    if (dom.wizardCheckBtn) {
+      dom.wizardCheckBtn.addEventListener("click", async () => {
+        try {
+          await runSetupCheck();
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : String(err), "error");
+        }
+      });
+    }
+    if (dom.wizardMarkDoneBtn) {
+      dom.wizardMarkDoneBtn.addEventListener("click", () => {
+        localStorage.setItem(WIZARD_DONE_KEY, "1");
+        renderWizardGuide(state.config || {});
+        showToast("已标记向导完成", "success");
       });
     }
     if (dom.resumeFileInput) {
