@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 _SUSPECT_CHARS_RE = re.compile(r"[\u0100-\u02FF\u0370-\u04FF]")
+_EXPLICIT_MOJIBAKE_RE = re.compile(r"(?:Ã.|Â.|¤|�|[\u0100-\u04FF]{2,})")
 
 
 def repair_mojibake(text: str) -> str:
@@ -13,6 +14,8 @@ def repair_mojibake(text: str) -> str:
     raw = str(text or "")
     if not raw:
         return ""
+    if not _looks_mojibake(raw):
+        return raw
 
     candidates = [raw]
     segmented = _repair_segments(raw)
@@ -33,16 +36,9 @@ def repair_mojibake(text: str) -> str:
 
 def clean_line(text: str) -> str:
     value = re.sub(r"\s+", " ", str(text or "")).strip()
-    repaired = repair_mojibake(value)
-    if not repaired:
+    if not value:
         return ""
-
-    # If text still looks like mojibake, strip suspicious runs as a final fallback.
-    if is_unreadable_text(repaired):
-        compact = _strip_suspect_runs(repaired)
-        if compact and not is_unreadable_text(compact):
-            return compact
-    return repaired
+    return value
 
 
 def clean_line_with_fallback(text: str, fallback: str = "") -> str:
@@ -123,6 +119,17 @@ def _repair_segments(value: str) -> str:
 
     # Typical mojibake runs after GBK<->UTF-8 mismatch.
     return re.sub(r"[\u0100-\u04ff]{2,}", repl, value)
+
+
+def _looks_mojibake(value: str) -> bool:
+    text = str(value or "")
+    if not text:
+        return False
+    if "�" in text:
+        return True
+    if _EXPLICIT_MOJIBAKE_RE.search(text):
+        return True
+    return False
 
 
 def _strip_suspect_runs(value: str) -> str:

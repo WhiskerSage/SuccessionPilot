@@ -58,6 +58,25 @@ class TestJobProcessor(unittest.TestCase):
         self.assertTrue(job.link.startswith("https://"))
         self.assertNotIn("\n", job.requirements)
 
+    def test_normalize_company_and_location_noise(self):
+        job = JobRecord(
+            run_id="r2",
+            post_id="n2",
+            company="急招：美团找继任",
+            position="运营实习生",
+            location="鍖椾含路娴锋穩",
+            requirements="每周 4 天",
+            link="https://www.xiaohongshu.com/explore/n2",
+            publish_time=datetime.now(timezone.utc),
+            source_title="",
+            comment_count=0,
+            comments_preview="",
+        )
+
+        normalized = normalize_job_record(job)
+        self.assertEqual(normalized.company, "美团")
+        self.assertEqual(normalized.location, "北京")
+
 
 if __name__ == "__main__":
     unittest.main()

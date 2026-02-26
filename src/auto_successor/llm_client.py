@@ -15,37 +15,40 @@ class LLMClient:
     def __init__(self, settings: Settings, logger) -> None:
         self.settings = settings
         self.logger = logger
-        self._consecutive_failures = 0
-        self._disabled_until = 0.0
         self._failure_threshold = max(1, int(getattr(settings.llm, "failure_threshold", 2)))
         self._cooldown_seconds = max(30, int(getattr(settings.llm, "cooldown_seconds", 120)))
-        self._degraded_active = False
-        self._last_error_code = ""
+        self._scope_states: dict[str, dict[str, Any]] = {}
         self._error_counts: dict[str, int] = {}
         self._request_seq = 0
 
     def is_enabled(self) -> bool:
         return self.settings.llm.enabled
 
-    def is_available(self) -> bool:
+    def is_available(self, scope: str | None = None) -> bool:
+        scope_key, state = self._scope_state(scope)
         if not (self.settings.llm.enabled and bool(self.settings.llm_api_key)):
-            self._last_error_code = "disabled_or_missing_api_key"
+            state["last_error_code"] = "disabled_or_missing_api_key"
             return False
         now = time.monotonic()
-        if now < self._disabled_until:
-            self._last_error_code = "cooldown_active"
-            if not self._degraded_active:
-                remain = int(self._disabled_until - now)
-                self.logger.warning("[LLM降级] 进入回退模式，冷却剩余约 %ss", max(1, remain))
-                self._degraded_active = True
+        if now < float(state["disabled_until"]):
+            state["last_error_code"] = "cooldown_active"
+            if not bool(state["degraded_active"]):
+                remain = int(float(state["disabled_until"]) - now)
+                self.logger.warning(
+                    "[LLM降级] scope=%s 进入回退模式，冷却剩余约 %ss",
+                    scope_key,
+                    max(1, remain),
+                )
+                state["degraded_active"] = True
             return False
-        if self._degraded_active:
-            self.logger.info("[LLM恢复] 冷却结束，恢复 LLM 调用")
-            self._degraded_active = False
+        if bool(state["degraded_active"]):
+            self.logger.info("[LLM恢复] scope=%s 冷却结束，恢复 LLM 调用", scope_key)
+            state["degraded_active"] = False
         return True
 
-    def last_error_code(self) -> str:
-        return self._last_error_code
+    def last_error_code(self, scope: str | None = None) -> str:
+        _, state = self._scope_state(scope)
+        return str(state.get("last_error_code", "") or "")
 
     def error_counts(self) -> dict[str, int]:
         return dict(self._error_counts)
@@ -53,8 +56,14 @@ class LLMClient:
     def clear_error_counts(self) -> None:
         self._error_counts = {}
 
-    def chat_json(self, system_prompt: str, user_prompt: str, model: str | None = None) -> dict[str, Any] | None:
-        text = self.chat_text(system_prompt=system_prompt, user_prompt=user_prompt, model=model)
+    def chat_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str | None = None,
+        scope: str | None = None,
+    ) -> dict[str, Any] | None:
+        text = self.chat_text(system_prompt=system_prompt, user_prompt=user_prompt, model=model, scope=scope)
         if not text:
             return None
 
@@ -87,8 +96,10 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         model: str | None = None,
+        scope: str | None = None,
     ) -> str | None:
-        if not self.is_available():
+        scope_key, _ = self._scope_state(scope)
+        if not self.is_available(scope=scope_key):
             return None
 
         cfg = self.settings.llm
@@ -117,8 +128,9 @@ class LLMClient:
         self._request_seq += 1
         request_id = self._request_seq
         self.logger.info(
-            "[LLM请求] 第%s次 | model=%s | max_tokens=%s | connect=%ss read=%ss",
+            "[LLM请求] 第%s次 | scope=%s | model=%s | max_tokens=%s | connect=%ss read=%ss",
             request_id,
+            scope_key,
             payload.get("model"),
             payload.get("max_tokens"),
             connect_timeout,
@@ -138,31 +150,51 @@ class LLMClient:
             except Exception as exc:
                 code, retryable = self._classify_error(exc)
                 if attempt < attempts and retryable:
-                    self.logger.info("[LLM重试] 请求#%s attempt=%s/%s code=%s", request_id, attempt + 1, attempts, code)
+                    self.logger.info(
+                        "[LLM重试] 请求#%s scope=%s attempt=%s/%s code=%s",
+                        request_id,
+                        scope_key,
+                        attempt + 1,
+                        attempts,
+                        code,
+                    )
                     if retry_backoff > 0:
                         time.sleep(retry_backoff * attempt)
                     continue
-                self._mark_failure(code=code)
-                self.logger.warning("[LLM失败] 请求#%s code=%s detail=%s", request_id, code, exc)
+                self._mark_failure(code=code, scope=scope_key)
+                self.logger.warning("[LLM失败] 请求#%s scope=%s code=%s detail=%s", request_id, scope_key, code, exc)
                 return None
 
             content = self._extract_text(data)
             if content is not None:
-                self._mark_success()
-                self.logger.info("[LLM成功] 请求#%s 返回长度=%s", request_id, len(content))
+                self._mark_success(scope=scope_key)
+                self.logger.info("[LLM成功] 请求#%s scope=%s 返回长度=%s", request_id, scope_key, len(content))
                 return self._strip_code_fence(content)
 
             code = "empty_content"
             if attempt < attempts:
-                self.logger.info("[LLM重试] 请求#%s attempt=%s/%s code=%s", request_id, attempt + 1, attempts, code)
+                self.logger.info(
+                    "[LLM重试] 请求#%s scope=%s attempt=%s/%s code=%s",
+                    request_id,
+                    scope_key,
+                    attempt + 1,
+                    attempts,
+                    code,
+                )
                 if retry_backoff > 0:
                     time.sleep(retry_backoff * attempt)
                 continue
-            self._mark_failure(code=code)
-            self.logger.warning("[LLM失败] 请求#%s code=%s payload=%s", request_id, code, str(data)[:300])
+            self._mark_failure(code=code, scope=scope_key)
+            self.logger.warning(
+                "[LLM失败] 请求#%s scope=%s code=%s payload=%s",
+                request_id,
+                scope_key,
+                code,
+                str(data)[:300],
+            )
             return None
 
-        self._mark_failure(code="unknown_error")
+        self._mark_failure(code="unknown_error", scope=scope_key)
         return None
 
     @staticmethod
@@ -248,23 +280,39 @@ class LLMClient:
             return ("http_error", False)
         return ("request_error", False)
 
-    def _mark_success(self) -> None:
-        self._consecutive_failures = 0
-        self._last_error_code = ""
+    def _scope_state(self, scope: str | None) -> tuple[str, dict[str, Any]]:
+        key = str(scope or "default").strip().lower() or "default"
+        state = self._scope_states.get(key)
+        if state is None:
+            state = {
+                "consecutive_failures": 0,
+                "disabled_until": 0.0,
+                "degraded_active": False,
+                "last_error_code": "",
+            }
+            self._scope_states[key] = state
+        return key, state
 
-    def _mark_failure(self, code: str = "unknown_error") -> None:
-        self._consecutive_failures += 1
-        self._last_error_code = code
+    def _mark_success(self, scope: str | None = None) -> None:
+        _, state = self._scope_state(scope)
+        state["consecutive_failures"] = 0
+        state["last_error_code"] = ""
+
+    def _mark_failure(self, code: str = "unknown_error", scope: str | None = None) -> None:
+        scope_key, state = self._scope_state(scope)
+        state["consecutive_failures"] = int(state.get("consecutive_failures", 0)) + 1
+        state["last_error_code"] = code
         key = str(code or "unknown_error").strip() or "unknown_error"
         self._error_counts[key] = int(self._error_counts.get(key, 0)) + 1
-        if self._consecutive_failures >= self._failure_threshold:
-            self._disabled_until = time.monotonic() + self._cooldown_seconds
+        if int(state["consecutive_failures"]) >= self._failure_threshold:
+            state["disabled_until"] = time.monotonic() + self._cooldown_seconds
             self.logger.warning(
-                "[LLM降级] 连续失败 %s 次，暂停 %ss（last_code=%s）",
-                self._consecutive_failures,
+                "[LLM降级] scope=%s 连续失败 %s 次，暂停 %ss（last_code=%s）",
+                scope_key,
+                state["consecutive_failures"],
                 self._cooldown_seconds,
                 code,
             )
-            self._degraded_active = False
-            self._consecutive_failures = 0
+            state["degraded_active"] = False
+            state["consecutive_failures"] = 0
 

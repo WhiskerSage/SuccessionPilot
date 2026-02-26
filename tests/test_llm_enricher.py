@@ -73,10 +73,16 @@ class _FakeClient:
         self._filter_resp = filter_resp
         self._summary_resp = summary_resp
 
-    def is_available(self) -> bool:
+    def is_available(self, scope: str | None = None) -> bool:
         return self._available
 
-    def chat_json(self, system_prompt: str, user_prompt: str, model: str | None = None):
+    def chat_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str | None = None,
+        scope: str | None = None,
+    ):
         if "帖子筛选助手" in system_prompt:
             return self._filter_resp
         if "继任信息分析助手" in system_prompt:

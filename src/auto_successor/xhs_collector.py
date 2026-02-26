@@ -157,14 +157,13 @@ class XHSMcpCliCollector:
         proc = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
+            text=False,
             timeout=self.cfg.command_timeout_seconds,
             env=env,
         )
-        output = (proc.stdout or "").strip()
+        output = self._decode_json_output(proc.stdout or b"").strip()
         if not output:
-            output = (proc.stderr or "").strip()
+            output = self._decode_json_output(proc.stderr or b"").strip()
         payload = self._parse_json_from_text(output)
         if payload is None:
             raise XHSCollectorError(f"xhs output is not json: {output}")
@@ -241,14 +240,13 @@ class XHSMcpCliCollector:
         proc = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
+            text=False,
             timeout=self.cfg.command_timeout_seconds + 20,
             env=os.environ.copy(),
         )
-        output = (proc.stdout or "").strip()
+        output = self._decode_json_output(proc.stdout or b"").strip()
         if not output:
-            output = (proc.stderr or "").strip()
+            output = self._decode_json_output(proc.stderr or b"").strip()
         payload = self._parse_json_from_text(output)
         if payload is None:
             raise XHSCollectorError(f"search script output is not json: {output[:600]}")
@@ -291,14 +289,13 @@ class XHSMcpCliCollector:
         proc = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
+            text=False,
             timeout=self.cfg.command_timeout_seconds + 10,
             env=os.environ.copy(),
         )
-        output = (proc.stdout or "").strip()
+        output = self._decode_json_output(proc.stdout or b"").strip()
         if not output:
-            output = (proc.stderr or "").strip()
+            output = self._decode_json_output(proc.stderr or b"").strip()
         payload = self._parse_json_from_text(output)
         if payload is None:
             return {"success": False, "error": "invalid_detail_output", "raw": output[:300]}
@@ -316,6 +313,19 @@ class XHSMcpCliCollector:
             return json.loads(text[start : end + 1])
         except json.JSONDecodeError:
             return None
+
+    @classmethod
+    def _decode_json_output(cls, raw: bytes) -> str:
+        if not raw:
+            return ""
+        for encoding in ("utf-8", "utf-8-sig", "gb18030"):
+            try:
+                text = raw.decode(encoding)
+            except Exception:
+                continue
+            if cls._parse_json_from_text(text) is not None:
+                return text
+        return raw.decode("utf-8", errors="replace")
 
     @staticmethod
     def _summarize_search_error(payload: dict) -> str:
@@ -433,6 +443,11 @@ class XHSMcpCliCollector:
         ]
         if any(re.search(pat, value, flags=re.IGNORECASE) for pat in blocked_patterns):
             return ""
+        if XHSMcpCliCollector._is_link_noise_text(value):
+            return ""
+        value = XHSMcpCliCollector._remove_inline_urls(value)
+        if len(value) < 10:
+            return ""
         return clean_line(value)
 
     @staticmethod
@@ -464,6 +479,8 @@ class XHSMcpCliCollector:
                 continue
             if re.fullmatch(r"(赞|回复|展开|收起|查看更多)\d*", part):
                 continue
+            if XHSMcpCliCollector._is_link_noise_text(part):
+                continue
             if any(re.search(pat, part, flags=re.IGNORECASE) for pat in noise_patterns):
                 continue
             cleaned_parts.append(part)
@@ -473,6 +490,41 @@ class XHSMcpCliCollector:
             if item not in uniq:
                 uniq.append(item)
         return clean_line(" | ".join(uniq[:8]))
+
+    @staticmethod
+    def _remove_inline_urls(text: str) -> str:
+        value = str(text or "")
+        value = re.sub(r"!\[[^\]]*\]\(\s*https?://[^)]+\)", " ", value, flags=re.IGNORECASE)
+        value = re.sub(r"https?://[^\s|]+", " ", value, flags=re.IGNORECASE)
+        value = re.sub(r"\s+", " ", value).strip()
+        return value
+
+    @staticmethod
+    def _is_link_noise_text(text: str) -> bool:
+        value = str(text or "").strip()
+        if not value:
+            return True
+        if re.fullmatch(r"!\[[^\]]*\]\(\s*https?://[^)]+\)", value, flags=re.IGNORECASE):
+            return True
+        if re.fullmatch(r"(?:https?://\S+\s*[|,，;；/]?\s*)+", value, flags=re.IGNORECASE):
+            return True
+        urls = re.findall(r"https?://[^\s|]+", value, flags=re.IGNORECASE)
+        if not urls:
+            return False
+        non_url = re.sub(r"https?://[^\s|]+", " ", value, flags=re.IGNORECASE)
+        cjk = len(re.findall(r"[\u4e00-\u9fff]", non_url))
+        alpha_num = len(re.findall(r"[A-Za-z0-9]", non_url))
+        image_link_count = 0
+        for url in urls:
+            if re.search(r"\.(?:png|jpe?g|gif|webp|bmp|heic|svg)(?:\?|$)", url, flags=re.IGNORECASE):
+                image_link_count += 1
+            elif re.search(r"(xhscdn|xhslink|sns-webpic|imageView2)", url, flags=re.IGNORECASE):
+                image_link_count += 1
+        if image_link_count > 0 and (cjk + alpha_num) < 12:
+            return True
+        if len(urls) >= 1 and (cjk + alpha_num) < 6:
+            return True
+        return False
 
     def _parse_publish_time(self, text: str) -> datetime:
         value, _ = self._parse_publish_time_with_quality(text)

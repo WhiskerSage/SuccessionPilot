@@ -17,6 +17,44 @@ CITIES = [
     "苏州",
     "武汉",
     "西安",
+    "天津",
+]
+
+LOCATION_MOJIBAKE_MAP = {
+    "鍖椾含": "北京",
+    "涓婃捣": "上海",
+    "骞垮窞": "广州",
+    "娣卞湷": "深圳",
+    "鏉宸": "杭州",
+    "鍗椾含": "南京",
+    "鎴愰兘": "成都",
+    "姝︽眽": "武汉",
+    "瑗垮畨": "西安",
+    "鑻忓窞": "苏州",
+    "澶╂触": "天津",
+}
+
+COMPANY_NOISE_VALUES = {
+    "未知",
+    "公司待补充",
+    "岗位待补充",
+    "实习招",
+    "招继任",
+    "找继任",
+    "急招",
+    "招聘",
+    "在招",
+    "内推",
+}
+COMPANY_PREFIX_PATTERNS = [
+    r"^(?:急招|急聘|诚招|招聘|招募|内推|扩招|急缺)\s*",
+    r"^(?:找|求)(?:继任|接任)\s*",
+    r"^(?:招|找|求)(?:继任|接任|实习|实习生|岗位)\s*(?:[:：|｜/、，,\-\s]+)",
+]
+COMPANY_SUFFIX_PATTERNS = [
+    r"(?:急招|招聘中?|在招|招募中?)$",
+    r"(?:找|求)(?:继任|接任)$",
+    r"(?:招|找|求)(?:继任|接任|实习|实习生|岗位)$",
 ]
 
 POSITION_HINTS = [
@@ -96,9 +134,9 @@ def write_jobs_csv(path: str, records: list[JobRecord]) -> None:
 
 def normalize_job_record(record: JobRecord) -> JobRecord:
     record.post_id = _normalize_cell(record.post_id, fallback="unknown_post", max_len=120)
-    record.company = _normalize_cell(record.company, fallback="未知", max_len=60)
+    record.company = _normalize_company(record.company)
     record.position = _normalize_cell(record.position, fallback="未知", max_len=80)
-    record.location = _normalize_cell(record.location, fallback="未知", max_len=40)
+    record.location = _normalize_location(record.location)
     record.requirements = _normalize_cell(record.requirements, fallback="未提取到明确要求", max_len=180)
     record.arrival_time = _normalize_cell(record.arrival_time, fallback="未明确", max_len=120)
     record.application_method = _normalize_cell(record.application_method, fallback="未明确", max_len=180)
@@ -158,6 +196,74 @@ def _extract_location(text: str) -> str:
     if m:
         return _clean(m.group(1))
     return "未知"
+
+
+def _normalize_company(value: str) -> str:
+    text = _normalize_cell(value, fallback="未知", max_len=120)
+    for pattern in COMPANY_PREFIX_PATTERNS:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+    for pattern in COMPANY_SUFFIX_PATTERNS:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+    text = _clean(text)
+    if not text:
+        return "未知"
+    if text in COMPANY_NOISE_VALUES:
+        return "未知"
+    if re.fullmatch(r"[找求招聘继任接任实习岗位内推急]+", text):
+        return "未知"
+    return text[:60]
+
+
+def _normalize_location(value: str) -> str:
+    text = _normalize_cell(value, fallback="未知", max_len=120)
+    if text in {"-", "—", "--", "未知"}:
+        return "未知"
+    text = _decode_location_mojibake(text)
+    text = _replace_known_location_mojibake(text)
+    text = re.sub(r"(?i)(?:base|地点|城市|坐标)[:：\s]*", "", text).strip()
+    for city in CITIES:
+        if city in text:
+            return city
+    text = _clean(text)
+    if not text or text in {"-", "—", "--"}:
+        return "未知"
+    return text[:40]
+
+
+def _decode_location_mojibake(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    best = value
+    best_score = _location_text_score(value)
+    for encoding in ("gbk", "gb18030"):
+        try:
+            candidate = value.encode(encoding).decode("utf-8")
+        except Exception:
+            continue
+        score = _location_text_score(candidate)
+        if score > best_score + 0.6:
+            best = candidate
+            best_score = score
+    return best
+
+
+def _replace_known_location_mojibake(text: str) -> str:
+    value = str(text or "")
+    for bad, good in LOCATION_MOJIBAKE_MAP.items():
+        if bad in value:
+            value = value.replace(bad, good)
+    return value
+
+
+def _location_text_score(text: str) -> float:
+    value = str(text or "")
+    if not value:
+        return -999.0
+    city_hit = sum(1 for city in CITIES if city in value)
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", value))
+    odd = len(re.findall(r"[^\u4e00-\u9fffA-Za-z0-9·・/,\-:：\s]", value))
+    return (city_hit * 5.0) + (cjk * 0.2) - (odd * 2.0)
 
 
 def _extract_requirements(text: str) -> str:

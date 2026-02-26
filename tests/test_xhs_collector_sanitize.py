@@ -28,6 +28,17 @@ class _PosterCommentCollector(XHSMcpCliCollector):
 
 
 class TestXHSCollectorSanitize(unittest.TestCase):
+    def test_sanitize_detail_drops_image_link_noise(self):
+        raw = "https://sns-webpic-qc.xhscdn.com/abc/def.jpg?imageView2/2/w/1080/format/webp"
+        cleaned = XHSMcpCliCollector._sanitize_detail_text(raw)
+        self.assertEqual(cleaned, "")
+
+    def test_sanitize_detail_keeps_text_and_removes_inline_url(self):
+        raw = "岗位职责：协助数据分析，每周到岗4天。详情图：https://sns-webpic-qc.xhscdn.com/abc/def.jpg"
+        cleaned = XHSMcpCliCollector._sanitize_detail_text(raw)
+        self.assertIn("岗位职责：协助数据分析", cleaned)
+        self.assertNotIn("http", cleaned.lower())
+
     def test_sanitize_comments_removes_footer_noise(self):
         raw = (
             "© 2014-2024 | 行吟信息科技（上海）有限公司 | 地址：上海市黄浦区... | 电话：9501-3888 | "
@@ -39,6 +50,13 @@ class TestXHSCollectorSanitize(unittest.TestCase):
         self.assertNotIn("行吟信息科技", cleaned)
         self.assertNotIn("创作服务", cleaned)
         self.assertNotIn("电话：", cleaned)
+
+    def test_sanitize_comments_drops_pure_url_part(self):
+        raw = "作者回复：仍在招，欢迎投递 | https://sns-webpic-qc.xhscdn.com/abc/def.jpg | 普通评论：已投"
+        cleaned = XHSMcpCliCollector._sanitize_comments_preview(raw)
+        self.assertIn("作者回复：仍在招，欢迎投递", cleaned)
+        self.assertIn("普通评论：已投", cleaned)
+        self.assertNotIn("http", cleaned.lower())
 
     def test_enrich_prefers_poster_comments_preview(self):
         collector = _PosterCommentCollector(

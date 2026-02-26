@@ -95,7 +95,38 @@ class TestLLMClientRetry(unittest.TestCase):
         self.assertIsNone(text)
         self.assertEqual(client.last_error_code(), "read_timeout")
 
+    def test_scope_cooldown_is_isolated_between_job_and_outreach(self):
+        settings = _settings()
+        settings.llm.max_retries = 0
+        settings.llm.failure_threshold = 2
+        client = LLMClient(settings=settings, logger=_NullLogger())
+
+        seq = [
+            req_exc.ReadTimeout("timeout-1"),
+            req_exc.ReadTimeout("timeout-2"),
+            _Resp({"choices": [{"message": {"content": "JOB_OK"}}]}),
+        ]
+
+        def _fake_post(*args, **kwargs):
+            current = seq.pop(0)
+            if isinstance(current, Exception):
+                raise current
+            return current
+
+        with patch("auto_successor.llm_client.requests.post", side_effect=_fake_post):
+            first = client.chat_text(system_prompt="s", user_prompt="u", scope="outreach")
+            second = client.chat_text(system_prompt="s", user_prompt="u", scope="outreach")
+            self.assertIsNone(first)
+            self.assertIsNone(second)
+
+            self.assertFalse(client.is_available(scope="outreach"))
+            self.assertEqual(client.last_error_code(scope="outreach"), "cooldown_active")
+
+            self.assertTrue(client.is_available(scope="job"))
+            text = client.chat_text(system_prompt="s", user_prompt="u", scope="job")
+            self.assertEqual(text, "JOB_OK")
+            self.assertEqual(client.last_error_code(scope="job"), "")
+
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -115,11 +115,11 @@ class LLMEnricher:
         if not getattr(cfg, "enabled_for_filter", True):
             return rule_decision
 
-        if not (allow_llm and cfg.enabled and self.client.is_available()):
+        if not (allow_llm and cfg.enabled and self.client.is_available(scope="filter")):
             if allow_llm and cfg.enabled and (not self._degrade_notice_filter):
                 self.logger.warning(
                     "[LLM降级] 筛选阶段不可用，回退规则筛选（原因=%s）",
-                    self._client_error_reason(),
+                    self._client_error_reason(stage="filter"),
                 )
                 self._degrade_notice_filter = True
             return rule_decision
@@ -138,13 +138,13 @@ class LLMEnricher:
         )
         parse_model = self._parse_model()
         self._register_llm_call(stage="filter", target_id=note.note_id, model=parse_model)
-        obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=parse_model)
+        obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=parse_model, scope="filter")
         if not obj:
             self._register_rule_fallback(
                 stage="filter",
                 target_id=note.note_id,
                 fallback_to="规则筛选",
-                reason=self._client_error_reason(),
+                reason=self._client_error_reason(stage="filter"),
             )
             self.fail += 1
             return rule_decision
@@ -179,11 +179,11 @@ class LLMEnricher:
         current.match_score = self._fallback_match_score(note, resume_text)
         current.match_reason = current.match_reason or "rule fallback"
 
-        if not (cfg.enabled and cfg.enabled_for_jobs and self.client.is_available()):
+        if not (cfg.enabled and cfg.enabled_for_jobs and self.client.is_available(scope="job")):
             if cfg.enabled and cfg.enabled_for_jobs and (not self._degrade_notice_job):
                 self.logger.warning(
                     "[LLM降级] 岗位提取阶段不可用，回退规则字段（原因=%s）",
-                    self._client_error_reason(),
+                    self._client_error_reason(stage="job"),
                 )
                 self._degrade_notice_job = True
             return current
@@ -192,6 +192,8 @@ class LLMEnricher:
             "你是岗位结构化提取助手。"
             "基于帖子与简历文本，输出严格 JSON（英文字段名，不要 markdown）。"
             "字段: company, position, publish_time, location, requirements, arrival_time, application_method, author, risk_line, match_score, match_reason, link, post_id, mode。"
+            "company 只填公司/品牌主体名，不要包含“招/急招/招聘/找继任/内推”等词。"
+            "location 优先输出标准城市名（如北京/上海/广州/深圳），未知则填“未知”。"
             "其中 risk_line 只能是 low|medium|high，并按正文判断是否可能是中介广告。"
             "match_score 范围 0-100。"
         )
@@ -208,13 +210,13 @@ class LLMEnricher:
         )
         parse_model = self._parse_model()
         self._register_llm_call(stage="job", target_id=note.note_id, model=parse_model)
-        obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=parse_model)
+        obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=parse_model, scope="job")
         if not obj:
             self._register_rule_fallback(
                 stage="job",
                 target_id=note.note_id,
                 fallback_to="规则字段",
-                reason=self._client_error_reason(),
+                reason=self._client_error_reason(stage="job"),
             )
             self.fail += 1
             return current
@@ -267,11 +269,11 @@ class LLMEnricher:
         current.match_score = self._fallback_match_score(note, resume_text)
         current.match_reason = current.match_reason or "rule fallback"
 
-        if not (allow_llm and cfg.enabled and cfg.enabled_for_jobs and self.client.is_available()):
+        if not (allow_llm and cfg.enabled and cfg.enabled_for_jobs and self.client.is_available(scope="job")):
             if allow_llm and cfg.enabled and cfg.enabled_for_jobs and (not self._degrade_notice_job):
                 self.logger.warning(
                     "[LLM降级] 直接提取不可用，回退规则提取（原因=%s）",
-                    self._client_error_reason(),
+                    self._client_error_reason(stage="job"),
                 )
                 self._degrade_notice_job = True
             return rule_decision, current
@@ -280,6 +282,8 @@ class LLMEnricher:
             "你是继任岗位提取助手。"
             "基于帖子文本一步完成目标判断与字段提取，输出严格 JSON（英文字段名，不要 markdown）。"
             "字段: is_target, relevance_score, reason, company, position, publish_time, location, requirements, arrival_time, application_method, author, risk_line, match_score, match_reason, link, post_id, mode。"
+            "company 只填公司/品牌主体名，不要包含“招/急招/招聘/找继任/内推”等词。"
+            "location 优先输出标准城市名（如北京/上海/广州/深圳），未知则填“未知”。"
             "is_target 表示是否属于“找继任/接任的招聘岗位”；政治/军事/历史/剧情语境必须 false。"
             "risk_line 只能是 low|medium|high；match_score 范围 0-100。"
         )
@@ -296,13 +300,13 @@ class LLMEnricher:
         )
         parse_model = self._parse_model()
         self._register_llm_call(stage="job", target_id=note.note_id, model=parse_model)
-        obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=parse_model)
+        obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=parse_model, scope="job")
         if not obj:
             self._register_rule_fallback(
                 stage="job",
                 target_id=note.note_id,
                 fallback_to="规则提取",
-                reason=self._client_error_reason(),
+                reason=self._client_error_reason(stage="job"),
             )
             self.fail += 1
             return rule_decision, current
@@ -358,11 +362,11 @@ class LLMEnricher:
 
         cfg = self.settings.llm
         fallback = self._fallback_batch_summary(run_id=run_id, mode=mode, jobs=jobs)
-        if not (cfg.enabled and cfg.enabled_for_summary and self.client.is_available()):
+        if not (cfg.enabled and cfg.enabled_for_summary and self.client.is_available(scope="batch_summary")):
             if cfg.enabled and cfg.enabled_for_summary and (not self._degrade_notice_batch_summary):
                 self.logger.warning(
                     "[LLM降级] 批次摘要阶段不可用，回退本地批次摘要（原因=%s）",
-                    self._client_error_reason(),
+                    self._client_error_reason(stage="batch_summary"),
                 )
                 self._degrade_notice_batch_summary = True
             return fallback
@@ -401,13 +405,14 @@ class LLMEnricher:
             system_prompt=self._with_memory(system_prompt),
             user_prompt=user_prompt,
             model=parse_model,
+            scope="batch_summary",
         )
         if not obj:
             self._register_rule_fallback(
                 stage="batch_summary",
                 target_id=run_id,
                 fallback_to="本地批次摘要",
-                reason=self._client_error_reason(),
+                reason=self._client_error_reason(stage="batch_summary"),
             )
             self.fail += 1
             return fallback
@@ -459,6 +464,7 @@ class LLMEnricher:
                 temperature=0.4,
                 max_tokens=260,
                 model=model_name,
+                scope="outreach",
             )
             cleaned = self._clean_line(text or "").replace("\\n", "\n").strip()
             if cleaned:
@@ -477,6 +483,7 @@ class LLMEnricher:
                 temperature=0.3,
                 max_tokens=260,
                 model=model_name,
+                scope="outreach",
             )
             cleaned_retry = self._clean_line(text_retry or "").replace("\\n", "\n").strip()
             if cleaned_retry:
@@ -486,7 +493,7 @@ class LLMEnricher:
                 stage="outreach",
                 target_id=job.post_id,
                 fallback_to="默认套磁模板",
-                reason=self._client_error_reason(),
+                reason=self._client_error_reason(stage="outreach"),
             )
             return self._fallback_outreach_message(job)
         except Exception as exc:
@@ -627,11 +634,14 @@ class LLMEnricher:
             return system_prompt
         return f"{self.system_prefix}\n\n[Current Task]\n{system_prompt}"
 
-    def _client_error_reason(self) -> str:
+    def _client_error_reason(self, stage: str | None = None) -> str:
         getter = getattr(self.client, "last_error_code", None)
         if callable(getter):
             try:
-                value = str(getter() or "").strip()
+                try:
+                    value = str(getter(stage) or "").strip()
+                except TypeError:
+                    value = str(getter() or "").strip()
                 if value:
                     return value
             except Exception:
@@ -727,11 +737,11 @@ class LLMEnricher:
     # backward compatibility for legacy callers/tests
     def enrich_summary(self, note: NoteRecord, current: SummaryRecord, mode: str = "auto") -> SummaryRecord:
         cfg = self.settings.llm
-        if not (cfg.enabled and cfg.enabled_for_summary and self.client.is_available()):
+        if not (cfg.enabled and cfg.enabled_for_summary and self.client.is_available(scope="summary")):
             if cfg.enabled and cfg.enabled_for_summary and (not self._degrade_notice_summary):
                 self.logger.warning(
                     "[LLM降级] 摘要阶段不可用，回退本地摘要（原因=%s）",
-                    self._client_error_reason(),
+                    self._client_error_reason(stage="summary"),
                 )
                 self._degrade_notice_summary = True
             return current
@@ -776,13 +786,13 @@ class LLMEnricher:
         )
         parse_model = self._parse_model()
         self._register_llm_call(stage="summary", target_id=note.note_id, model=parse_model)
-        obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=parse_model)
+        obj = self.client.chat_json(system_prompt=system_prompt, user_prompt=user_prompt, model=parse_model, scope="summary")
         if not obj:
             self._register_rule_fallback(
                 stage="summary",
                 target_id=note.note_id,
                 fallback_to="本地摘要",
-                reason=self._client_error_reason(),
+                reason=self._client_error_reason(stage="summary"),
             )
             self.fail += 1
             return current
