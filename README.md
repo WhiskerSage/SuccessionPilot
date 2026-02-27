@@ -1,10 +1,15 @@
 ﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.3.15`
+- 项目版本：`0.3.16`
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
+
+### v0.3.16 更新要点
+- 详情抓取策略调整：`xhs.max_detail_fetch` 调整为 `18`，每轮优先做近全量 detail 抓取，提高岗位字段完整度。
+- 提取流程简化：移除“目标岗位二次补全”阶段，回归单阶段提取链路，降低流程复杂度。
+- 行为说明：单轮总耗时会增加，主要体现在详情抓取与后续结构化提取阶段。
 
 ### v0.3.15 更新要点
 - 失败重试队列升级为任务化执行：新增 `lease_until`、`last_error_code`、`last_duration_ms`、`last_trace_id`，并支持运行中超时任务自动回收。
@@ -180,6 +185,7 @@ XHS_PUPPETEER_REQUIRE=
 xhs:
   keyword: "继任"
   search_sort: "time_descending"
+  max_detail_fetch: 18
   account: "default"
   account_cookies_dir: "~/.xhs-mcp/accounts"
 
@@ -422,7 +428,7 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - `search_sort`：搜索排序策略
 - `keyword`：搜索关键词，建议固定为 `继任`
 - `max_results`：每轮最大抓取数量
-- `max_detail_fetch`：每轮详情抓取上限
+- `max_detail_fetch`：每轮详情抓取上限（当前建议 `18`）
 - `login_timeout_seconds`：扫码登录超时
 - `command_timeout_seconds`：单次命令超时
 
@@ -829,6 +835,7 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
+| v0.3.16 | 2026-02-27 | `xhs.max_detail_fetch` 调整为 18（近全量详情抓取）；移除“目标岗位二次补全”阶段，回归单阶段提取；说明单轮耗时会相应上升。 |
 | v0.3.15 | 2026-02-27 | 重试队列任务化升级（lease/error_code/duration/trace）；新增 dead-letter 与幂等键防重复发送；控制中心可视化死信与重试观测；API 错误统一为 `code/reason/fix_command/trace_id`。 |
 | v0.3.14 | 2026-02-27 | Dashboard 新增运行详情与重试队列 API（含重试/丢弃/批量唤醒）；控制中心联动支持状态/去重筛选与运行详情下钻；`start_dashboard.ps1` 注入项目 `src` 路径，修复旧安装包抢占导致的接口 404。 |
 | v0.3.13 | 2026-02-26 | 新增失败重试队列（抓取/LLM超时/邮件分队列）与后台重放；新增 XHS 多账号配置（`xhs.account`、`xhs.account_cookies_dir`）及控制中心账号选择；运行统计新增重试指标。 |
