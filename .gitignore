@@ -79,6 +79,7 @@ yarn-error.log*
 pnpm-debug.log*
 
 nanoclaw/
+Agent-Reach/
 docs/
 data/
 vendor/xhs-mcp/.npm-cache
