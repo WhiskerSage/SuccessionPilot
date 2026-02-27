@@ -14,7 +14,7 @@ xhs:
   search_sort: "time_descending"
   keyword: "继任"
   max_results: 20
-  max_detail_fetch: 5
+  max_detail_fetch: 18
   login_timeout_seconds: 180
   command_timeout_seconds: 120
 
