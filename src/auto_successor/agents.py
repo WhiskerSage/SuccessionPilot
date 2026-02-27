@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html import escape as html_escape
 from math import floor
 from pathlib import Path
@@ -39,6 +39,26 @@ class ExtractOutcome:
     jobs: list[JobRecord]
     filtered_out: list[dict]
     scores: dict[str, float]
+    note_agent_stats: dict[str, int] = field(default_factory=dict)
+    note_agent_details: list[dict[str, object]] = field(default_factory=list)
+
+
+@dataclass
+class NoteAgentTask:
+    index: int
+    note: NoteRecord
+    allow_llm: bool
+
+
+@dataclass
+class NoteAgentResult:
+    index: int
+    note: NoteRecord
+    decision: object
+    job: JobRecord
+    allow_llm: bool
+    worker_fallback: bool = False
+    error: str = ""
 
 
 @dataclass
@@ -212,20 +232,19 @@ class IntelligenceAgent:
         mode: str,
         workers: int = 1,
     ) -> list[JobRecord]:
+        _ = max_job_items  # deprecated: extraction no longer uses per-run LLM budget
         jobs: list[JobRecord] = []
         total = len(notes)
-        llm_budget = max(0, int(max_job_items))
         worker_count = self._effective_workers(workers=workers, total=total)
         progress_step = max(1, total // 5) if total > 0 else 1
-        self.logger.info("[阶段] 岗位结构化开始：总条数=%s，LLM配额=%s，并行=%s", total, llm_budget, worker_count)
+        self.logger.info("[阶段] 岗位结构化开始：总条数=%s，LLM=全量尝试，并行=%s", total, worker_count)
 
         results: list[JobRecord | None] = [None] * total
         if worker_count <= 1:
             for idx, note in enumerate(notes):
                 job = to_job_record(note)
                 job.mode = mode
-                if idx < llm_budget:
-                    job = self.llm_enricher.enrich_job(note, job, resume_text=resume_text, mode=mode)
+                job = self.llm_enricher.enrich_job(note, job, resume_text=resume_text, mode=mode)
                 results[idx] = normalize_job_record(job)
                 current = idx + 1
                 if current == total or current % progress_step == 0:
@@ -235,8 +254,7 @@ class IntelligenceAgent:
             def _worker(idx: int, note: NoteRecord) -> tuple[int, JobRecord]:
                 job = to_job_record(note)
                 job.mode = mode
-                if idx < llm_budget:
-                    job = self.llm_enricher.enrich_job(note, job, resume_text=resume_text, mode=mode)
+                job = self.llm_enricher.enrich_job(note, job, resume_text=resume_text, mode=mode)
                 return idx, normalize_job_record(job)
 
             with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="job") as executor:
@@ -270,9 +288,29 @@ class IntelligenceAgent:
         workers: int = 1,
     ) -> ExtractOutcome:
         """
-        Fast path:
-        - one pass over notes
-        - one LLM call per note (budgeted) for target decision + structured job fields
+        Backward-compatible wrapper for the per-note NoteAgent model.
+        """
+        _ = max_job_items  # deprecated: extraction no longer uses per-run LLM budget
+        return self.process_notes_with_agents(
+            notes=notes,
+            resume_text=resume_text,
+            mode=mode,
+            workers=workers,
+        )
+
+    def process_notes_with_agents(
+        self,
+        *,
+        notes: list[NoteRecord],
+        resume_text: str,
+        mode: str,
+        workers: int = 1,
+    ) -> ExtractOutcome:
+        """
+        NoteAgent model:
+        - one task per note
+        - each task decides target + extracts structured job fields
+        - tasks run concurrently with bounded workers
         """
         targets: list[NoteRecord] = []
         jobs: list[JobRecord] = []
@@ -280,96 +318,173 @@ class IntelligenceAgent:
         scores: dict[str, float] = {}
 
         total = len(notes)
-        llm_budget = max(0, int(max_job_items))
         worker_count = self._effective_workers(workers=workers, total=total)
         progress_step = max(1, total // 5) if total > 0 else 1
-        self.logger.info("[阶段] 直接提取开始：总条数=%s，LLM配额=%s，并行=%s", total, llm_budget, worker_count)
 
-        results: list[tuple[NoteRecord, object, JobRecord] | None] = [None] * total
+        tasks = [NoteAgentTask(index=idx, note=note, allow_llm=True) for idx, note in enumerate(notes)]
+        results: list[NoteAgentResult | None] = [None] * total
+
+        self.logger.info(
+            "[阶段] NoteAgent处理开始：总条数=%s，LLM=全量尝试，并行=%s",
+            total,
+            worker_count,
+        )
+
+        def _run_task(task: NoteAgentTask) -> NoteAgentResult:
+            decision, job = self.llm_enricher.extract_target_job(
+                task.note,
+                resume_text=resume_text,
+                mode=mode,
+                allow_llm=task.allow_llm,
+            )
+            return NoteAgentResult(
+                index=task.index,
+                note=task.note,
+                decision=decision,
+                job=normalize_job_record(job),
+                allow_llm=task.allow_llm,
+            )
+
         if worker_count <= 1:
-            for idx, note in enumerate(notes):
-                allow_llm = idx < llm_budget
-                decision, job = self.llm_enricher.extract_target_job(
-                    note,
-                    resume_text=resume_text,
-                    mode=mode,
-                    allow_llm=allow_llm,
-                )
-                results[idx] = (note, decision, normalize_job_record(job))
+            for idx, task in enumerate(tasks):
+                worker_fallback = False
+                worker_error = ""
+                try:
+                    result = _run_task(task)
+                except Exception as exc:
+                    worker_fallback = True
+                    worker_error = str(exc)
+                    self.logger.warning("NoteAgent任务异常，回退规则 | note=%s | error=%s", task.note.note_id, exc)
+                    decision, job = self.llm_enricher.extract_target_job(
+                        task.note,
+                        resume_text=resume_text,
+                        mode=mode,
+                        allow_llm=False,
+                    )
+                    result = NoteAgentResult(
+                        index=task.index,
+                        note=task.note,
+                        decision=decision,
+                        job=normalize_job_record(job),
+                        allow_llm=task.allow_llm,
+                        worker_fallback=worker_fallback,
+                        error=worker_error,
+                    )
+                results[idx] = result
                 current = idx + 1
                 if current == total or current % progress_step == 0:
                     pct = int(round(current * 100 / max(1, total)))
-                    self.logger.info("[阶段进度] 直接提取 %s/%s (%s%%)", current, total, pct)
+                    self.logger.info("[阶段进度] NoteAgent处理 %s/%s (%s%%)", current, total, pct)
         else:
-            def _worker(idx: int, note: NoteRecord) -> tuple[int, NoteRecord, object, JobRecord]:
-                allow_llm = idx < llm_budget
-                decision, job = self.llm_enricher.extract_target_job(
-                    note,
-                    resume_text=resume_text,
-                    mode=mode,
-                    allow_llm=allow_llm,
-                )
-                return idx, note, decision, normalize_job_record(job)
-
-            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="extract") as executor:
-                future_map = {executor.submit(_worker, idx, note): (idx, note) for idx, note in enumerate(notes)}
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="note-agent") as executor:
+                future_map = {executor.submit(_run_task, task): task for task in tasks}
                 completed = 0
                 for future in as_completed(future_map):
-                    idx, note = future_map[future]
+                    task = future_map[future]
                     try:
-                        target_idx, note_ref, decision, job = future.result()
+                        result = future.result()
                     except Exception as exc:
-                        self.logger.warning("并行直提异常，回退规则 | note=%s | error=%s", note.note_id, exc)
+                        self.logger.warning("NoteAgent任务异常，回退规则 | note=%s | error=%s", task.note.note_id, exc)
                         decision, job = self.llm_enricher.extract_target_job(
-                            note,
+                            task.note,
                             resume_text=resume_text,
                             mode=mode,
                             allow_llm=False,
                         )
-                        target_idx, note_ref = idx, note
-                        job = normalize_job_record(job)
-                    results[target_idx] = (note_ref, decision, job)
+                        result = NoteAgentResult(
+                            index=task.index,
+                            note=task.note,
+                            decision=decision,
+                            job=normalize_job_record(job),
+                            allow_llm=task.allow_llm,
+                            worker_fallback=True,
+                            error=str(exc),
+                        )
+                    results[result.index] = result
                     completed += 1
                     if completed == total or completed % progress_step == 0:
                         pct = int(round(completed * 100 / max(1, total)))
-                        self.logger.info("[阶段进度] 直接提取 %s/%s (%s%%)", completed, total, pct)
+                        self.logger.info("[阶段进度] NoteAgent处理 %s/%s (%s%%)", completed, total, pct)
 
+        note_agent_details: list[dict[str, object]] = []
+        note_agent_worker_fallback = 0
+        note_agent_errors = 0
         for result in results:
-            if not result:
+            if result is None:
                 continue
-            note, decision, job = result
-            scores[note.note_id] = float(getattr(decision, "score", 0.0))
+            note = result.note
+            decision = result.decision
+            job = result.job
+            score = float(getattr(decision, "score", 0.0))
+            source = str(getattr(decision, "source", "") or "")
+            reason = str(getattr(decision, "reason", "") or "")
+
+            scores[note.note_id] = score
             if bool(getattr(decision, "is_target", False)):
                 targets.append(note)
                 jobs.append(normalize_job_record(job))
-                continue
-            filtered_out.append(
+            else:
+                filtered_out.append(
+                    {
+                        "note_id": note.note_id,
+                        "title": note.title[:100],
+                        "score": round(score, 4),
+                        "reason": reason,
+                        "source": source,
+                    }
+                )
+                self.logger.info(
+                    "过滤帖子 | note=%s | score=%.2f | source=%s | reason=%s",
+                    note.note_id,
+                    score,
+                    source,
+                    reason,
+                )
+
+            if result.worker_fallback:
+                note_agent_worker_fallback += 1
+            if result.error:
+                note_agent_errors += 1
+
+            note_agent_details.append(
                 {
+                    "index": int(result.index),
                     "note_id": note.note_id,
-                    "title": note.title[:100],
-                    "score": round(float(getattr(decision, "score", 0.0)), 4),
-                    "reason": str(getattr(decision, "reason", "") or ""),
-                    "source": str(getattr(decision, "source", "") or ""),
+                    "allow_llm": bool(result.allow_llm),
+                    "is_target": bool(getattr(decision, "is_target", False)),
+                    "score": round(score, 4),
+                    "decision_source": source or "unknown",
+                    "parse_source": str(getattr(job, "parse_source", "") or ""),
+                    "worker_fallback": bool(result.worker_fallback),
+                    "error": result.error[:300],
                 }
             )
-            self.logger.info(
-                "过滤帖子 | note=%s | score=%.2f | source=%s | reason=%s",
-                note.note_id,
-                float(getattr(decision, "score", 0.0)),
-                str(getattr(decision, "source", "") or ""),
-                str(getattr(decision, "reason", "") or ""),
-            )
 
+        note_agent_stats = {
+            "total": total,
+            "llm_budgeted": total,
+            "rule_budgeted": 0,
+            "worker_fallback": note_agent_worker_fallback,
+            "errors": note_agent_errors,
+        }
         self.logger.info(
-            "[阶段进度] 直接提取完成 %s/%s (100%%) | 命中=%s | 过滤=%s",
+            "[阶段进度] NoteAgent处理完成 %s/%s (100%%) | 命中=%s | 过滤=%s | worker_fallback=%s",
             total,
             total,
             len(targets),
             len(filtered_out),
+            note_agent_worker_fallback,
         )
 
         jobs.sort(key=lambda item: item.publish_time, reverse=True)
-        return ExtractOutcome(targets=targets, jobs=jobs, filtered_out=filtered_out, scores=scores)
+        return ExtractOutcome(
+            targets=targets,
+            jobs=jobs,
+            filtered_out=filtered_out,
+            scores=scores,
+            note_agent_stats=note_agent_stats,
+            note_agent_details=note_agent_details,
+        )
 
     @staticmethod
     def _effective_workers(*, workers: int, total: int) -> int:

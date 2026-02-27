@@ -1,10 +1,15 @@
 ﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.4.2`
+- 项目版本：`0.4.3`
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
+
+### v0.4.3 更新要点
+- 提取链路升级为每条 note 一个显式 NoteAgent 任务，按 `pipeline.process_workers` 并行处理，单条失败回退不阻塞其他条。
+- 岗位提取取消 LLM 配额截断：进入处理链路的帖子改为全量尝试 LLM（不可用时自动回退规则）。
+- 配置与文档同步：`llm.max_job_items` 标记为弃用，`config.example.yaml` 移除该字段示例。
 
 ### v0.4.2 更新要点
 - 线索快速编辑：详情面板新增“快速改字段”，可直接修改 `title/company/position/location/requirements/summary/detail_text`，并通过 `POST /api/leads/update` 回写 `output.xlsx`。
@@ -471,7 +476,8 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - `enabled_for_jobs`：是否用于岗位抽取
 - `enabled_for_summary`：是否用于摘要增强
 - `enabled_for_outreach`：是否生成套磁文案（关闭后机会点岗位不再生成文案）
-- `max_filter_items` `max_job_items` `max_summary_items`：每轮 LLM 处理上限
+- `max_job_items`：已弃用（岗位提取改为全量 LLM 尝试，不再按配额截断）
+- `max_filter_items` `max_summary_items`：兼容字段
 - `single_pass_extract`：是否启用“单次直提”（每条帖子一次 LLM 完成目标判断+岗位提取，默认 `true`）
 - `filter_threshold`：过滤阈值
 - `strict_filter`：严格过滤开关
@@ -867,6 +873,7 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
+| v0.4.3 | 2026-02-27 | 提取链路改为每帖 NoteAgent 并行；岗位提取改为全量 LLM 尝试（取消预算截断）；`llm.max_job_items` 标记弃用并同步配置示例。 |
 | v0.4.2 | 2026-02-27 | 新增线索“快速改字段”并回写 `output.xlsx`（`POST /api/leads/update`）；前端修复双栏固定与点击不重绘；统一无时区时间按 UTC 解析并修复相对发布时间漂移。 |
 | v0.4.1 | 2026-02-27 | 新增 `xhs.detail_workers` 并行 detail 抓取（默认 3）；控制中心与总览新增性能看板（耗时均值/P50/P95、失败率、慢阶段、错误码）；Dashboard 新增 `GET /api/performance`。 |
 | v0.4.0 | 2026-02-27 | 新增 `pipeline.process_workers` 并发提取参数（默认 4）；实现“先抓取后并行处理”（单次直提与筛选+结构化均支持）；并行后仍保持发布时间排序稳定。 |

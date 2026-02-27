@@ -45,7 +45,6 @@ llm:
   enabled_for_summary: true
   enabled_for_filter: true
   enabled_for_outreach: true # 是否生成套磁文案
-  max_job_items: 8
   max_summary_items: 8
   max_filter_items: 20
   filter_threshold: 0.62

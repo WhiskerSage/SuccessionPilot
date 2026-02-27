@@ -255,18 +255,19 @@ class AutoSuccessorPipeline:
             use_single_pass_extract = bool(getattr(self.settings.llm, "single_pass_extract", True)) and bool(
                 self.settings.llm.enabled
             )
+            note_agent_stats: dict[str, int] = {}
+            note_agent_details: list[dict[str, Any]] = []
             if use_single_pass_extract:
                 extract_outcome = orchestrator.run_stage(
-                    "agent.intelligence.extract_target_jobs",
-                    lambda: self.intelligence.extract_target_jobs(
-                        new_notes,
-                        max_job_items=plan.max_job_items,
+                    "agent.intelligence.process_notes_with_agents",
+                    lambda: self.intelligence.process_notes_with_agents(
+                        notes=new_notes,
                         resume_text=resume_text,
                         mode=mode,
                         workers=process_workers,
                     ),
                     meta={
-                        "max_job_items": plan.max_job_items,
+                        "job_extract_llm_budget": "all",
                         "single_pass_extract": True,
                         "process_workers": process_workers,
                     },
@@ -274,6 +275,8 @@ class AutoSuccessorPipeline:
                 target_notes = extract_outcome.targets
                 filtered_out = extract_outcome.filtered_out
                 jobs = extract_outcome.jobs
+                note_agent_stats = dict(getattr(extract_outcome, "note_agent_stats", {}) or {})
+                note_agent_details = list(getattr(extract_outcome, "note_agent_details", []) or [])
                 llm_stage_calls = self.llm_enricher.stage_call_counts()
                 llm_stage_fallbacks = self.llm_enricher.stage_fallback_counts()
                 self._log_progress(
@@ -282,7 +285,8 @@ class AutoSuccessorPipeline:
                     (
                         f"直接提取完成，命中 {len(target_notes)} 条，过滤 {len(filtered_out)} 条，"
                         f"LLM提取调用 {int(llm_stage_calls.get('job', 0))} 次，"
-                        f"规则回退 {int(llm_stage_fallbacks.get('job', 0))} 次"
+                        f"规则回退 {int(llm_stage_fallbacks.get('job', 0))} 次，"
+                        f"每帖Agent回退 {int(note_agent_stats.get('worker_fallback', 0))} 次"
                     ),
                 )
             else:
@@ -571,6 +575,11 @@ class AutoSuccessorPipeline:
                 "detail_blocked": int(detail_enrich_stats.get("blocked", 0)),
                 "detail_workers": int(getattr(self.settings.xhs, "detail_workers", 1)),
                 "xhs_diagnosis": xhs_failure_diagnosis,
+                "note_agent_total": int(note_agent_stats.get("total", 0)),
+                "note_agent_llm_budgeted": int(note_agent_stats.get("llm_budgeted", 0)),
+                "note_agent_rule_budgeted": int(note_agent_stats.get("rule_budgeted", 0)),
+                "note_agent_worker_fallback": int(note_agent_stats.get("worker_fallback", 0)),
+                "note_agent_errors": int(note_agent_stats.get("errors", 0)),
                 "retry_pending": retry_snapshot.get("pending", {}),
                 "retry_running": retry_snapshot.get("running", {}),
                 "retry_enqueued": int(retry_snapshot.get("stats", {}).get("enqueued", 0)),
@@ -610,6 +619,11 @@ class AutoSuccessorPipeline:
                         "llm": job_parse_llm,
                         "details_count": len(parse_details),
                         "details": parse_details,
+                    },
+                    "note_agent": {
+                        "stats": note_agent_stats,
+                        "details_count": len(note_agent_details),
+                        "details": note_agent_details[:200],
                     },
                     "retry": retry_snapshot,
                     "stage_records": stage_records,
