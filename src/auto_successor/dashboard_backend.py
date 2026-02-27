@@ -613,6 +613,138 @@ class DataBackend:
     def load_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         return self._load_runs(limit=limit)
 
+    def load_performance(self, limit: int = 50) -> dict[str, Any]:
+        safe_limit = max(1, min(int(limit), 300))
+        runs = self._load_runs(limit=safe_limit)
+        if not runs:
+            return {
+                "sample_size": 0,
+                "stage_total_ms": {"avg": 0, "p50": 0, "p95": 0, "min": 0, "max": 0},
+                "stage_avg_ms": {"avg": 0, "p50": 0, "p95": 0, "min": 0, "max": 0},
+                "stage_failed_runs": 0,
+                "stage_failed_rate": 0.0,
+                "llm_fail_total": 0,
+                "fetch_fail_total": 0,
+                "detail_attempted_total": 0,
+                "detail_success_total": 0,
+                "detail_success_rate": 0.0,
+                "error_codes": [],
+                "slow_stages": [],
+                "generated_at": datetime.now().isoformat(timespec="seconds"),
+            }
+
+        totals = sorted(self._to_int(item.get("stage_total_ms")) for item in runs if self._to_int(item.get("stage_total_ms")) > 0)
+        avgs = sorted(self._to_int(item.get("stage_avg_ms")) for item in runs if self._to_int(item.get("stage_avg_ms")) > 0)
+        sample_size = len(runs)
+        stage_failed_runs = sum(1 for item in runs if self._to_int(item.get("stage_failed_count")) > 0)
+        llm_fail_total = sum(self._to_int(item.get("llm_fail")) for item in runs)
+        fetch_fail_total = sum(self._to_int(item.get("fetch_fail_count_run")) for item in runs)
+        detail_attempted_total = sum(self._to_int(item.get("detail_attempted")) for item in runs)
+        detail_success_total = sum(self._to_int(item.get("detail_success")) for item in runs)
+        detail_success_rate = (
+            float(detail_success_total) / float(detail_attempted_total) if detail_attempted_total > 0 else 0.0
+        )
+
+        error_codes: dict[str, int] = {}
+        slow_stage_metrics: dict[str, dict[str, Any]] = {}
+        for item in runs:
+            codes = item.get("error_codes")
+            if isinstance(codes, dict):
+                for code, count in codes.items():
+                    key = str(code or "").strip().lower()
+                    if not key:
+                        continue
+                    error_codes[key] = self._to_int(error_codes.get(key)) + self._to_int(count)
+
+            slow = item.get("slow_stages")
+            if not isinstance(slow, list):
+                continue
+            for stage in slow:
+                if not isinstance(stage, dict):
+                    continue
+                name = str(stage.get("name") or "").strip() or "unknown"
+                duration = self._to_int(stage.get("duration_ms"))
+                bucket = slow_stage_metrics.get(name)
+                if bucket is None:
+                    bucket = {"name": name, "count": 0, "sum_ms": 0, "max_ms": 0, "durations": []}
+                    slow_stage_metrics[name] = bucket
+                bucket["count"] = self._to_int(bucket.get("count")) + 1
+                bucket["sum_ms"] = self._to_int(bucket.get("sum_ms")) + duration
+                bucket["max_ms"] = max(self._to_int(bucket.get("max_ms")), duration)
+                durations = bucket.get("durations")
+                if isinstance(durations, list):
+                    durations.append(duration)
+
+        error_list = [
+            {"code": code, "count": self._to_int(count)}
+            for code, count in error_codes.items()
+            if self._to_int(count) > 0
+        ]
+        error_list.sort(key=lambda item: self._to_int(item.get("count")), reverse=True)
+
+        slow_stage_list: list[dict[str, Any]] = []
+        for value in slow_stage_metrics.values():
+            durations = sorted(self._to_int(x) for x in value.get("durations", []) if self._to_int(x) > 0)
+            count = self._to_int(value.get("count"))
+            sum_ms = self._to_int(value.get("sum_ms"))
+            slow_stage_list.append(
+                {
+                    "name": str(value.get("name") or "unknown"),
+                    "count": count,
+                    "avg_ms": int(sum_ms / max(1, count)),
+                    "p95_ms": self._percentile(durations, 0.95),
+                    "max_ms": self._to_int(value.get("max_ms")),
+                }
+            )
+        slow_stage_list.sort(
+            key=lambda item: (self._to_int(item.get("count")), self._to_int(item.get("p95_ms"))),
+            reverse=True,
+        )
+
+        return {
+            "sample_size": sample_size,
+            "stage_total_ms": self._metric_summary(totals),
+            "stage_avg_ms": self._metric_summary(avgs),
+            "stage_failed_runs": stage_failed_runs,
+            "stage_failed_rate": float(stage_failed_runs) / float(sample_size),
+            "llm_fail_total": llm_fail_total,
+            "fetch_fail_total": fetch_fail_total,
+            "detail_attempted_total": detail_attempted_total,
+            "detail_success_total": detail_success_total,
+            "detail_success_rate": detail_success_rate,
+            "error_codes": error_list[:12],
+            "slow_stages": slow_stage_list[:10],
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+
+    @classmethod
+    def _metric_summary(cls, values: list[int]) -> dict[str, int]:
+        numbers = sorted(cls._to_int(item) for item in values if cls._to_int(item) > 0)
+        if not numbers:
+            return {"avg": 0, "p50": 0, "p95": 0, "min": 0, "max": 0}
+        return {
+            "avg": int(sum(numbers) / max(1, len(numbers))),
+            "p50": cls._percentile(numbers, 0.50),
+            "p95": cls._percentile(numbers, 0.95),
+            "min": numbers[0],
+            "max": numbers[-1],
+        }
+
+    @staticmethod
+    def _percentile(values: list[int], q: float) -> int:
+        if not values:
+            return 0
+        if len(values) == 1:
+            return int(values[0])
+        q = max(0.0, min(1.0, float(q)))
+        pos = (len(values) - 1) * q
+        lower = int(pos)
+        upper = min(len(values) - 1, lower + 1)
+        if upper == lower:
+            return int(values[lower])
+        weight = pos - lower
+        return int(round(values[lower] + (values[upper] - values[lower]) * weight))
+
     def load_runtime(self) -> dict[str, Any]:
         return self.runtime.status()
 
@@ -873,6 +1005,7 @@ class DataBackend:
         config = self._read_config_data()
         app = self._ensure_section(config, "app")
         xhs = self._ensure_section(config, "xhs")
+        pipeline = self._ensure_section(config, "pipeline")
         agent = self._ensure_section(config, "agent")
         notification = self._ensure_section(config, "notification")
         email = self._ensure_section(config, "email")
@@ -888,9 +1021,13 @@ class DataBackend:
                 "search_sort": str(xhs.get("search_sort") or "time_descending"),
                 "max_results": self._coerce_int(xhs.get("max_results"), 20, minimum=1),
                 "max_detail_fetch": self._coerce_int(xhs.get("max_detail_fetch"), 5, minimum=1),
+                "detail_workers": self._coerce_int(xhs.get("detail_workers"), 3, minimum=1),
                 "account": xhs_account["selected"],
                 "account_cookies_dir": xhs_account["account_cookies_dir"],
                 "account_options": xhs_account["options"],
+            },
+            "pipeline": {
+                "process_workers": self._coerce_int(pipeline.get("process_workers"), 4, minimum=1),
             },
             "agent": {"mode": self._normalize_mode(str(agent.get("mode") or "auto"))},
             "notification": {
@@ -922,6 +1059,7 @@ class DataBackend:
         config = self._read_config_data()
         app = self._ensure_section(config, "app")
         xhs = self._ensure_section(config, "xhs")
+        pipeline = self._ensure_section(config, "pipeline")
         agent = self._ensure_section(config, "agent")
         notification = self._ensure_section(config, "notification")
         email = self._ensure_section(config, "email")
@@ -940,10 +1078,19 @@ class DataBackend:
             xhs["search_sort"] = str(xhs_in.get("search_sort") or xhs.get("search_sort") or "time_descending").strip() or "time_descending"
             xhs["max_results"] = self._coerce_int(xhs_in.get("max_results"), xhs.get("max_results", 20), minimum=1)
             xhs["max_detail_fetch"] = self._coerce_int(xhs_in.get("max_detail_fetch"), xhs.get("max_detail_fetch", 5), minimum=1)
+            xhs["detail_workers"] = self._coerce_int(xhs_in.get("detail_workers"), xhs.get("detail_workers", 3), minimum=1)
             xhs["account"] = str(xhs_in.get("account") or xhs.get("account") or "default").strip() or "default"
             xhs["account_cookies_dir"] = (
                 str(xhs_in.get("account_cookies_dir") or xhs.get("account_cookies_dir") or "~/.xhs-mcp/accounts").strip()
                 or "~/.xhs-mcp/accounts"
+            )
+
+        pipeline_in = payload.get("pipeline")
+        if isinstance(pipeline_in, dict):
+            pipeline["process_workers"] = self._coerce_int(
+                pipeline_in.get("process_workers"),
+                pipeline.get("process_workers", 4),
+                minimum=1,
             )
 
         agent_in = payload.get("agent")
@@ -1732,6 +1879,8 @@ class DataBackend:
                     "send_logs": self._to_int(stats.get("send_logs") if stats else payload.get("send_logs")),
                     "digest_sent": bool(stats.get("digest_sent") if stats else payload.get("digest_sent")),
                     "llm_fail": self._to_int(stats.get("llm_fail")),
+                    "process_workers": self._to_int(stats.get("process_workers")),
+                    "detail_workers": self._to_int(stats.get("detail_workers")),
                     "stage_total_ms": stage_total_ms,
                     "stage_avg_ms": stage_avg_ms,
                     "stage_failed_count": stage_failed_count,

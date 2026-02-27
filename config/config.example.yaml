@@ -15,6 +15,7 @@ xhs:
   keyword: "继任"
   max_results: 20
   max_detail_fetch: 18
+  detail_workers: 3 # 详情抓取并行数（建议 2-5）
   login_timeout_seconds: 180
   command_timeout_seconds: 120
 

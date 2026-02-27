@@ -62,6 +62,11 @@ def make_handler(backend: DataBackend, web_dir: Path):
                     self._json({"items": backend.load_runs(limit=limit)})
                     return
 
+                if path == "/api/performance":
+                    limit = int((query.get("limit") or ["50"])[0])
+                    self._json(backend.load_performance(limit=limit))
+                    return
+
                 if path.startswith("/api/runs/"):
                     run_id = path.removeprefix("/api/runs/")
                     self._json(backend.load_run_detail(run_id=run_id))

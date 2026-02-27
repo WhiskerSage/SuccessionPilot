@@ -178,7 +178,10 @@ class AutoSuccessorPipeline:
                 detail_enrich_stats = orchestrator.run_stage(
                     "collector.enrich_note_details",
                     lambda: self.collector.enrich_note_details(pre_new_notes, max_notes=initial_plan.detail_fetch_limit),
-                    meta={"max_detail_fetch": initial_plan.detail_fetch_limit},
+                    meta={
+                        "max_detail_fetch": initial_plan.detail_fetch_limit,
+                        "detail_workers": int(getattr(self.settings.xhs, "detail_workers", 1)),
+                    },
                 )
                 if not isinstance(detail_enrich_stats, dict):
                     detail_enrich_stats = {
@@ -217,7 +220,14 @@ class AutoSuccessorPipeline:
                     "detail_missing": 0,
                     "blocked": 0,
                 }
-            self._log_progress(run_id, 46, f"正文补全完成，详情抓取上限 {initial_plan.detail_fetch_limit}")
+            self._log_progress(
+                run_id,
+                46,
+                (
+                    f"正文补全完成，详情抓取上限 {initial_plan.detail_fetch_limit}，"
+                    f"并行 {int(getattr(self.settings.xhs, 'detail_workers', 1))}"
+                ),
+            )
 
             if fetch_fail_events:
                 self._fetch_fail_streak += 1
@@ -559,6 +569,7 @@ class AutoSuccessorPipeline:
                 "detail_filled": int(detail_enrich_stats.get("detail_filled", 0)),
                 "detail_missing": int(detail_enrich_stats.get("detail_missing", 0)),
                 "detail_blocked": int(detail_enrich_stats.get("blocked", 0)),
+                "detail_workers": int(getattr(self.settings.xhs, "detail_workers", 1)),
                 "xhs_diagnosis": xhs_failure_diagnosis,
                 "retry_pending": retry_snapshot.get("pending", {}),
                 "retry_running": retry_snapshot.get("running", {}),

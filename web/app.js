@@ -9,6 +9,7 @@
     search: "",
     view: startView || "overview",
     runItems: [],
+    performance: null,
     selectedRunId: "",
     runDetail: null,
     runtime: null,
@@ -86,6 +87,8 @@
     cfgSearchSort: document.getElementById("cfgSearchSort"),
     cfgMaxResults: document.getElementById("cfgMaxResults"),
     cfgMaxDetailFetch: document.getElementById("cfgMaxDetailFetch"),
+    cfgDetailWorkers: document.getElementById("cfgDetailWorkers"),
+    cfgProcessWorkers: document.getElementById("cfgProcessWorkers"),
     cfgAppInterval: document.getElementById("cfgAppInterval"),
     cfgAgentMode: document.getElementById("cfgAgentMode"),
     cfgNotifyMode: document.getElementById("cfgNotifyMode"),
@@ -126,6 +129,16 @@
     retryQueueSummary: document.getElementById("retryQueueSummary"),
     retryDeadBody: document.getElementById("retryDeadBody"),
     retryDeadSummary: document.getElementById("retryDeadSummary"),
+    perfSample: document.getElementById("perfSample"),
+    perfTotalAvg: document.getElementById("perfTotalAvg"),
+    perfTotalP50: document.getElementById("perfTotalP50"),
+    perfTotalP95: document.getElementById("perfTotalP95"),
+    perfStageFailRate: document.getElementById("perfStageFailRate"),
+    perfDetailSuccessRate: document.getElementById("perfDetailSuccessRate"),
+    perfLlmFailTotal: document.getElementById("perfLlmFailTotal"),
+    perfFetchFailTotal: document.getElementById("perfFetchFailTotal"),
+    perfSlowStages: document.getElementById("perfSlowStages"),
+    perfErrorCodes: document.getElementById("perfErrorCodes"),
   };
 
   let selectedResumeFile = null;
@@ -349,6 +362,8 @@
   }
 
   function refreshDynamicDomRefs() {
+    dom.cfgDetailWorkers = document.getElementById("cfgDetailWorkers");
+    dom.cfgProcessWorkers = document.getElementById("cfgProcessWorkers");
     dom.leadStatusFilter = document.getElementById("leadStatusFilter");
     dom.leadDedupeFilter = document.getElementById("leadDedupeFilter");
     dom.runtimeProgressWrap = document.getElementById("runtimeProgressWrap");
@@ -363,6 +378,16 @@
     dom.retryQueueSummary = document.getElementById("retryQueueSummary");
     dom.retryDeadBody = document.getElementById("retryDeadBody");
     dom.retryDeadSummary = document.getElementById("retryDeadSummary");
+    dom.perfSample = document.getElementById("perfSample");
+    dom.perfTotalAvg = document.getElementById("perfTotalAvg");
+    dom.perfTotalP50 = document.getElementById("perfTotalP50");
+    dom.perfTotalP95 = document.getElementById("perfTotalP95");
+    dom.perfStageFailRate = document.getElementById("perfStageFailRate");
+    dom.perfDetailSuccessRate = document.getElementById("perfDetailSuccessRate");
+    dom.perfLlmFailTotal = document.getElementById("perfLlmFailTotal");
+    dom.perfFetchFailTotal = document.getElementById("perfFetchFailTotal");
+    dom.perfSlowStages = document.getElementById("perfSlowStages");
+    dom.perfErrorCodes = document.getElementById("perfErrorCodes");
   }
 
   function ensureEnhancedUi() {
@@ -498,6 +523,65 @@
       opsGrid.appendChild(card);
     }
 
+    const configForm = document.getElementById("configForm");
+    if (configForm && !document.getElementById("cfgDetailWorkers")) {
+      const detailField = document.createElement("label");
+      detailField.className = "field";
+      detailField.innerHTML = `
+        <span>详情并行数</span>
+        <input id="cfgDetailWorkers" type="number" min="1" max="8" />
+      `;
+      const processField = document.createElement("label");
+      processField.className = "field";
+      processField.innerHTML = `
+        <span>处理并行数</span>
+        <input id="cfgProcessWorkers" type="number" min="1" max="12" />
+      `;
+      const anchor = document.getElementById("cfgMaxDetailFetch");
+      const anchorField = anchor ? anchor.closest(".field") : null;
+      if (anchorField && anchorField.parentNode) {
+        anchorField.parentNode.insertBefore(detailField, anchorField.nextSibling);
+        anchorField.parentNode.insertBefore(processField, detailField.nextSibling);
+      } else {
+        configForm.appendChild(detailField);
+        configForm.appendChild(processField);
+      }
+    }
+
+    const kpis = document.querySelector(".kpis");
+    if (kpis && !document.getElementById("performanceSection")) {
+      const section = document.createElement("section");
+      section.id = "performanceSection";
+      section.className = "panel perf-panel enter";
+      section.style.setProperty("--delay", "290ms");
+      section.innerHTML = `
+        <div class="head-row">
+          <h3>性能看板</h3>
+          <span id="perfSample" class="chip">最近 0 轮</span>
+        </div>
+        <div class="perf-grid">
+          <div class="perf-item"><span>总耗时均值</span><strong id="perfTotalAvg">-</strong></div>
+          <div class="perf-item"><span>总耗时 P50</span><strong id="perfTotalP50">-</strong></div>
+          <div class="perf-item"><span>总耗时 P95</span><strong id="perfTotalP95">-</strong></div>
+          <div class="perf-item"><span>阶段失败率</span><strong id="perfStageFailRate">-</strong></div>
+          <div class="perf-item"><span>详情成功率</span><strong id="perfDetailSuccessRate">-</strong></div>
+          <div class="perf-item"><span>LLM失败总数</span><strong id="perfLlmFailTotal">-</strong></div>
+          <div class="perf-item"><span>抓取失败总数</span><strong id="perfFetchFailTotal">-</strong></div>
+        </div>
+        <div class="perf-lists">
+          <div class="perf-block">
+            <h4>慢阶段热点</h4>
+            <ul id="perfSlowStages"><li class="table-tip">暂无</li></ul>
+          </div>
+          <div class="perf-block">
+            <h4>错误码分布</h4>
+            <ul id="perfErrorCodes"><li class="table-tip">暂无</li></ul>
+          </div>
+        </div>
+      `;
+      kpis.insertAdjacentElement("afterend", section);
+    }
+
     refreshDynamicDomRefs();
     if (dom.leadStatusFilter) dom.leadStatusFilter.value = state.leadFilters.status;
     if (dom.leadDedupeFilter) dom.leadDedupeFilter.value = state.leadFilters.dedupe;
@@ -552,6 +636,126 @@
     if (dom.latestRunId) dom.latestRunId.textContent = toText(summary.latest_run_id);
     if (dom.latestRunTime) dom.latestRunTime.textContent = fmtTime(summary.latest_run_time);
     if (dom.digestMinutes) dom.digestMinutes.textContent = fmtInt(summary.digest_interval_minutes || 60);
+  }
+
+  function formatRate(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "-";
+    return `${(n * 100).toFixed(1)}%`;
+  }
+
+  function buildPerformanceFromRuns(items) {
+    const runs = Array.isArray(items) ? items : [];
+    const totals = runs.map((item) => toInt(item.stage_total_ms, 0)).filter((x) => x > 0).sort((a, b) => a - b);
+    const sampleSize = runs.length;
+    const pickPercentile = (arr, q) => {
+      if (!arr.length) return 0;
+      if (arr.length === 1) return arr[0];
+      const pos = (arr.length - 1) * q;
+      const lo = Math.floor(pos);
+      const hi = Math.min(arr.length - 1, lo + 1);
+      const w = pos - lo;
+      return Math.round(arr[lo] + (arr[hi] - arr[lo]) * w);
+    };
+    const stageFailedRuns = runs.filter((item) => toInt(item.stage_failed_count, 0) > 0).length;
+    const llmFailTotal = runs.reduce((sum, item) => sum + toInt(item.llm_fail, 0), 0);
+    const fetchFailTotal = runs.reduce((sum, item) => sum + toInt(item.fetch_fail_count_run, 0), 0);
+    const detailAttemptedTotal = runs.reduce((sum, item) => sum + toInt(item.detail_attempted, 0), 0);
+    const detailSuccessTotal = runs.reduce((sum, item) => sum + toInt(item.detail_success, 0), 0);
+
+    const errorAgg = {};
+    const slowAgg = {};
+    runs.forEach((item) => {
+      const codes = item.error_codes && typeof item.error_codes === "object" ? item.error_codes : {};
+      Object.entries(codes).forEach(([code, count]) => {
+        const key = String(code || "").trim().toLowerCase();
+        if (!key) return;
+        errorAgg[key] = toInt(errorAgg[key], 0) + toInt(count, 0);
+      });
+      const slowStages = Array.isArray(item.slow_stages) ? item.slow_stages : [];
+      slowStages.forEach((stage) => {
+        if (!stage || typeof stage !== "object") return;
+        const name = toText(stage.name, "unknown");
+        const duration = toInt(stage.duration_ms, 0);
+        const bucket = slowAgg[name] || { name, count: 0, max_ms: 0 };
+        bucket.count += 1;
+        bucket.max_ms = Math.max(bucket.max_ms, duration);
+        slowAgg[name] = bucket;
+      });
+    });
+
+    const errorCodes = Object.entries(errorAgg)
+      .map(([code, count]) => ({ code, count: toInt(count, 0) }))
+      .filter((x) => x.count > 0)
+      .sort((a, b) => b.count - a.count);
+    const slowStages = Object.values(slowAgg)
+      .sort((a, b) => (b.count - a.count) || (b.max_ms - a.max_ms))
+      .slice(0, 10);
+
+    return {
+      sample_size: sampleSize,
+      stage_total_ms: {
+        avg: totals.length ? Math.round(totals.reduce((a, b) => a + b, 0) / totals.length) : 0,
+        p50: pickPercentile(totals, 0.5),
+        p95: pickPercentile(totals, 0.95),
+      },
+      stage_failed_runs: stageFailedRuns,
+      stage_failed_rate: sampleSize > 0 ? stageFailedRuns / sampleSize : 0,
+      detail_success_rate: detailAttemptedTotal > 0 ? detailSuccessTotal / detailAttemptedTotal : 0,
+      llm_fail_total: llmFailTotal,
+      fetch_fail_total: fetchFailTotal,
+      error_codes: errorCodes,
+      slow_stages: slowStages,
+    };
+  }
+
+  function renderPerformance(payload) {
+    if (!dom.perfSample) return;
+    const data = payload && typeof payload === "object" ? payload : {};
+    const total = data.stage_total_ms && typeof data.stage_total_ms === "object" ? data.stage_total_ms : {};
+    const sample = toInt(data.sample_size, 0);
+    const stageFailedRate = Number(data.stage_failed_rate || 0);
+    const detailSuccessRate = Number(data.detail_success_rate || 0);
+    const llmFailTotal = toInt(data.llm_fail_total, 0);
+    const fetchFailTotal = toInt(data.fetch_fail_total, 0);
+    const slowStages = Array.isArray(data.slow_stages) ? data.slow_stages : [];
+    const errorCodes = Array.isArray(data.error_codes) ? data.error_codes : [];
+
+    dom.perfSample.textContent = `最近 ${fmtInt(sample)} 轮`;
+    if (dom.perfTotalAvg) dom.perfTotalAvg.textContent = fmtMs(total.avg);
+    if (dom.perfTotalP50) dom.perfTotalP50.textContent = fmtMs(total.p50);
+    if (dom.perfTotalP95) dom.perfTotalP95.textContent = fmtMs(total.p95);
+    if (dom.perfStageFailRate) dom.perfStageFailRate.textContent = formatRate(stageFailedRate);
+    if (dom.perfDetailSuccessRate) dom.perfDetailSuccessRate.textContent = formatRate(detailSuccessRate);
+    if (dom.perfLlmFailTotal) dom.perfLlmFailTotal.textContent = fmtInt(llmFailTotal);
+    if (dom.perfFetchFailTotal) dom.perfFetchFailTotal.textContent = fmtInt(fetchFailTotal);
+
+    if (dom.perfSlowStages) {
+      if (!slowStages.length) {
+        dom.perfSlowStages.innerHTML = "<li class='table-tip'>暂无</li>";
+      } else {
+        dom.perfSlowStages.innerHTML = slowStages
+          .slice(0, 6)
+          .map((stage) => {
+            const name = toText(stage.name, "unknown");
+            const count = fmtInt(stage.count);
+            const p95 = fmtMs(stage.p95_ms || stage.max_ms || 0);
+            return `<li><span>${escapeHtml(name)}</span><span>${count} 次 · ${escapeHtml(p95)}</span></li>`;
+          })
+          .join("");
+      }
+    }
+
+    if (dom.perfErrorCodes) {
+      if (!errorCodes.length) {
+        dom.perfErrorCodes.innerHTML = "<li class='table-tip'>暂无</li>";
+      } else {
+        dom.perfErrorCodes.innerHTML = errorCodes
+          .slice(0, 6)
+          .map((item) => `<li><span>${escapeHtml(toText(item.code))}</span><span>${fmtInt(item.count)}</span></li>`)
+          .join("");
+      }
+    }
   }
 
   function renderRuns(items) {
@@ -984,6 +1188,7 @@
     state.config = config || {};
     const app = state.config.app || {};
     const xhs = state.config.xhs || {};
+    const pipeline = state.config.pipeline || {};
     const agent = state.config.agent || {};
     const notify = state.config.notification || {};
     const email = state.config.email || {};
@@ -996,6 +1201,8 @@
     if (dom.cfgSearchSort) dom.cfgSearchSort.value = String(xhs.search_sort || "time_descending");
     if (dom.cfgMaxResults) dom.cfgMaxResults.value = String(toInt(xhs.max_results, 20));
     if (dom.cfgMaxDetailFetch) dom.cfgMaxDetailFetch.value = String(toInt(xhs.max_detail_fetch, 5));
+    if (dom.cfgDetailWorkers) dom.cfgDetailWorkers.value = String(toInt(xhs.detail_workers, 3));
+    if (dom.cfgProcessWorkers) dom.cfgProcessWorkers.value = String(toInt(pipeline.process_workers, 4));
     if (dom.cfgAppInterval) dom.cfgAppInterval.value = String(toInt(app.interval_minutes, 15));
     if (dom.cfgAgentMode) dom.cfgAgentMode.value = String(agent.mode || "auto");
     if (dom.cfgNotifyMode) dom.cfgNotifyMode.value = String(notify.mode || "digest");
@@ -1110,6 +1317,8 @@
     if (dom.cfgSearchSort) dom.cfgSearchSort.value = "time_descending";
     if (dom.cfgMaxResults) dom.cfgMaxResults.value = String(Math.max(20, toInt(dom.cfgMaxResults.value, 20)));
     if (dom.cfgMaxDetailFetch) dom.cfgMaxDetailFetch.value = String(Math.max(5, toInt(dom.cfgMaxDetailFetch.value, 5)));
+    if (dom.cfgDetailWorkers) dom.cfgDetailWorkers.value = String(Math.max(3, toInt(dom.cfgDetailWorkers.value, 3)));
+    if (dom.cfgProcessWorkers) dom.cfgProcessWorkers.value = String(Math.max(4, toInt(dom.cfgProcessWorkers.value, 4)));
     if (dom.cfgAppInterval) dom.cfgAppInterval.value = String(Math.max(15, toInt(dom.cfgAppInterval.value, 15)));
     if (dom.cfgNotifyMode) dom.cfgNotifyMode.value = "digest";
     if (dom.cfgDigestInterval) dom.cfgDigestInterval.value = String(Math.max(30, toInt(dom.cfgDigestInterval.value, 30)));
@@ -1146,6 +1355,10 @@
         search_sort: String(dom.cfgSearchSort ? dom.cfgSearchSort.value : "time_descending"),
         max_results: toInt(dom.cfgMaxResults ? dom.cfgMaxResults.value : 20, 20),
         max_detail_fetch: toInt(dom.cfgMaxDetailFetch ? dom.cfgMaxDetailFetch.value : 5, 5),
+        detail_workers: toInt(dom.cfgDetailWorkers ? dom.cfgDetailWorkers.value : 3, 3),
+      },
+      pipeline: {
+        process_workers: toInt(dom.cfgProcessWorkers ? dom.cfgProcessWorkers.value : 4, 4),
       },
       agent: {
         mode: String(dom.cfgAgentMode ? dom.cfgAgentMode.value : "auto"),
@@ -1171,9 +1384,17 @@
   }
 
   async function loadSummaryAndRuns() {
-    const [summary, runsResp] = await Promise.all([fetchJson("/api/summary"), fetchJson("/api/runs?limit=10")]);
+    const [summary, runsResp, perfResp] = await Promise.all([
+      fetchJson("/api/summary"),
+      fetchJson("/api/runs?limit=20"),
+      fetchJson("/api/performance?limit=60").catch(() => null),
+    ]);
+    const runItems = (runsResp && runsResp.items) || [];
     renderSummary(summary || {});
-    renderRuns((runsResp && runsResp.items) || []);
+    renderRuns(runItems);
+    const perfPayload = perfResp && typeof perfResp === "object" ? perfResp : buildPerformanceFromRuns(runItems);
+    state.performance = perfPayload;
+    renderPerformance(perfPayload);
     if (state.selectedRunId) {
       await loadRunDetail(state.selectedRunId).catch(() => {});
     }

@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import re
@@ -142,54 +143,119 @@ class XHSMcpCliCollector:
             "detail_missing": 0,
             "blocked": 0,
         }
+        fetch_candidates: list[NoteRecord] = []
         for note in target_notes:
-            if not note.xsec_token:
+            if str(note.xsec_token or "").strip():
+                fetch_candidates.append(note)
+            else:
                 stats["skipped_no_token"] += 1
-                continue
-            stats["attempted"] += 1
-            payload = self._run_detail_script(
-                script_path=str(script),
-                feed_id=note.note_id,
-                xsec_token=note.xsec_token,
-            )
-            if not payload.get("success"):
-                stats["failed"] += 1
-                self.logger.info(
-                    "详情抓取失败 | note=%s | error=%s",
-                    note.note_id,
-                    str(payload.get("error") or payload.get("message") or "unknown"),
-                )
-                continue
-            stats["success"] += 1
 
-            detail_text = self._sanitize_detail_text(str(payload.get("detail_text") or ""))
-            comments_preview = self._sanitize_comments_preview(
-                str(payload.get("poster_comments_preview") or payload.get("comments_preview") or "")
-            )
-            blocked_by_risk_page = bool(payload.get("blocked_by_risk_page"))
+        stats["attempted"] = len(fetch_candidates)
+        detail_workers = self._effective_detail_workers(
+            configured_workers=getattr(self.cfg, "detail_workers", 1),
+            total=len(fetch_candidates),
+        )
+        self.logger.info(
+            "详情抓取开始 | target=%s | attempted=%s | skipped_no_token=%s | workers=%s",
+            len(target_notes),
+            len(fetch_candidates),
+            stats["skipped_no_token"],
+            detail_workers,
+        )
 
-            if detail_text:
-                note.detail_text = detail_text[:1500]
-                stats["detail_filled"] += 1
-            elif blocked_by_risk_page:
-                stats["blocked"] += 1
-                self.logger.info("详情抓取被风控页拦截：note=%s", note.note_id)
-            elif not str(note.detail_text or "").strip():
-                fallback = self._sanitize_detail_fallback(str(payload.get("title") or note.title or ""))
-                if fallback:
-                    note.detail_text = fallback[:1500]
-                    stats["detail_filled"] += 1
+        if detail_workers <= 1:
+            for note in fetch_candidates:
+                try:
+                    payload = self._run_detail_script(
+                        script_path=str(script),
+                        feed_id=note.note_id,
+                        xsec_token=note.xsec_token,
+                    )
+                except Exception as exc:
+                    payload = {"success": False, "error": f"detail_exception:{exc}"}
+                self._apply_detail_payload(note=note, payload=payload, stats=stats)
+        else:
+            with ThreadPoolExecutor(max_workers=detail_workers, thread_name_prefix="xhs-detail") as executor:
+                future_map = {
+                    executor.submit(
+                        self._run_detail_script,
+                        script_path=str(script),
+                        feed_id=note.note_id,
+                        xsec_token=note.xsec_token,
+                    ): note
+                    for note in fetch_candidates
+                }
+                done = 0
+                total = len(fetch_candidates)
+                progress_step = max(1, total // 5) if total > 0 else 1
+                for future in as_completed(future_map):
+                    note = future_map[future]
+                    try:
+                        payload = future.result()
+                    except Exception as exc:
+                        payload = {"success": False, "error": f"detail_exception:{exc}"}
+                    self._apply_detail_payload(note=note, payload=payload, stats=stats)
+                    done += 1
+                    if done == total or done % progress_step == 0:
+                        pct = int(round(done * 100 / max(1, total)))
+                        self.logger.info("[阶段进度] 正文抓取 %s/%s (%s%%)", done, total, pct)
 
-            if comments_preview:
-                note.comments_preview = comments_preview[:700]
-
-            if note.comment_count <= 0:
-                count_text = str(payload.get("comment_count_text") or "").strip()
-                parsed = self._to_int_from_text(count_text)
-                if parsed > 0:
-                    note.comment_count = parsed
+        self.logger.info(
+            "详情抓取完成 | attempted=%s | success=%s | failed=%s | blocked=%s | detail_filled=%s",
+            stats["attempted"],
+            stats["success"],
+            stats["failed"],
+            stats["blocked"],
+            stats["detail_filled"],
+        )
         stats["detail_missing"] = sum(1 for item in target_notes if not str(item.detail_text or "").strip())
         return stats
+
+    @staticmethod
+    def _effective_detail_workers(configured_workers: int, total: int) -> int:
+        if total <= 1:
+            return 1
+        workers = max(1, int(configured_workers or 1))
+        workers = min(workers, 8)
+        return min(workers, total)
+
+    def _apply_detail_payload(self, *, note: NoteRecord, payload: dict, stats: dict[str, int]) -> None:
+        if not isinstance(payload, dict) or not payload.get("success"):
+            stats["failed"] += 1
+            self.logger.info(
+                "详情抓取失败 | note=%s | error=%s",
+                note.note_id,
+                str((payload or {}).get("error") or (payload or {}).get("message") or "unknown"),
+            )
+            return
+
+        stats["success"] += 1
+        detail_text = self._sanitize_detail_text(str(payload.get("detail_text") or ""))
+        comments_preview = self._sanitize_comments_preview(
+            str(payload.get("poster_comments_preview") or payload.get("comments_preview") or "")
+        )
+        blocked_by_risk_page = bool(payload.get("blocked_by_risk_page"))
+
+        if detail_text:
+            note.detail_text = detail_text[:1500]
+            stats["detail_filled"] += 1
+        elif blocked_by_risk_page:
+            stats["blocked"] += 1
+            self.logger.info("详情抓取被风控页拦截：note=%s", note.note_id)
+        elif not str(note.detail_text or "").strip():
+            fallback = self._sanitize_detail_fallback(str(payload.get("title") or note.title or ""))
+            if fallback:
+                note.detail_text = fallback[:1500]
+                stats["detail_filled"] += 1
+
+        if comments_preview:
+            note.comments_preview = comments_preview[:700]
+
+        if note.comment_count <= 0:
+            count_text = str(payload.get("comment_count_text") or "").strip()
+            parsed = self._to_int_from_text(count_text)
+            if parsed > 0:
+                note.comment_count = parsed
 
     def probe_status_diagnostics(self) -> dict:
         cookies_file = self._resolve_cookies_file()

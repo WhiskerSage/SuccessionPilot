@@ -27,6 +27,7 @@ class XHSConfig:
     keyword: str = "继任"
     max_results: int = 20
     max_detail_fetch: int = 5
+    detail_workers: int = 3
     login_timeout_seconds: int = 180
     command_timeout_seconds: int = 120
 

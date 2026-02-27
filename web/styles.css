@@ -733,6 +733,73 @@ tbody tr.active { background: var(--accent-soft); }
   color: #8a97a3;
 }
 
+.perf-panel {
+  margin-top: 10px;
+}
+
+.perf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.perf-item {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+  padding: 10px;
+}
+
+.perf-item span {
+  display: block;
+  color: var(--sub);
+  font-size: 12px;
+}
+
+.perf-item strong {
+  display: block;
+  margin-top: 6px;
+  font: 600 16px/1.2 var(--font-mono);
+  color: var(--text);
+}
+
+.perf-lists {
+  margin-top: 10px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.perf-block {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+  padding: 10px;
+}
+
+.perf-block h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.perf-block ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.perf-block li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--sub);
+}
+
 .enter {
   opacity: 0;
   transform: translateY(8px);
@@ -1162,6 +1229,8 @@ body[data-skin="graphite-office"] .table-wrap,
 body[data-skin="graphite-office"] .detail-box,
 body[data-skin="graphite-office"] .runs-box,
 body[data-skin="graphite-office"] .run-item,
+body[data-skin="graphite-office"] .perf-item,
+body[data-skin="graphite-office"] .perf-block,
 body[data-skin="graphite-office"] .detail-block,
 body[data-skin="graphite-office"] .toast,
 body[data-skin="graphite-office"] .run-chip,

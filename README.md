@@ -1,10 +1,15 @@
 ﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.4.0`
+- 项目版本：`0.4.1`
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
+
+### v0.4.1 更新要点
+- 详情抓取并行化：新增 `xhs.detail_workers`（默认 `3`），`collector.enrich_note_details` 支持并发抓取 detail，减少正文补全阶段耗时。
+- 前端性能看板升级：新增“性能看板”区域，展示最近运行的耗时分位（均值/P50/P95）、阶段失败率、详情成功率、慢阶段热点和错误码分布。
+- Dashboard API 新增：`GET /api/performance`，可用于页面与外部监控读取聚合性能指标。
 
 ### v0.4.0 更新要点
 - 提取并行能力：新增 `pipeline.process_workers`（默认 `4`），支持“先抓取、后并行提取”。
@@ -191,6 +196,7 @@ xhs:
   keyword: "继任"
   search_sort: "time_descending"
   max_detail_fetch: 18
+  detail_workers: 3
   account: "default"
   account_cookies_dir: "~/.xhs-mcp/accounts"
 
@@ -441,6 +447,7 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - `keyword`：搜索关键词，建议固定为 `继任`
 - `max_results`：每轮最大抓取数量
 - `max_detail_fetch`：每轮详情抓取上限（当前建议 `18`）
+- `detail_workers`：详情抓取并行线程数（默认 `3`，建议 `2-5`）
 - 建议将 `max_detail_fetch` 调整到 `18`（或接近 `max_results`）；若该值过低，容易出现“帖子有正文但岗位要求/公司/岗位字段不完整”。
 - `login_timeout_seconds`：扫码登录超时
 - `command_timeout_seconds`：单次命令超时
@@ -494,6 +501,7 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 
 当前项目 `config/config.example.yaml` 默认值。
 - `xhs.search_sort: time_descending`
+- `xhs.detail_workers: 3`
 - `pipeline.process_workers: 4`
 - `notification.mode: digest`
 - `notification.digest_interval_minutes: 30`
@@ -749,10 +757,12 @@ node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 - `GET /api/leads?limit=200&q=关键词`
 - `GET /api/leads` 返回 `publish_time_display`（绝对时间显示字段）。
 - `GET /api/runs?limit=20`
+- `GET /api/performance?limit=50`
 - `GET /api/xhs/accounts`
 - `GET /api/setup/check`
 - `POST /api/setup/check`
 - `GET /api/runs` 关键字段：`stage_total_ms`、`stage_avg_ms`、`stage_failed_count`、`slow_stages`、`error_codes`
+- `GET /api/performance` 聚合字段：`stage_total_ms(avg/p50/p95)`、`stage_failed_rate`、`detail_success_rate`、`slow_stages`、`error_codes`
 - `GET /api/runs` 重试字段：`retry_pending`、`retry_running`、`retry_enqueued`、`retry_retried`、`retry_succeeded`、`retry_dropped`
 - `GET /api/retry-queue`：返回 `items`、`dead_letters` 与 `summary`（含 dead-letter 与处理耗时统计）
 - 错误响应统一格式：`{ ok: false, error: { code, message, reason, fix_command, trace_id } }`
@@ -849,6 +859,7 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
+| v0.4.1 | 2026-02-27 | 新增 `xhs.detail_workers` 并行 detail 抓取（默认 3）；控制中心与总览新增性能看板（耗时均值/P50/P95、失败率、慢阶段、错误码）；Dashboard 新增 `GET /api/performance`。 |
 | v0.4.0 | 2026-02-27 | 新增 `pipeline.process_workers` 并发提取参数（默认 4）；实现“先抓取后并行处理”（单次直提与筛选+结构化均支持）；并行后仍保持发布时间排序稳定。 |
 | v0.3.16 | 2026-02-27 | `xhs.max_detail_fetch` 调整为 18（近全量详情抓取）；移除“目标岗位二次补全”阶段，回归单阶段提取；说明单轮耗时会相应上升。 |
 | v0.3.15 | 2026-02-27 | 重试队列任务化升级（lease/error_code/duration/trace）；新增 dead-letter 与幂等键防重复发送；控制中心可视化死信与重试观测；API 错误统一为 `code/reason/fix_command/trace_id`。 |

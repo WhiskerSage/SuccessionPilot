@@ -136,6 +136,14 @@ def create_fastapi_app(backend: DataBackend, web_dir: Path):
             raise HTTPException(status_code=400, detail=f"invalid limit: {exc}") from exc
         return {"items": backend.load_runs(limit=safe_limit)}
 
+    @app.get("/api/performance")
+    async def api_performance(limit: int = 50) -> dict[str, Any]:
+        try:
+            safe_limit = max(1, min(int(limit), 300))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"invalid limit: {exc}") from exc
+        return backend.load_performance(limit=safe_limit)
+
     @app.get("/api/runs/{run_id}")
     async def api_run_detail(run_id: str) -> dict[str, Any]:
         try:
