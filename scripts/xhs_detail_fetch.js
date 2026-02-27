@@ -104,8 +104,17 @@ async function main() {
       `https://www.xiaohongshu.com/explore/${feedId}?xsec_token=${encodeURIComponent(
         xsecToken
       )}&xsec_source=pc_search`;
-    await page.goto(url, { waitUntil: "domcontentloaded" });
-    await new Promise((r) => setTimeout(r, 2500));
+    try {
+      await page.goto(url, { waitUntil: "networkidle2", timeout: timeoutMs });
+    } catch (_) {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    }
+    await page
+      .waitForSelector("main,article,[class*='note-content'],[class*='desc']", {
+        timeout: Math.max(1500, Math.min(5000, Math.floor(timeoutMs / 4))),
+      })
+      .catch(() => null);
+    await new Promise((r) => setTimeout(r, 1800));
 
     const result = await page.evaluate(() => {
       const textOf = (sel) => {
@@ -154,13 +163,15 @@ async function main() {
       const pushDetail = (s) => {
         const t = normalize(s);
         if (!t) return;
-        if (t.length < 16 || t.length > 1400) return;
+        if (t.length < 6 || t.length > 1800) return;
         if (isBlockedText(t)) return;
         detailCandidates.push(t);
       };
       pushDetail(metaDesc);
       pushDetail(textOf('[class*="note-content"]'));
       pushDetail(textOf('[class*="desc"]'));
+      pushDetail(textOf('[class*="note-text"]'));
+      pushDetail(textOf('[class*="noteText"]'));
       pushDetail(textOf("article"));
       for (const el of Array.from(document.querySelectorAll("main p, article p, [class*='content'] p")).slice(0, 50)) {
         pushDetail(el.textContent || "");
@@ -224,7 +235,7 @@ async function main() {
           const txt = normalize(v);
           const path = String(p || "").toLowerCase();
           if (!txt) continue;
-          if (/(desc|content|text|note|title|caption|post|body|detail)/.test(path) && txt.length >= 16 && txt.length <= 1400) {
+          if (/(desc|content|text|note|title|caption|post|body|detail)/.test(path) && txt.length >= 6 && txt.length <= 1800) {
             if (!isBlockedText(txt)) stateDetails.push(txt);
           }
           if (

@@ -195,10 +195,15 @@ def test_setup_check_offline_mode(tmp_path: Path) -> None:
     result = backend.run_setup_check(include_network=False, include_xhs_status=False)
     assert result["ok"] is True
     assert result["summary"]["failed"] == 0
+    assert isinstance(result.get("xhs_diagnostics"), list)
     keys = {item["key"]: item for item in result["items"]}
     assert keys["config_file"]["status"] == "pass"
     assert keys["storage_write"]["status"] == "pass"
+    assert keys["xhs_cli_present"]["status"] in {"pass", "warn"}
     assert keys["xhs_runtime"]["status"] == "pass"
+    assert keys["xhs_cookie_file_ready"]["status"] in {"pass", "warn"}
+    assert keys["xhs_mcp_connect"]["status"] == "warn"
+    assert keys["xhs_login_status"]["status"] == "warn"
     assert keys["xhs_login"]["status"] == "warn"
     assert keys["email_enabled"]["status"] == "warn"
     assert keys["llm_enabled"]["status"] == "warn"

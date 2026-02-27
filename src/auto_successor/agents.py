@@ -484,6 +484,7 @@ class CommunicationAgent:
             original_text = self._display_original_text(job)
             lines.append(f"----------------------------------------")
             lines.append(f"[{idx}] {job.company} | {job.position}")
+            lines.append(f"帖子标题：{job.source_title or '-'}")
             lines.append(f"发布时间：{job.publish_time.strftime('%Y-%m-%d %H:%M')}")
             lines.append(f"地点：{job.location}")
             lines.append("岗位要求：")
@@ -552,6 +553,7 @@ class CommunicationAgent:
                 (
                     "<table role=\"presentation\" class=\"item\" cellpadding=\"0\" cellspacing=\"0\">"
                     f"<tr><td class=\"item-head\" colspan=\"2\">机会点 {idx} | {esc(job.company)} | {esc(job.position)}</td></tr>"
+                    f"<tr><td class=\"label\">帖子标题</td><td class=\"value pre\">{esc_multiline(job.source_title)}</td></tr>"
                     f"<tr><td class=\"label\">地点</td><td class=\"value\">{esc_singleline(job.location)}</td></tr>"
                     f"<tr><td class=\"label\">到岗时间</td><td class=\"value\">{esc_singleline(job.arrival_time)}</td></tr>"
                     f"<tr><td class=\"label\">投递方式</td><td class=\"value pre\">{esc_multiline(job.application_method)}</td></tr>"
@@ -576,6 +578,7 @@ class CommunicationAgent:
                 (
                     "<table role=\"presentation\" class=\"item\" cellpadding=\"0\" cellspacing=\"0\">"
                     f"<tr><td class=\"item-head\" colspan=\"2\">[{idx}] {esc(job.company)} | {esc(job.position)}</td></tr>"
+                    f"<tr><td class=\"label\">帖子标题</td><td class=\"value pre\">{esc_multiline(job.source_title)}</td></tr>"
                     f"<tr><td class=\"label\">发布时间</td><td class=\"value\">{esc(job.publish_time.strftime('%Y-%m-%d %H:%M'))}</td></tr>"
                     f"<tr><td class=\"label\">发布者</td><td class=\"value\">{esc_singleline(job.author)}</td></tr>"
                     f"<tr><td class=\"label\">地点</td><td class=\"value\">{esc_singleline(job.location)}</td></tr>"

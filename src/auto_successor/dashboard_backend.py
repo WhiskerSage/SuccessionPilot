@@ -840,15 +840,21 @@ class DataBackend:
             message: str,
             detail: str = "",
             suggestion: str = "",
+            reason: str = "",
+            fix_command: str = "",
         ) -> None:
+            resolved_reason = str(reason or message or "").strip()
+            resolved_fix = str(fix_command or suggestion or "").strip()
             items.append(
                 {
                     "key": key,
                     "name": name,
                     "status": status,
                     "message": message,
+                    "reason": resolved_reason,
                     "detail": detail,
                     "suggestion": suggestion,
+                    "fix_command": resolved_fix,
                 }
             )
 
@@ -931,6 +937,36 @@ class DataBackend:
 
         cmd_path = shutil.which(xhs_command)
         xhs_script_exists = xhs_script.exists()
+        account = "default"
+        account_dir = "~/.xhs-mcp/accounts"
+        if settings is not None:
+            account = str(getattr(settings.xhs, "account", "default") or "default").strip() or "default"
+            account_dir = str(getattr(settings.xhs, "account_cookies_dir", "~/.xhs-mcp/accounts") or "~/.xhs-mcp/accounts").strip() or "~/.xhs-mcp/accounts"
+        elif isinstance(config_data.get("xhs"), dict):
+            xhs_cfg = config_data.get("xhs") or {}
+            account = str(xhs_cfg.get("account") or "default").strip() or "default"
+            account_dir = str(xhs_cfg.get("account_cookies_dir") or "~/.xhs-mcp/accounts").strip() or "~/.xhs-mcp/accounts"
+        selected_cookie_file = self._resolve_selected_xhs_cookie_file(account=account, account_cookies_dir=account_dir)
+        account_args = f'-Account "{account}" -AccountCookiesDir "{account_dir}"'
+
+        if cmd_path:
+            push_item(
+                key="xhs_cli_present",
+                name="XHS CLI 可用性",
+                status="pass",
+                message=f"命令可用: {xhs_command}",
+                detail=f"path={cmd_path}",
+            )
+        else:
+            push_item(
+                key="xhs_cli_present",
+                name="XHS CLI 可用性",
+                status="fail",
+                message=f"命令不存在: {xhs_command}",
+                suggestion="安装 Node.js 并确保 node 命令在 PATH 中",
+                fix_command="powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1",
+            )
+
         if cmd_path and xhs_script_exists:
             push_item(
                 key="xhs_runtime",
@@ -952,6 +988,26 @@ class DataBackend:
                 message="；".join(missing_parts) or "xhs 运行依赖缺失",
                 detail=f"command={xhs_command} | script={xhs_script}",
                 suggestion="确认 Node.js 已安装，且 vendor/xhs-mcp 已完整放入项目目录",
+                fix_command="cd vendor/xhs-mcp; npm install --no-fund --no-audit --cache .npm-cache",
+            )
+
+        if selected_cookie_file.exists():
+            push_item(
+                key="xhs_cookie_file_ready",
+                name="XHS Cookie 文件",
+                status="pass",
+                message="当前账号 Cookie 文件已存在",
+                detail=str(selected_cookie_file),
+            )
+        else:
+            push_item(
+                key="xhs_cookie_file_ready",
+                name="XHS Cookie 文件",
+                status="warn",
+                message="当前账号 Cookie 文件不存在（首次扫码后会自动生成）",
+                detail=str(selected_cookie_file),
+                suggestion="在控制中心执行一次扫码登录",
+                fix_command=f'powershell -ExecutionPolicy Bypass -File scripts/xhs_login.ps1 -Timeout 180 {account_args}',
             )
 
         if include_xhs_status:
@@ -965,7 +1021,33 @@ class DataBackend:
                 or status_obj.get("isLogin")
                 or status_obj.get("is_login")
             )
+            if status_resp.get("ok"):
+                push_item(
+                    key="xhs_mcp_connect",
+                    name="XHS MCP 连通性",
+                    status="pass",
+                    message="状态接口可访问",
+                    detail=self._compact_json(status_obj),
+                )
+            else:
+                push_item(
+                    key="xhs_mcp_connect",
+                    name="XHS MCP 连通性",
+                    status="fail",
+                    message=str(status_resp.get("message") or "状态检查失败"),
+                    detail=str(status_resp.get("output") or "")[:280],
+                    suggestion="检查 xhs-mcp 依赖和浏览器路径后重试",
+                    fix_command=f'powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1 {account_args}',
+                )
+
             if status_resp.get("ok") and logged_in:
+                push_item(
+                    key="xhs_login_status",
+                    name="XHS 登录状态",
+                    status="pass",
+                    message="登录状态正常",
+                    detail=self._compact_json(status_obj),
+                )
                 push_item(
                     key="xhs_login",
                     name="XHS 登录状态",
@@ -975,14 +1057,33 @@ class DataBackend:
                 )
             elif status_resp.get("ok"):
                 push_item(
+                    key="xhs_login_status",
+                    name="XHS 登录状态",
+                    status="fail",
+                    message="未登录，请扫码登录",
+                    detail=self._compact_json(status_obj),
+                    suggestion="在控制中心点击“扫码登录”，完成后再次自检",
+                    fix_command=f'powershell -ExecutionPolicy Bypass -File scripts/xhs_login.ps1 -Timeout 180 {account_args}',
+                )
+                push_item(
                     key="xhs_login",
                     name="XHS 登录状态",
                     status="fail",
                     message="未登录，请扫码登录",
                     detail=self._compact_json(status_obj),
                     suggestion="在控制中心点击“扫码登录”，完成后再次自检",
+                    fix_command=f'powershell -ExecutionPolicy Bypass -File scripts/xhs_login.ps1 -Timeout 180 {account_args}',
                 )
             else:
+                push_item(
+                    key="xhs_login_status",
+                    name="XHS 登录状态",
+                    status="fail",
+                    message=str(status_resp.get("message") or "状态检查失败"),
+                    detail=str(status_resp.get("output") or "")[:280],
+                    suggestion="先执行扫码登录后重试",
+                    fix_command=f'powershell -ExecutionPolicy Bypass -File scripts/xhs_login.ps1 -Timeout 180 {account_args}',
+                )
                 push_item(
                     key="xhs_login",
                     name="XHS 登录状态",
@@ -990,14 +1091,32 @@ class DataBackend:
                     message=str(status_resp.get("message") or "状态检查失败"),
                     detail=str(status_resp.get("output") or "")[:280],
                     suggestion="先执行 scripts/xhs_login.ps1 完成扫码后重试",
+                    fix_command=f'powershell -ExecutionPolicy Bypass -File scripts/xhs_login.ps1 -Timeout 180 {account_args}',
                 )
         else:
+            push_item(
+                key="xhs_mcp_connect",
+                name="XHS MCP 连通性",
+                status="warn",
+                message="已跳过连通性检查",
+                suggestion="建议首次部署后执行一次状态检查",
+                fix_command=f'powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1 {account_args}',
+            )
+            push_item(
+                key="xhs_login_status",
+                name="XHS 登录状态",
+                status="warn",
+                message="已跳过登录检查",
+                suggestion="建议首次部署完成后执行一次登录检查",
+                fix_command=f'powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1 {account_args}',
+            )
             push_item(
                 key="xhs_login",
                 name="XHS 登录状态",
                 status="warn",
                 message="已跳过登录检查",
                 suggestion="建议首次部署完成后执行一次登录检查",
+                fix_command=f'powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1 {account_args}',
             )
 
         email_enabled = False
@@ -1197,6 +1316,18 @@ class DataBackend:
                 "failed": failed,
             },
             "items": items,
+            "xhs_diagnostics": [
+                {
+                    "key": str(item.get("key") or ""),
+                    "name": str(item.get("name") or ""),
+                    "status": str(item.get("status") or "warn"),
+                    "reason": str(item.get("reason") or item.get("message") or ""),
+                    "detail": str(item.get("detail") or ""),
+                    "fix_command": str(item.get("fix_command") or item.get("suggestion") or ""),
+                }
+                for item in items
+                if str(item.get("key") or "").startswith("xhs_")
+            ],
         }
 
     def _check_email_connectivity(self, *, host: str, port: int, use_ssl: bool, username: str, password: str) -> tuple[bool, str]:
@@ -1242,6 +1373,25 @@ class DataBackend:
         if not script.is_absolute():
             script = self.workspace / script
         return script
+
+    @staticmethod
+    def _resolve_selected_xhs_cookie_file(*, account: str, account_cookies_dir: str) -> Path:
+        account_name = str(account or "default").strip() or "default"
+        if account_name.lower() == "default":
+            return Path.home() / ".xhs-mcp" / "cookies.json"
+
+        base = Path(str(account_cookies_dir or "~/.xhs-mcp/accounts")).expanduser()
+        if account_name.lower().endswith(".json"):
+            flat = base / account_name
+            nested = base / account_name[: -len(".json")] / "cookies.json"
+        else:
+            flat = base / f"{account_name}.json"
+            nested = base / account_name / "cookies.json"
+        if flat.exists():
+            return flat
+        if nested.exists():
+            return nested
+        return flat
 
     def _read_env_values(self) -> dict[str, str]:
         env_path = self.workspace / ".env"
@@ -1373,6 +1523,15 @@ class DataBackend:
                     "retry_retried": self._to_int(stats.get("retry_retried")),
                     "retry_succeeded": self._to_int(stats.get("retry_succeeded")),
                     "retry_dropped": self._to_int(stats.get("retry_dropped")),
+                    "fetch_fail_count_run": self._to_int(stats.get("fetch_fail_count_run")),
+                    "fetch_fail_streak": self._to_int(stats.get("fetch_fail_streak")),
+                    "xhs_data_empty": bool(stats.get("xhs_data_empty")),
+                    "detail_attempted": self._to_int(stats.get("detail_attempted")),
+                    "detail_success": self._to_int(stats.get("detail_success")),
+                    "detail_failed": self._to_int(stats.get("detail_failed")),
+                    "detail_filled": self._to_int(stats.get("detail_filled")),
+                    "detail_missing": self._to_int(stats.get("detail_missing")),
+                    "xhs_diagnosis": stats.get("xhs_diagnosis") if isinstance(stats.get("xhs_diagnosis"), dict) else {},
                 }
             )
         return out

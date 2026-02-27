@@ -738,14 +738,17 @@
       .map((item) => {
         const status = String(item.status || "warn").toLowerCase();
         const statusText = status === "pass" ? "通过" : status === "fail" ? "失败" : "警告";
+        const reason = String(item.reason || item.message || "").trim();
         const detail = String(item.detail || "").trim();
         const suggestion = String(item.suggestion || "").trim();
+        const fixCommand = String(item.fix_command || "").trim();
         return [
           '<div class="wizard-check-item">',
           `<div class="wizard-check-head"><strong>${escapeHtml(String(item.name || "-"))}</strong><span class="wizard-check-status ${status}">${statusText}</span></div>`,
-          `<p>${escapeHtml(String(item.message || "-"))}</p>`,
+          `<p>${escapeHtml(reason || "-")}</p>`,
           detail ? `<p class="wizard-check-detail">${escapeHtml(detail)}</p>` : "",
           suggestion ? `<p class="wizard-check-tip">建议：${escapeHtml(suggestion)}</p>` : "",
+          fixCommand ? `<p class="wizard-check-tip">修复命令：<code>${escapeHtml(fixCommand)}</code></p>` : "",
           "</div>",
         ].join("");
       })

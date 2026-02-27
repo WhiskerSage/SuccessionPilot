@@ -79,6 +79,7 @@ class XHSMcpCliCollector:
             like_count = self._to_int(self._pick(interact, "likedCount", "liked_count"))
             comment_count = self._to_int(self._pick(interact, "commentCount", "comment_count"))
             share_count = self._to_int(self._pick(interact, "sharedCount", "shared_count"))
+            prefill_detail = self._extract_prefill_detail(note_card=note_card, title=title)
 
             publish_text = clean_line(self._extract_publish_time_text(note_card))
             publish_time, publish_time_quality = self._parse_publish_time_with_quality(publish_text)
@@ -108,29 +109,58 @@ class XHSMcpCliCollector:
                     url=note_url,
                     raw_json=raw_json[:20000],
                     xsec_token=xsec_token,
+                    detail_text=prefill_detail[:1500] if prefill_detail else "",
                 )
             )
 
         notes.sort(key=lambda item: (item.publish_time, item.note_id), reverse=True)
         return notes[:max_results]
 
-    def enrich_note_details(self, notes: list[NoteRecord], max_notes: int) -> None:
+    def enrich_note_details(self, notes: list[NoteRecord], max_notes: int) -> dict[str, int]:
         script = Path(__file__).resolve().parents[2] / "scripts" / "xhs_detail_fetch.js"
         if not script.exists():
             self.logger.warning("详情抓取脚本不存在：%s", script)
-            return
+            return {
+                "target_notes": 0,
+                "attempted": 0,
+                "success": 0,
+                "failed": 0,
+                "skipped_no_token": 0,
+                "detail_filled": 0,
+                "detail_missing": 0,
+                "blocked": 0,
+            }
 
         target_notes = notes[: max(0, max_notes)]
+        stats = {
+            "target_notes": len(target_notes),
+            "attempted": 0,
+            "success": 0,
+            "failed": 0,
+            "skipped_no_token": 0,
+            "detail_filled": 0,
+            "detail_missing": 0,
+            "blocked": 0,
+        }
         for note in target_notes:
             if not note.xsec_token:
+                stats["skipped_no_token"] += 1
                 continue
+            stats["attempted"] += 1
             payload = self._run_detail_script(
                 script_path=str(script),
                 feed_id=note.note_id,
                 xsec_token=note.xsec_token,
             )
             if not payload.get("success"):
+                stats["failed"] += 1
+                self.logger.info(
+                    "详情抓取失败 | note=%s | error=%s",
+                    note.note_id,
+                    str(payload.get("error") or payload.get("message") or "unknown"),
+                )
                 continue
+            stats["success"] += 1
 
             detail_text = self._sanitize_detail_text(str(payload.get("detail_text") or ""))
             comments_preview = self._sanitize_comments_preview(
@@ -140,8 +170,15 @@ class XHSMcpCliCollector:
 
             if detail_text:
                 note.detail_text = detail_text[:1500]
+                stats["detail_filled"] += 1
             elif blocked_by_risk_page:
+                stats["blocked"] += 1
                 self.logger.info("详情抓取被风控页拦截：note=%s", note.note_id)
+            elif not str(note.detail_text or "").strip():
+                fallback = self._sanitize_detail_fallback(str(payload.get("title") or note.title or ""))
+                if fallback:
+                    note.detail_text = fallback[:1500]
+                    stats["detail_filled"] += 1
 
             if comments_preview:
                 note.comments_preview = comments_preview[:700]
@@ -151,6 +188,50 @@ class XHSMcpCliCollector:
                 parsed = self._to_int_from_text(count_text)
                 if parsed > 0:
                     note.comment_count = parsed
+        stats["detail_missing"] = sum(1 for item in target_notes if not str(item.detail_text or "").strip())
+        return stats
+
+    def probe_status_diagnostics(self) -> dict:
+        cookies_file = self._resolve_cookies_file()
+        script_path = self._resolve_cli_script_path()
+        command = str(self.cfg.command or "").strip() or "node"
+        cli_present = shutil.which(command) is not None
+        diagnostics = {
+            "checked_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "command": command,
+            "args": list(self.cfg.args or []),
+            "cli_present": cli_present,
+            "script_path": str(script_path) if script_path else "",
+            "script_exists": bool(script_path and script_path.exists()),
+            "cookies_file": str(cookies_file),
+            "cookie_file_ready": cookies_file.exists(),
+            "mcp_connect": False,
+            "login_status": False,
+            "reason": "",
+            "raw_status": {},
+        }
+        if not cli_present:
+            diagnostics["reason"] = "xhs command not found"
+            return diagnostics
+
+        try:
+            status = self._run_json(["status", "--compact"])
+        except Exception as exc:
+            diagnostics["reason"] = str(exc)[:280]
+            return diagnostics
+
+        diagnostics["mcp_connect"] = True
+        diagnostics["raw_status"] = status if isinstance(status, dict) else {}
+        logged_in = bool(
+            status.get("loggedIn")
+            or status.get("logged_in")
+            or status.get("isLogin")
+            or status.get("is_login")
+        )
+        diagnostics["login_status"] = logged_in
+        if not logged_in:
+            diagnostics["reason"] = "not_logged_in"
+        return diagnostics
 
     def _run_json(self, tail_args: list[str]) -> dict:
         cmd = [self.cfg.command, *(self.cfg.args or []), *tail_args]
@@ -504,7 +585,19 @@ class XHSMcpCliCollector:
         if XHSMcpCliCollector._is_link_noise_text(value):
             return ""
         value = XHSMcpCliCollector._remove_inline_urls(value)
-        if len(value) < 10:
+        if len(value) < 6:
+            return ""
+        return clean_line(value)
+
+    @staticmethod
+    def _sanitize_detail_fallback(text: str) -> str:
+        value = clean_line(text)
+        if not value:
+            return ""
+        if XHSMcpCliCollector._is_link_noise_text(value):
+            return ""
+        value = XHSMcpCliCollector._remove_inline_urls(value)
+        if len(value) < 4:
             return ""
         return clean_line(value)
 
@@ -583,6 +676,73 @@ class XHSMcpCliCollector:
         if len(urls) >= 1 and (cjk + alpha_num) < 6:
             return True
         return False
+
+    @classmethod
+    def _extract_prefill_detail(cls, *, note_card: dict, title: str) -> str:
+        if not isinstance(note_card, dict):
+            return cls._sanitize_detail_fallback(title)
+
+        candidates: list[str] = []
+
+        def push(value: object) -> None:
+            text = clean_line(str(value or ""))
+            if text:
+                candidates.append(text)
+
+        direct_keys = (
+            "desc",
+            "description",
+            "content",
+            "noteText",
+            "note_text",
+            "displayTitle",
+            "display_title",
+            "title",
+        )
+        for key in direct_keys:
+            push(note_card.get(key))
+
+        queue: list[tuple[str, object, int]] = [("root", note_card, 0)]
+        visited = 0
+        while queue and visited < 300:
+            path, value, depth = queue.pop(0)
+            visited += 1
+            if value is None:
+                continue
+            if isinstance(value, str):
+                if re.search(r"(desc|content|text|note|caption|body|title)", path, flags=re.IGNORECASE):
+                    push(value)
+                continue
+            if depth >= 2:
+                continue
+            if isinstance(value, dict):
+                for key, nested in value.items():
+                    queue.append((f"{path}.{key}", nested, depth + 1))
+            elif isinstance(value, list):
+                for idx, nested in enumerate(value[:20]):
+                    queue.append((f"{path}[{idx}]", nested, depth + 1))
+
+        for item in candidates:
+            normalized = cls._sanitize_detail_text(item)
+            if normalized:
+                return normalized
+        for item in candidates:
+            normalized = cls._sanitize_detail_fallback(item)
+            if normalized:
+                return normalized
+        return cls._sanitize_detail_fallback(title)
+
+    def _resolve_cli_script_path(self) -> Path | None:
+        args = self.cfg.args or []
+        if not args:
+            return None
+        raw = str(args[0] or "").strip()
+        if not raw:
+            return None
+        p = Path(raw)
+        if not p.is_absolute():
+            p = (Path(__file__).resolve().parents[2] / p).resolve()
+        return p
 
     def _parse_publish_time(self, text: str) -> datetime:
         value, _ = self._parse_publish_time_with_quality(text)

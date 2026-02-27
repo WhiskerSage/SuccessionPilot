@@ -31,6 +31,7 @@ class _FakeCollector(XHSMcpCliCollector):
                     "xsec_token": "tok-1",
                     "note_card": {
                         "display_title": "上海找继任",
+                        "desc": "岗位内容：电商运营实习，尽快到岗，可转正。",
                         "user": {"nick_name": "tester"},
                         "interact_info": {
                             "liked_count": "12",
@@ -100,6 +101,7 @@ class TestXHSCollectorSearchSort(unittest.TestCase):
         self.assertEqual(note.comment_count, 5)
         self.assertEqual(note.share_count, 3)
         self.assertIn("xsec_token=tok-1", note.url)
+        self.assertIn("岗位内容", note.detail_text)
 
     def test_fallback_to_general_search_when_explicit_sort_payload_fails(self):
         collector = _FallbackCollector(

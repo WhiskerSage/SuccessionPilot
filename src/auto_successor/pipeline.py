@@ -60,6 +60,7 @@ class AutoSuccessorPipeline:
         self._retry_batch_size = max(1, int(settings.retry.replay_batch_size))
         self._retry_stop = threading.Event()
         self._retry_worker: threading.Thread | None = None
+        self._fetch_fail_streak = 0
 
         channels = [
             NotificationChannel(name="wechat_service", sender=WeChatServiceSender(settings, logger)),
@@ -93,6 +94,19 @@ class AutoSuccessorPipeline:
             self._log_progress(run_id, 5, "初始化运行上下文")
             self.llm_enricher.reset_stats()
             self.llm_client.clear_error_counts()
+            fetch_fail_events: list[dict[str, str]] = []
+            detail_enrich_stats: dict[str, int] = {
+                "target_notes": 0,
+                "attempted": 0,
+                "success": 0,
+                "failed": 0,
+                "skipped_no_token": 0,
+                "detail_filled": 0,
+                "detail_missing": 0,
+                "blocked": 0,
+            }
+            xhs_failure_diagnosis: dict[str, Any] = {}
+            xhs_data_empty = False
 
             resume_text = orchestrator.run_stage(
                 "resume.load_text",
@@ -107,6 +121,7 @@ class AutoSuccessorPipeline:
                     meta={"browser_path": self.settings.xhs.browser_path},
                 )
             except Exception as exc:
+                fetch_fail_events.append({"stage": "collector.ensure_logged_in", "error": str(exc)[:280]})
                 self._enqueue_retry(
                     queue_type="fetch",
                     action="ensure_logged_in",
@@ -132,6 +147,7 @@ class AutoSuccessorPipeline:
                 )
             except Exception as exc:
                 notes = []
+                fetch_fail_events.append({"stage": "collector.search_notes", "error": str(exc)[:280]})
                 self._enqueue_retry(
                     queue_type="fetch",
                     action="search_notes",
@@ -145,6 +161,7 @@ class AutoSuccessorPipeline:
                 )
                 self.logger.warning("搜索失败已入重试队列 | run=%s | error=%s", run_id, exc)
             notes = sorted(notes, key=lambda n: (n.publish_time, n.note_id), reverse=True)
+            xhs_data_empty = len(notes) == 0 and not fetch_fail_events
             self._log_progress(run_id, 28, f"搜索完成，抓取到 {len(notes)} 条")
 
             pre_new_notes = orchestrator.run_stage(
@@ -157,12 +174,24 @@ class AutoSuccessorPipeline:
 
             initial_plan = self.planner.build_plan(mode=mode, fetched_count=len(notes), new_count=len(pre_new_notes))
             try:
-                orchestrator.run_stage(
+                detail_enrich_stats = orchestrator.run_stage(
                     "collector.enrich_note_details",
                     lambda: self.collector.enrich_note_details(pre_new_notes, max_notes=initial_plan.detail_fetch_limit),
                     meta={"max_detail_fetch": initial_plan.detail_fetch_limit},
                 )
+                if not isinstance(detail_enrich_stats, dict):
+                    detail_enrich_stats = {
+                        "target_notes": max(0, int(initial_plan.detail_fetch_limit)),
+                        "attempted": 0,
+                        "success": 0,
+                        "failed": 0,
+                        "skipped_no_token": 0,
+                        "detail_filled": 0,
+                        "detail_missing": 0,
+                        "blocked": 0,
+                    }
             except Exception as exc:
+                fetch_fail_events.append({"stage": "collector.enrich_note_details", "error": str(exc)[:280]})
                 queued = 0
                 for note in pre_new_notes[: max(0, int(initial_plan.detail_fetch_limit))]:
                     if not str(getattr(note, "xsec_token", "") or "").strip():
@@ -177,7 +206,25 @@ class AutoSuccessorPipeline:
                     )
                     queued += 1
                 self.logger.warning("详情抓取失败已入队 | run=%s | queued=%s | error=%s", run_id, queued, exc)
+                detail_enrich_stats = {
+                    "target_notes": max(0, int(initial_plan.detail_fetch_limit)),
+                    "attempted": 0,
+                    "success": 0,
+                    "failed": 1,
+                    "skipped_no_token": 0,
+                    "detail_filled": 0,
+                    "detail_missing": 0,
+                    "blocked": 0,
+                }
             self._log_progress(run_id, 46, f"正文补全完成，详情抓取上限 {initial_plan.detail_fetch_limit}")
+
+            if fetch_fail_events:
+                self._fetch_fail_streak += 1
+            else:
+                self._fetch_fail_streak = 0
+
+            if self._fetch_fail_streak >= 2:
+                xhs_failure_diagnosis = self._probe_xhs_fetch_failure(run_id=run_id, fetch_fail_events=fetch_fail_events)
 
             new_notes = orchestrator.run_stage(
                 "state.filter_new_notes",
@@ -487,6 +534,18 @@ class AutoSuccessorPipeline:
                 "digest_due": digest_due,
                 "digest_sent": digest_sent,
                 "resume_chars": len(resume_text),
+                "fetch_fail_count_run": len(fetch_fail_events),
+                "fetch_fail_streak": int(self._fetch_fail_streak),
+                "xhs_data_empty": bool(xhs_data_empty),
+                "detail_target_notes": int(detail_enrich_stats.get("target_notes", 0)),
+                "detail_attempted": int(detail_enrich_stats.get("attempted", 0)),
+                "detail_success": int(detail_enrich_stats.get("success", 0)),
+                "detail_failed": int(detail_enrich_stats.get("failed", 0)),
+                "detail_skipped_no_token": int(detail_enrich_stats.get("skipped_no_token", 0)),
+                "detail_filled": int(detail_enrich_stats.get("detail_filled", 0)),
+                "detail_missing": int(detail_enrich_stats.get("detail_missing", 0)),
+                "detail_blocked": int(detail_enrich_stats.get("blocked", 0)),
+                "xhs_diagnosis": xhs_failure_diagnosis,
                 "retry_pending": retry_snapshot.get("pending", {}),
                 "retry_running": retry_snapshot.get("running", {}),
                 "retry_enqueued": int(retry_snapshot.get("stats", {}).get("enqueued", 0)),
@@ -506,6 +565,8 @@ class AutoSuccessorPipeline:
                     "notify_note_ids": notify_note_ids,
                     "opportunity_post_ids": opportunity_post_ids,
                     "filtered_out_samples": filtered_out[:50],
+                    "fetch_fail_events": fetch_fail_events,
+                    "xhs_diagnosis": xhs_failure_diagnosis,
                     "agent_plan": {
                         "detail_fetch_limit": plan.detail_fetch_limit,
                         "max_filter_items": plan.max_filter_items,
@@ -1053,6 +1114,41 @@ class AutoSuccessorPipeline:
                 payload={"error_code": key, "count": num, "scope": "retry_llm_timeout"},
                 dedupe_key=f"llm-timeout:{run_id}:{key}",
             )
+
+    def _probe_xhs_fetch_failure(self, *, run_id: str, fetch_fail_events: list[dict[str, str]]) -> dict[str, Any]:
+        try:
+            diagnosis = self.collector.probe_status_diagnostics()
+            joined_errors = " | ".join(str(item.get("error") or "") for item in (fetch_fail_events or []))
+            category = "unknown_fetch_failure"
+            if any(k in joined_errors.lower() for k in ("risk", "风控", "访问受限", "网络环境")):
+                category = "risk_control"
+            elif not diagnosis.get("mcp_connect"):
+                category = "mcp_unreachable"
+            elif not diagnosis.get("login_status"):
+                category = "not_logged_in"
+            diagnosis["run_id"] = run_id
+            diagnosis["fetch_fail_streak"] = int(self._fetch_fail_streak)
+            diagnosis["fetch_fail_events"] = list(fetch_fail_events or [])
+            diagnosis["failure_category"] = category
+            self.logger.warning(
+                "XHS 失败诊断 | run=%s | streak=%s | category=%s | mcp=%s | login=%s | cookie=%s | reason=%s",
+                run_id,
+                self._fetch_fail_streak,
+                category,
+                diagnosis.get("mcp_connect"),
+                diagnosis.get("login_status"),
+                diagnosis.get("cookie_file_ready"),
+                diagnosis.get("reason"),
+            )
+            return diagnosis
+        except Exception as exc:
+            self.logger.warning("XHS 失败诊断执行异常 | run=%s | error=%s", run_id, exc)
+            return {
+                "run_id": run_id,
+                "fetch_fail_streak": int(self._fetch_fail_streak),
+                "fetch_fail_events": list(fetch_fail_events or []),
+                "error": str(exc)[:280],
+            }
 
     def _build_retry_dispatch_fallback(
         self,

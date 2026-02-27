@@ -205,8 +205,10 @@ resume:
 ```
 
 简历上下文说明。
-- 复制 `config/resume.example.txt` 为 `config/resume.txt`，填写你的真实简历内容（TXT）。
-- 运行时由 `resume_loader` 读取并裁剪，写入 `resume_text_path`，供 LLM 在岗位结构化提取、批次摘要与机会点套磁文案复用。
+- `config/resume.example.txt` 只是模板文件，不会被程序直接读取。
+- 程序实际读取的是 `resume.source_txt_path`（默认 `config/resume.txt`），并同步写入 `resume_text_path`（默认 `data/resume_text.txt`）。
+- 复制 `config/resume.example.txt` 到 `config/resume.txt` 后再填入真实简历内容（TXT）。
+- 运行时由 `resume_loader` 读取并裁剪，供 LLM 在岗位结构化提取、匹配度估计、批次摘要与机会点套磁文案复用。
 - 已预留后续前端 PDF 上传扩展接口（`resume_loader.update_from_upload_bytes` / `parse_pdf_bytes`）。
 
 如果你要“邮箱 + 微信服务号”，改这两处。
@@ -307,6 +309,7 @@ powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1
 - 主配置文件：`config/config.yaml`
 - 配置模板：`config/config.example.yaml`
 - 你的简历：`config/resume.txt`
+- 简历模板：`config/resume.example.txt`
 - 环境变量模板：`.env.example`
 - 本地环境变量：`.env`
 - 前端主页：`web/index.html`
@@ -757,6 +760,11 @@ node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 - 先看失败项下方“建议”字段，按提示修复。
 - 常见顺序：先修复配置文件和环境变量，再处理 XHS 登录，最后检查邮件/LLM 连通性。
 - 如果只想先验证本地配置，可在 API 调用中禁用网络检查：`POST /api/setup/check` with `include_network=false`。
+
+### 9. 程序是不是在用 `resume.example`？
+- 不会。`config/resume.example.txt` 仅用于示例。
+- 实际使用 `config/resume.txt`（或 `resume.source_txt_path` 指定的路径）。
+- 如果运行日志里出现 `resume_chars: 0`，说明当前未读取到有效简历文本；此时匹配度和套磁会走无简历上下文的兜底策略。
 
 ## 测试
 ```powershell
