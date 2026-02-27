@@ -1,10 +1,15 @@
 ﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.4.1`
+- 项目版本：`0.4.2`
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
+
+### v0.4.2 更新要点
+- 线索快速编辑：详情面板新增“快速改字段”，可直接修改 `title/company/position/location/requirements/summary/detail_text`，并通过 `POST /api/leads/update` 回写 `output.xlsx`。
+- 前端交互修复：左侧栏与右侧详情面板在桌面端固定显示；点击线索行改为“只更新选中态+详情”，不再整表重绘，减少跳动与滚动位置丢失。
+- 发布时间一致性修复：统一将“无时区 ISO 时间”按 UTC 解释；`first_seen_at/updated_at/sent_at/created_at` 改为带时区写入；相对时间（如“xx分钟前”）不再将已存发布时间向更晚方向漂移。
 
 ### v0.4.1 更新要点
 - 详情抓取并行化：新增 `xhs.detail_workers`（默认 `3`），`collector.enrich_note_details` 支持并发抓取 detail，减少正文补全阶段耗时。
@@ -736,6 +741,8 @@ node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 - 总量 KPI
 - 线索列表检索
 - 岗位/摘要/正文详情联动查看
+- 详情区快速改字段并回写本地数据表（`output.xlsx`）
+- 桌面端双栏固定（左侧导航 + 右侧详情），减少滚动跳转
 - 最近运行记录
 - 可观测性统计（阶段耗时、慢阶段、错误码）
 - 配置向导（推荐配置 + 一键自检 + 修复建议）
@@ -756,6 +763,7 @@ node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 - `GET /api/summary`
 - `GET /api/leads?limit=200&q=关键词`
 - `GET /api/leads` 返回 `publish_time_display`（绝对时间显示字段）。
+- `POST /api/leads/update`：前端快速改字段（`title/company/position/location/requirements/summary/detail_text`）并回写 `output.xlsx`
 - `GET /api/runs?limit=20`
 - `GET /api/performance?limit=50`
 - `GET /api/xhs/accounts`
@@ -859,6 +867,7 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
+| v0.4.2 | 2026-02-27 | 新增线索“快速改字段”并回写 `output.xlsx`（`POST /api/leads/update`）；前端修复双栏固定与点击不重绘；统一无时区时间按 UTC 解析并修复相对发布时间漂移。 |
 | v0.4.1 | 2026-02-27 | 新增 `xhs.detail_workers` 并行 detail 抓取（默认 3）；控制中心与总览新增性能看板（耗时均值/P50/P95、失败率、慢阶段、错误码）；Dashboard 新增 `GET /api/performance`。 |
 | v0.4.0 | 2026-02-27 | 新增 `pipeline.process_workers` 并发提取参数（默认 4）；实现“先抓取后并行处理”（单次直提与筛选+结构化均支持）；并行后仍保持发布时间排序稳定。 |
 | v0.3.16 | 2026-02-27 | `xhs.max_detail_fetch` 调整为 18（近全量详情抓取）；移除“目标岗位二次补全”阶段，回归单阶段提取；说明单轮耗时会相应上升。 |

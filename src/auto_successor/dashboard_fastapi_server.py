@@ -128,6 +128,23 @@ def create_fastapi_app(backend: DataBackend, web_dir: Path):
             dedupe_filter=dedupe,
         )
 
+    @app.post("/api/leads/update")
+    async def api_leads_update(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        note_id = str(payload.get("note_id") or "").strip()
+        fields = payload.get("fields")
+        if not note_id:
+            raise HTTPException(status_code=400, detail="missing note_id")
+        if not isinstance(fields, dict):
+            raise HTTPException(status_code=400, detail="fields must be an object")
+        try:
+            return backend.update_lead_fields(note_id=note_id, fields=fields)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     @app.get("/api/runs")
     async def api_runs(limit: int = 20) -> dict[str, Any]:
         try:

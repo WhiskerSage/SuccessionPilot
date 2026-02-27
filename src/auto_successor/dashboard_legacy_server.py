@@ -93,7 +93,6 @@ def make_handler(backend: DataBackend, web_dir: Path):
                 if path == "/api/xhs/accounts":
                     self._json(backend.load_xhs_accounts_view())
                     return
-
                 if path == "/api/setup/check":
                     self._json(backend.run_setup_check(include_network=True, include_xhs_status=True))
                     return
@@ -113,6 +112,15 @@ def make_handler(backend: DataBackend, web_dir: Path):
                 if path == "/api/config":
                     config = backend.save_config_view(payload)
                     self._json({"ok": True, "message": "配置已保存", "config": config})
+                    return
+                if path == "/api/leads/update":
+                    note_id = str(payload.get("note_id") or "").strip()
+                    fields = payload.get("fields")
+                    if not note_id:
+                        raise ValueError("missing note_id")
+                    if not isinstance(fields, dict):
+                        raise ValueError("fields must be an object")
+                    self._json(backend.update_lead_fields(note_id=note_id, fields=fields))
                     return
                 if path == "/api/setup/check":
                     include_network = bool(payload.get("include_network", True))

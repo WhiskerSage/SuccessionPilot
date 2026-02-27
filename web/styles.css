@@ -99,6 +99,11 @@ body[data-skin="graphite-office"] {
   display: grid;
   gap: 12px;
   align-content: start;
+  position: sticky;
+  top: 16px;
+  align-self: start;
+  max-height: calc(100vh - 32px);
+  overflow: auto;
 }
 
 .brand {
@@ -196,6 +201,7 @@ body[data-skin="graphite-office"] {
 .main {
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
 
 .top {
@@ -305,6 +311,7 @@ body[data-skin="graphite-office"] {
   display: grid;
   grid-template-columns: 1.35fr 1fr;
   gap: 10px;
+  align-items: start;
 }
 
 .hidden {
@@ -432,6 +439,13 @@ body[data-skin="graphite-office"] {
   flex-direction: column;
 }
 
+.detail-panel {
+  position: sticky;
+  top: 16px;
+  align-self: start;
+  max-height: calc(100vh - 32px);
+}
+
 .head-row {
   display: flex;
   align-items: center;
@@ -468,6 +482,7 @@ body[data-skin="graphite-office"] {
   border-radius: var(--radius);
   background: #fff;
   overflow: auto;
+  max-height: clamp(360px, calc(100vh - 290px), 760px);
 }
 
 .pager {
@@ -597,6 +612,8 @@ tbody tr.active { background: var(--accent-soft); }
 
 .detail-box {
   min-height: 290px;
+  max-height: clamp(220px, calc(100vh - 430px), 620px);
+  overflow: auto;
 }
 
 .detail-box h4 {
@@ -623,6 +640,8 @@ tbody tr.active { background: var(--accent-soft); }
 
 .runs-box {
   margin-top: 10px;
+  max-height: 220px;
+  overflow: auto;
 }
 
 .runs-box h4 {
@@ -822,6 +841,9 @@ tbody tr.active { background: var(--accent-soft); }
   .sidebar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     align-items: start;
+    position: static;
+    max-height: none;
+    overflow: visible;
   }
 
   .kpis {
@@ -830,6 +852,17 @@ tbody tr.active { background: var(--accent-soft); }
 
   .workspace {
     grid-template-columns: 1fr;
+  }
+
+  .detail-panel {
+    position: static;
+    max-height: none;
+  }
+
+  .table-wrap,
+  .detail-box,
+  .runs-box {
+    max-height: none;
   }
 
   .ops-grid {
@@ -973,8 +1006,68 @@ tbody tr.active { background: var(--accent-soft); }
   text-decoration: underline;
 }
 
+.quick-edit-block {
+  margin-top: 12px;
+  background: #f7fbff;
+}
+
+.quick-edit-form {
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.quick-edit-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.quick-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.quick-edit-field span {
+  color: var(--sub);
+  font-size: 11px;
+}
+
+.quick-edit-field input,
+.quick-edit-field textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: #fff;
+  color: var(--text);
+  padding: 6px 8px;
+  font: 12px/1.5 var(--font-ui);
+}
+
+.quick-edit-field textarea {
+  min-height: 78px;
+  resize: vertical;
+}
+
+.quick-edit-actions {
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.quick-edit-tip {
+  color: var(--sub);
+  font-size: 12px;
+}
+
 @media (max-width: 680px) {
   .detail-grid {
+    grid-template-columns: 1fr;
+  }
+  .quick-edit-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -1232,12 +1325,15 @@ body[data-skin="graphite-office"] .run-item,
 body[data-skin="graphite-office"] .perf-item,
 body[data-skin="graphite-office"] .perf-block,
 body[data-skin="graphite-office"] .detail-block,
+body[data-skin="graphite-office"] .quick-edit-block,
 body[data-skin="graphite-office"] .toast,
 body[data-skin="graphite-office"] .run-chip,
 body[data-skin="graphite-office"] .run-code,
 body[data-skin="graphite-office"] .badge,
 body[data-skin="graphite-office"] .pager-size select,
 body[data-skin="graphite-office"] .mini-field,
+body[data-skin="graphite-office"] .quick-edit-field input,
+body[data-skin="graphite-office"] .quick-edit-field textarea,
 body[data-skin="graphite-office"] .runtime-progress-track,
 body[data-skin="graphite-office"] .wizard-check-list,
 body[data-skin="graphite-office"] .wizard-step-tag {

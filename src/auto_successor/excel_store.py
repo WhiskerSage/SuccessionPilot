@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import csv
 
@@ -183,6 +184,7 @@ class ExcelStore:
             incoming_publish_quality = str(getattr(note, "publish_time_quality", "parsed") or "").strip().lower()
             if incoming_publish_quality not in {"parsed", "fallback"}:
                 incoming_publish_quality = "fallback"
+            incoming_is_relative = self._is_relative_publish_text(incoming_publish_text)
 
             # Keep previous publish time when current parsing falls back.
             if incoming_publish_quality != "parsed" and prev_publish_ts > 0:
@@ -190,14 +192,26 @@ class ExcelStore:
                 publish_time = prev_publish_time or incoming_publish_time
                 publish_time_text = prev_publish_text or incoming_publish_text
                 publish_time_quality = prev_publish_quality or "fallback"
+            elif incoming_publish_quality == "parsed" and incoming_is_relative and prev_publish_ts > 0:
+                # Relative time text (e.g. "18分钟前") can drift across crawls; never move newer than previous value.
+                if incoming_publish_ts > prev_publish_ts:
+                    publish_timestamp = prev_publish_ts
+                    publish_time = prev_publish_time or incoming_publish_time
+                    publish_time_text = prev_publish_text or incoming_publish_text
+                    publish_time_quality = prev_publish_quality or incoming_publish_quality
+                else:
+                    publish_timestamp = incoming_publish_ts
+                    publish_time = incoming_publish_time
+                    publish_time_text = incoming_publish_text
+                    publish_time_quality = incoming_publish_quality
             else:
                 publish_timestamp = incoming_publish_ts
                 publish_time = incoming_publish_time
                 publish_time_text = incoming_publish_text
                 publish_time_quality = incoming_publish_quality
 
-            first_seen_at = str(prev.get("first_seen_at") or prev.get("fetched_at") or note.fetched_at.isoformat())
-            updated_at = note.fetched_at.isoformat()
+            first_seen_at = str(prev.get("first_seen_at") or prev.get("fetched_at") or self._to_iso_utc(note.fetched_at))
+            updated_at = self._to_iso_utc(note.fetched_at)
 
             by_note[note.note_id] = {
                 "run_id": note.run_id,
@@ -251,7 +265,7 @@ class ExcelStore:
                 "confidence": round(item.confidence, 4),
                 "risk_flags": item.risk_flags,
                 "url": item.url,
-                "created_at": item.created_at.isoformat(),
+                "created_at": self._to_iso_utc(item.created_at),
             }
 
         rows = list(by_note.values())
@@ -272,7 +286,7 @@ class ExcelStore:
                     "channel": log.channel,
                     "send_status": log.send_status,
                     "send_response": response[:20000],
-                    "sent_at": log.sent_at.isoformat(),
+                    "sent_at": self._to_iso_utc(log.sent_at),
                 }
             )
         rows.sort(key=lambda x: str(x.get("sent_at") or ""), reverse=True)
@@ -326,6 +340,32 @@ class ExcelStore:
             return int(float(text))
         except Exception:
             return 0
+
+    @staticmethod
+    def _to_iso_utc(value: datetime) -> str:
+        if not isinstance(value, datetime):
+            return ""
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc).isoformat()
+        return value.astimezone(timezone.utc).isoformat()
+
+    @staticmethod
+    def _is_relative_publish_text(text: str) -> bool:
+        value = str(text or "").strip()
+        if not value:
+            return False
+        patterns = (
+            r"刚刚",
+            r"刚才",
+            r"\d+\s*秒前",
+            r"\d+\s*分钟前",
+            r"\d+\s*小时前",
+            r"\d+\s*天前",
+            r"\d+\s*澶╁墠",
+            r"\d+\s*灏忔椂鍓?",
+            r"\d+\s*鍒嗛挓鍓?",
+        )
+        return any(re.search(p, value) for p in patterns)
 
     @staticmethod
     def _prefer_latest_int(current: int, previous: int) -> int:

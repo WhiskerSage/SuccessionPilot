@@ -24,6 +24,7 @@
       queueType: "all",
     },
     retryQueueData: null,
+    leadEditSaving: false,
     pagination: {
       page: 1,
       pageSize: 30,
@@ -197,7 +198,10 @@
     const text = String(value ?? "").trim();
     if (!text) return "-";
     if (/^\d{4}-\d{2}-\d{2}T/.test(text)) {
-      const ts = Date.parse(text);
+      // Legacy rows may persist UTC timestamps without timezone suffix.
+      // Normalize them as UTC to avoid local-time misinterpretation.
+      const iso = /([zZ]|[+-]\d{2}:\d{2})$/.test(text) ? text : `${text}Z`;
+      const ts = Date.parse(iso);
       if (!Number.isNaN(ts)) {
         const dt = new Date(ts);
         const pad = (n) => String(n).padStart(2, "0");
@@ -955,6 +959,60 @@
     return `${text.slice(0, limit)}\n...（界面展示已截断，共 ${text.length} 字）`;
   }
 
+
+
+  function normalizeEditableText(value) {
+    return String(value ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  }
+
+  function renderQuickEditBlock(lead) {
+    const noteId = String(lead.note_id || "").trim();
+    if (!noteId) return "";
+    const title = normalizeEditableText(lead.title);
+    const position = normalizeEditableText(lead.position);
+    const company = normalizeEditableText(lead.company);
+    const location = normalizeEditableText(lead.location);
+    const requirements = normalizeEditableText(lead.requirements);
+    const summary = normalizeEditableText(lead.summary);
+    return `
+      <div class="detail-block quick-edit-block">
+        <h5>快速改字段</h5>
+        <form class="quick-edit-form" data-note-id="${escapeHtml(noteId)}">
+          <div class="quick-edit-grid">
+            <label class="quick-edit-field">
+              <span>标题</span>
+              <input name="title" type="text" value="${escapeHtml(title)}" />
+            </label>
+            <label class="quick-edit-field">
+              <span>岗位</span>
+              <input name="position" type="text" value="${escapeHtml(position)}" />
+            </label>
+            <label class="quick-edit-field">
+              <span>公司</span>
+              <input name="company" type="text" value="${escapeHtml(company)}" />
+            </label>
+          </div>
+          <label class="quick-edit-field">
+            <span>地点</span>
+            <input name="location" type="text" value="${escapeHtml(location)}" />
+          </label>
+          <label class="quick-edit-field">
+            <span>岗位要求</span>
+            <textarea name="requirements" rows="4">${escapeHtml(requirements)}</textarea>
+          </label>
+          <label class="quick-edit-field">
+            <span>摘要</span>
+            <textarea name="summary" rows="5">${escapeHtml(summary)}</textarea>
+          </label>
+          <div class="quick-edit-actions">
+            <button class="btn primary" type="submit" data-role="lead-edit-save">保存字段</button>
+            <span class="quick-edit-tip">回写本地表格（output.xlsx）并立即刷新当前列表</span>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
   function renderDetail(lead) {
     if (!dom.detailBox) return;
     if (!lead) {
@@ -992,6 +1050,7 @@
         </div>
         <div class="detail-block"><h5>岗位要求</h5><pre>${escapeHtml(req)}</pre></div>
         <div class="detail-block"><h5>摘要</h5><pre>${escapeHtml(summary)}</pre></div>
+        ${renderQuickEditBlock(lead)}
         ${url ? `<div class="detail-link"><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">打开原帖链接</a></div>` : ""}
       `;
       return;
@@ -1012,6 +1071,7 @@
       <div class="detail-block"><h5>评论预览</h5><pre>${escapeHtml(comments)}</pre></div>
       <div class="detail-block"><h5>原帖正文详情</h5><pre>${escapeHtml(detailText)}</pre></div>
       <div class="meta-line">风险标签：${escapeHtml(risk)}</div>
+      ${renderQuickEditBlock(lead)}
       ${url ? `<div class="detail-link"><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">打开原帖链接</a></div>` : ""}
     `;
   }
@@ -1071,8 +1131,11 @@
     const rows = dom.leadBody.querySelectorAll("tr[data-id]");
     rows.forEach((row) => {
       row.addEventListener("click", () => {
-        state.selectedNoteId = row.getAttribute("data-id") || "";
-        renderLeads(state.leads);
+        const nextId = row.getAttribute("data-id") || "";
+        if (!nextId || nextId === state.selectedNoteId) return;
+        state.selectedNoteId = nextId;
+        rows.forEach((item) => item.classList.toggle("active", item === row));
+        renderDetail(getSelectedLead());
       });
     });
     renderDetail(getSelectedLead());
@@ -1423,6 +1486,46 @@
     renderPagination();
   }
 
+
+
+  async function saveLeadEdit(form) {
+    const noteId = String(form.getAttribute("data-note-id") || "").trim();
+    if (!noteId) throw new Error("note_id 缺失");
+    if (state.leadEditSaving) return;
+
+    const selected = getSelectedLead() || {};
+    const payloadFields = {};
+    const formData = new FormData(form);
+    const candidateFields = ["title", "position", "company", "location", "requirements", "summary"];
+    for (const key of candidateFields) {
+      const newValue = normalizeEditableText(formData.get(key));
+      const prevValue = normalizeEditableText(selected[key]);
+      if (newValue !== prevValue) {
+        payloadFields[key] = newValue;
+      }
+    }
+    if (!Object.keys(payloadFields).length) {
+      showToast("没有字段变化，无需保存", "info");
+      return;
+    }
+
+    const submitBtn = form.querySelector('[data-role="lead-edit-save"]');
+    state.leadEditSaving = true;
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      await postJson("/api/leads/update", {
+        note_id: noteId,
+        fields: payloadFields,
+      });
+      state.selectedNoteId = noteId;
+      await loadLeads();
+      showToast(`已保存 ${Object.keys(payloadFields).length} 个字段`, "success");
+    } finally {
+      state.leadEditSaving = false;
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  }
+
   async function loadRuntime() {
     const runtime = await fetchJson("/api/runtime");
     renderRuntime(runtime);
@@ -1752,6 +1855,19 @@
           }
         }, 260),
       );
+    }
+
+
+
+    if (dom.detailBox) {
+      dom.detailBox.addEventListener("submit", (event) => {
+        const form = event.target && event.target.closest ? event.target.closest("form.quick-edit-form") : null;
+        if (!form) return;
+        event.preventDefault();
+        saveLeadEdit(form).catch((err) => {
+          showToast(err instanceof Error ? err.message : String(err), "error");
+        });
+      });
     }
 
     if (dom.leadPrevBtn) {

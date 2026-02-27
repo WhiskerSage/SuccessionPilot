@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 @dataclass
@@ -22,7 +22,7 @@ class NoteRecord:
     publish_time_quality: str = "parsed"
     detail_text: str = ""
     comments_preview: str = ""
-    fetched_at: datetime = field(default_factory=datetime.utcnow)
+    fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -37,7 +37,7 @@ class SummaryRecord:
     confidence: float
     risk_flags: str
     url: str
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -47,7 +47,7 @@ class SendLogRecord:
     channel: str
     send_status: str
     send_response: str
-    sent_at: datetime = field(default_factory=datetime.utcnow)
+    sent_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass

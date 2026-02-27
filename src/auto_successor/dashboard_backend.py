@@ -10,7 +10,7 @@ import subprocess
 import sys
 import threading
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ from openpyxl import load_workbook
 import yaml
 
 from .config import ResumeConfig, load_settings
+from .excel_store import JOB_HEADERS, RAW_HEADERS, SUMMARY_HEADERS
 from .retry_queue import RetryQueue
 from .resume_loader import ResumeLoader
 from .text_utils import repair_mojibake
@@ -609,6 +610,108 @@ class DataBackend:
     def load_leads(self, limit: int = 200, q: str = "") -> list[dict[str, Any]]:
         merged = self._build_merged_leads(q=q, summary_only=False)
         return merged[: max(1, int(limit))]
+
+    def update_lead_fields(self, *, note_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+        target_note_id = str(note_id or "").strip()
+        if not target_note_id:
+            raise ValueError("missing note_id")
+        if not isinstance(fields, dict):
+            raise ValueError("fields must be an object")
+        if not self.excel_path.exists():
+            raise FileNotFoundError(f"excel not found: {self.excel_path}")
+
+        editable_keys = {"title", "company", "position", "location", "requirements", "summary", "detail_text"}
+        normalized: dict[str, str] = {}
+        for key in editable_keys:
+            if key in fields:
+                normalized[key] = self._normalize_edit_text(fields.get(key))
+        if not normalized:
+            raise ValueError("no editable fields provided")
+
+        wb = load_workbook(self.excel_path)
+        try:
+            ws_raw, raw_headers = self._ensure_sheet_with_headers(wb, "raw_notes", RAW_HEADERS)
+            ws_summary, summary_headers = self._ensure_sheet_with_headers(wb, "succession_summary", SUMMARY_HEADERS)
+            ws_jobs, job_headers = self._ensure_sheet_with_headers(wb, "jobs", JOB_HEADERS)
+
+            raw_row = self._find_row_index(ws_raw, raw_headers, key_column="note_id", key_value=target_note_id)
+            if raw_row <= 0:
+                raise ValueError(f"note not found in raw_notes: {target_note_id}")
+
+            now_iso = datetime.now().isoformat(timespec="seconds")
+            raw_values = self._row_snapshot(ws_raw, raw_headers, raw_row)
+
+            # raw_notes updates
+            if "title" in normalized:
+                self._set_cell(ws_raw, raw_headers, raw_row, "title", normalized["title"])
+            if "detail_text" in normalized:
+                self._set_cell(ws_raw, raw_headers, raw_row, "detail_text", normalized["detail_text"])
+            self._set_cell(ws_raw, raw_headers, raw_row, "updated_at", now_iso)
+
+            # jobs updates (create row when missing so manual fill can promote new leads to actionable jobs)
+            if any(key in normalized for key in ("company", "position", "location", "requirements", "title")):
+                jobs_row = self._find_row_index(ws_jobs, job_headers, key_column="PostID", key_value=target_note_id)
+                if jobs_row <= 0:
+                    jobs_row = self._append_row(ws_jobs)
+                    self._set_cell(ws_jobs, job_headers, jobs_row, "PostID", target_note_id)
+                    self._set_cell(ws_jobs, job_headers, jobs_row, "run_id", str(raw_values.get("run_id") or "manual"))
+                    self._set_cell(ws_jobs, job_headers, jobs_row, "publish_time", str(raw_values.get("publish_time") or now_iso))
+                    self._set_cell(ws_jobs, job_headers, jobs_row, "author", str(raw_values.get("author") or ""))
+                    self._set_cell(ws_jobs, job_headers, jobs_row, "Link", str(raw_values.get("url") or ""))
+                    self._set_cell(ws_jobs, job_headers, jobs_row, "source_title", str(raw_values.get("title") or ""))
+                    self._set_cell(ws_jobs, job_headers, jobs_row, "original_text", str(raw_values.get("detail_text") or ""))
+                    self._set_cell(ws_jobs, job_headers, jobs_row, "mode", "manual_edit")
+                if "company" in normalized:
+                    self._set_cell(ws_jobs, job_headers, jobs_row, "Company", normalized["company"])
+                if "position" in normalized:
+                    self._set_cell(ws_jobs, job_headers, jobs_row, "Position", normalized["position"])
+                if "location" in normalized:
+                    self._set_cell(ws_jobs, job_headers, jobs_row, "Location", normalized["location"])
+                if "requirements" in normalized:
+                    self._set_cell(ws_jobs, job_headers, jobs_row, "Requirements", normalized["requirements"])
+                if "title" in normalized:
+                    self._set_cell(ws_jobs, job_headers, jobs_row, "source_title", normalized["title"])
+
+            # succession_summary updates (create row when missing so summary page can render immediately)
+            if any(key in normalized for key in ("summary", "title")):
+                summary_row = self._find_row_index(
+                    ws_summary,
+                    summary_headers,
+                    key_column="note_id",
+                    key_value=target_note_id,
+                )
+                if summary_row <= 0:
+                    summary_row = self._append_row(ws_summary)
+                    publish_timestamp = self._to_int(raw_values.get("publish_timestamp"))
+                    self._set_cell(ws_summary, summary_headers, summary_row, "run_id", str(raw_values.get("run_id") or "manual"))
+                    self._set_cell(ws_summary, summary_headers, summary_row, "note_id", target_note_id)
+                    self._set_cell(ws_summary, summary_headers, summary_row, "keyword", str(raw_values.get("keyword") or ""))
+                    self._set_cell(ws_summary, summary_headers, summary_row, "publish_time", str(raw_values.get("publish_time") or now_iso))
+                    self._set_cell(ws_summary, summary_headers, summary_row, "publish_timestamp", publish_timestamp)
+                    self._set_cell(ws_summary, summary_headers, summary_row, "author", str(raw_values.get("author") or ""))
+                    self._set_cell(ws_summary, summary_headers, summary_row, "url", str(raw_values.get("url") or ""))
+                    self._set_cell(ws_summary, summary_headers, summary_row, "confidence", 0.0)
+                    self._set_cell(ws_summary, summary_headers, summary_row, "risk_flags", "manual_edit")
+                    self._set_cell(ws_summary, summary_headers, summary_row, "created_at", now_iso)
+                if "summary" in normalized:
+                    self._set_cell(ws_summary, summary_headers, summary_row, "summary", normalized["summary"])
+                if "title" in normalized:
+                    self._set_cell(ws_summary, summary_headers, summary_row, "title", normalized["title"])
+
+            wb.save(self.excel_path)
+        finally:
+            wb.close()
+
+        refreshed = self._build_merged_leads()
+        lead = next((item for item in refreshed if str(item.get("note_id") or "") == target_note_id), None)
+        return {
+            "ok": True,
+            "message": "线索字段已更新",
+            "note_id": target_note_id,
+            "updated_fields": sorted(normalized.keys()),
+            "updated_at": now_iso,
+            "lead": lead or {},
+        }
 
     def load_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         return self._load_runs(limit=limit)
@@ -1944,6 +2047,71 @@ class DataBackend:
         return rows
 
     @staticmethod
+    def _normalize_edit_text(value: Any) -> str:
+        text = str(value or "")
+        return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    @staticmethod
+    def _append_row(ws) -> int:
+        return max(2, ws.max_row + 1)
+
+    @staticmethod
+    def _header_map(ws) -> dict[str, int]:
+        max_col = max(1, ws.max_column)
+        mapping: dict[str, int] = {}
+        for col in range(1, max_col + 1):
+            header = str(ws.cell(row=1, column=col).value or "").strip()
+            if header:
+                mapping[header] = col
+        return mapping
+
+    def _ensure_sheet_with_headers(self, wb, sheet_name: str, expected_headers: list[str]):
+        if sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+        else:
+            ws = wb.create_sheet(sheet_name)
+        header_map = self._header_map(ws)
+        if not header_map:
+            for idx, key in enumerate(expected_headers, start=1):
+                ws.cell(row=1, column=idx, value=key)
+            return ws, {key: idx for idx, key in enumerate(expected_headers, start=1)}
+        for key in expected_headers:
+            if key in header_map:
+                continue
+            col = max(header_map.values(), default=0) + 1
+            ws.cell(row=1, column=col, value=key)
+            header_map[key] = col
+        return ws, header_map
+
+    @staticmethod
+    def _find_row_index(ws, headers: dict[str, int], *, key_column: str, key_value: str) -> int:
+        col = headers.get(key_column)
+        if not col:
+            return 0
+        target = str(key_value or "").strip()
+        if not target:
+            return 0
+        for row in range(2, ws.max_row + 1):
+            cell = ws.cell(row=row, column=col).value
+            if str(cell or "").strip() == target:
+                return row
+        return 0
+
+    @staticmethod
+    def _set_cell(ws, headers: dict[str, int], row: int, column_name: str, value: Any) -> None:
+        col = headers.get(column_name)
+        if not col:
+            return
+        ws.cell(row=row, column=col, value=value)
+
+    @staticmethod
+    def _row_snapshot(ws, headers: dict[str, int], row: int) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for key, col in headers.items():
+            out[key] = ws.cell(row=row, column=col).value
+        return out
+
+    @staticmethod
     def _resolve_status_key(like_count: int, comment_count: int, has_summary: bool, has_job: bool) -> str:
         score = like_count + comment_count * 2
         if has_job and score >= 20:
@@ -1986,6 +2154,8 @@ class DataBackend:
     def _to_epoch(value: Any) -> int:
         if isinstance(value, datetime):
             try:
+                if value.tzinfo is None:
+                    value = value.replace(tzinfo=timezone.utc)
                 return int(value.timestamp())
             except Exception:
                 return 0
@@ -1993,7 +2163,10 @@ class DataBackend:
         if not text:
             return 0
         try:
-            return int(datetime.fromisoformat(text).timestamp())
+            dt = datetime.fromisoformat(text)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp())
         except Exception:
             return 0
 
