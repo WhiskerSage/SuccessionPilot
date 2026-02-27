@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import base64
 import os
+import re
 import shutil
 import smtplib
 import subprocess
@@ -17,11 +18,15 @@ from openpyxl import load_workbook
 import yaml
 
 from .config import ResumeConfig, load_settings
+from .retry_queue import RetryQueue
 from .resume_loader import ResumeLoader
 from .text_utils import repair_mojibake
 
 
 class RuntimeManager:
+    _PROGRESS_RE = re.compile(r"\[\s*([#\-]{6,})\s*\]\s*(\d{1,3})%\s*\|\s*(.+)$")
+    _RUN_ID_RE = re.compile(r"\brun=([A-Za-z0-9._:-]+)")
+
     def __init__(self, workspace: Path, config_path: Path) -> None:
         self.workspace = workspace
         self.config_path = config_path
@@ -367,15 +372,44 @@ class RuntimeManager:
             return {"ok": False, "message": f"停止任务失败: {exc}", "runtime": self.status()}
         return {"ok": True, "message": "已请求停止当前任务", "runtime": self.status()}
 
+    @classmethod
+    def _extract_progress(cls, logs: list[Any]) -> dict[str, Any]:
+        if not isinstance(logs, list):
+            return {}
+        for raw in reversed(logs):
+            line = str(raw or "").strip()
+            if not line:
+                continue
+            match = cls._PROGRESS_RE.search(line)
+            if not match:
+                continue
+            try:
+                percent = max(0, min(100, int(match.group(2))))
+            except Exception:
+                percent = 0
+            message = str(match.group(3) or "").strip()
+            run_match = cls._RUN_ID_RE.search(line)
+            run_id = str(run_match.group(1) if run_match else "").strip()
+            return {
+                "percent": percent,
+                "message": message,
+                "run_id": run_id,
+                "raw_line": line,
+            }
+        return {}
+
     def _job_view(self) -> dict[str, Any]:
         with self._lock:
-            return dict(self._job_state)
+            out = dict(self._job_state)
+            logs = out.get("log_tail")
+            out["progress"] = self._extract_progress(logs if isinstance(logs, list) else [])
+            return out
 
     def _daemon_view(self) -> dict[str, Any]:
         with self._lock:
             proc = self._daemon_proc
             running = bool(proc and proc.poll() is None)
-            return {
+            out = {
                 "running": running,
                 "pid": proc.pid if running else None,
                 "started_at": self._daemon_started_at,
@@ -383,6 +417,8 @@ class RuntimeManager:
                 "command": list(self._daemon_cmd),
                 "log_tail": list(self._daemon_logs),
             }
+            out["progress"] = self._extract_progress(out["log_tail"])
+            return out
 
     def status(self) -> dict[str, Any]:
         return {"job": self._job_view(), "daemon": self._daemon_view(), "updated_at": self._now_iso()}
@@ -395,6 +431,7 @@ class DataBackend:
         self.runs_dir = self.data_dir / "runs"
         self.excel_path = self.data_dir / "output.xlsx"
         self.config_path = workspace / "config" / "config.yaml"
+        self.retry_queue_path = self._resolve_retry_queue_path()
         self.runtime = RuntimeManager(workspace=workspace, config_path=self.config_path)
         self._resume_loader: ResumeLoader | None = None
         self._resume_source_path = workspace / "config" / "resume.txt"
@@ -421,7 +458,13 @@ class DataBackend:
             "digest_interval_minutes": self._read_digest_interval(),
         }
 
-    def _build_merged_leads(self, q: str = "", summary_only: bool = False) -> list[dict[str, Any]]:
+    def _build_merged_leads(
+        self,
+        q: str = "",
+        summary_only: bool = False,
+        status_filter: str = "all",
+        dedupe_filter: str = "all",
+    ) -> list[dict[str, Any]]:
         rows = self._load_workbook_rows()
         raw = rows.get("raw_notes", [])
         summaries = rows.get("succession_summary", [])
@@ -446,6 +489,17 @@ class DataBackend:
                 publish_ts = self._to_epoch(item.get("publish_time"))
             publish_time_value = str(item.get("publish_time") or "")
             publish_time_display = self._format_time_from_epoch_or_iso(publish_ts, publish_time_value)
+            first_seen_at = str(item.get("first_seen_at") or item.get("fetched_at") or "").strip()
+            updated_at = str(item.get("updated_at") or item.get("fetched_at") or first_seen_at).strip()
+            first_seen_ts = self._to_epoch(first_seen_at)
+            updated_ts = self._to_epoch(updated_at)
+            dedupe_status = "updated" if first_seen_ts > 0 and updated_ts > first_seen_ts else "new"
+            status_key = self._resolve_status_key(
+                like_count=like_count,
+                comment_count=comment_count,
+                has_summary=bool(summary),
+                has_job=bool(job),
+            )
             status = self._resolve_status(
                 like_count=like_count,
                 comment_count=comment_count,
@@ -458,6 +512,7 @@ class DataBackend:
                     "note_id": note_id,
                     "publish_time": publish_time_value,
                     "publish_time_text": str(item.get("publish_time_text") or ""),
+                    "publish_time_quality": str(item.get("publish_time_quality") or ""),
                     "publish_timestamp": publish_ts,
                     "publish_time_display": publish_time_display,
                     "title": str(item.get("title") or ""),
@@ -475,6 +530,10 @@ class DataBackend:
                     "location": str(job.get("Location") or ""),
                     "requirements": str(job.get("Requirements") or ""),
                     "status": status,
+                    "status_key": status_key,
+                    "first_seen_at": first_seen_at,
+                    "updated_at": updated_at,
+                    "dedupe_status": dedupe_status,
                 }
             )
 
@@ -482,6 +541,14 @@ class DataBackend:
 
         if summary_only:
             merged = [row for row in merged if str(row.get("summary") or "").strip()]
+
+        status_key_filter = str(status_filter or "all").strip().lower() or "all"
+        if status_key_filter != "all":
+            merged = [row for row in merged if str(row.get("status_key") or "").strip().lower() == status_key_filter]
+
+        dedupe_key_filter = str(dedupe_filter or "all").strip().lower() or "all"
+        if dedupe_key_filter in {"new", "updated"}:
+            merged = [row for row in merged if str(row.get("dedupe_status") or "").strip().lower() == dedupe_key_filter]
 
         if q:
             key = q.strip().lower()
@@ -510,11 +577,18 @@ class DataBackend:
         page_size: int = 30,
         q: str = "",
         summary_only: bool = False,
+        status_filter: str = "all",
+        dedupe_filter: str = "all",
     ) -> dict[str, Any]:
         page = max(1, int(page))
         page_size = max(1, min(int(page_size), 200))
 
-        merged = self._build_merged_leads(q=q, summary_only=summary_only)
+        merged = self._build_merged_leads(
+            q=q,
+            summary_only=summary_only,
+            status_filter=status_filter,
+            dedupe_filter=dedupe_filter,
+        )
         total = len(merged)
         total_pages = max(1, (total + page_size - 1) // page_size)
         safe_page = min(page, total_pages)
@@ -541,6 +615,108 @@ class DataBackend:
 
     def load_runtime(self) -> dict[str, Any]:
         return self.runtime.status()
+
+    def load_run_detail(self, run_id: str) -> dict[str, Any]:
+        target = self._safe_run_id(run_id)
+        if not target:
+            raise ValueError("invalid run_id")
+        file = self.runs_dir / f"{target}.json"
+        if not file.exists():
+            raise FileNotFoundError(f"run not found: {target}")
+        payload = json.loads(file.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("invalid run snapshot payload")
+
+        stage_records = payload.get("stage_records") if isinstance(payload.get("stage_records"), list) else []
+        failed_stages = [
+            item
+            for item in stage_records
+            if isinstance(item, dict) and str(item.get("status") or "").strip().lower() == "failed"
+        ]
+        stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
+        fetch_fail_events = payload.get("fetch_fail_events") if isinstance(payload.get("fetch_fail_events"), list) else []
+        xhs_diagnosis = payload.get("xhs_diagnosis") if isinstance(payload.get("xhs_diagnosis"), dict) else {}
+        retry = payload.get("retry") if isinstance(payload.get("retry"), dict) else {}
+        stage_error_codes = stats.get("stage_error_codes") if isinstance(stats.get("stage_error_codes"), dict) else {}
+        llm_error_codes = stats.get("llm_error_codes") if isinstance(stats.get("llm_error_codes"), dict) else {}
+
+        return {
+            "run_id": str(payload.get("run_id") or target),
+            "recorded_at": str(payload.get("recorded_at") or ""),
+            "mode": str(payload.get("mode") or stats.get("mode") or ""),
+            "notification_mode": str(payload.get("notification_mode") or stats.get("notification_mode") or ""),
+            "stats": stats,
+            "stage_records": stage_records,
+            "failed_stages": failed_stages,
+            "fetch_fail_events": fetch_fail_events,
+            "xhs_diagnosis": xhs_diagnosis,
+            "retry": retry,
+            "stage_error_codes": stage_error_codes,
+            "llm_error_codes": llm_error_codes,
+        }
+
+    def load_retry_queue_view(
+        self,
+        *,
+        status: str = "all",
+        queue_type: str = "all",
+        limit: int = 120,
+    ) -> dict[str, Any]:
+        queue = self._load_retry_queue()
+        items = queue.list_items(status=status, queue_type=queue_type, limit=limit)
+        snapshot = queue.snapshot()
+        return {
+            "items": [
+                {
+                    "id": str(item.get("id") or ""),
+                    "queue_type": str(item.get("queue_type") or ""),
+                    "action": str(item.get("action") or ""),
+                    "run_id": str(item.get("run_id") or ""),
+                    "attempt": self._to_int(item.get("attempt")),
+                    "max_attempts": self._to_int(item.get("max_attempts")),
+                    "status": str(item.get("status") or ""),
+                    "created_at": str(item.get("created_at") or ""),
+                    "updated_at": str(item.get("updated_at") or ""),
+                    "next_run_at": str(item.get("next_run_at") or ""),
+                    "last_error": str(item.get("last_error") or ""),
+                    "last_result": str(item.get("last_result") or ""),
+                    "dedupe_key": str(item.get("dedupe_key") or ""),
+                }
+                for item in items
+            ],
+            "summary": snapshot,
+        }
+
+    def retry_queue_requeue(self, item_id: str) -> dict[str, Any]:
+        queue = self._load_retry_queue()
+        item = queue.requeue(item_id)
+        if item is None:
+            raise ValueError("requeue failed: item missing or running")
+        return {"ok": True, "item": item, "summary": queue.snapshot()}
+
+    def retry_queue_drop(self, item_id: str) -> dict[str, Any]:
+        queue = self._load_retry_queue()
+        item = queue.drop(item_id, reason="dropped_by_user")
+        if item is None:
+            raise ValueError("drop failed: item missing")
+        return {"ok": True, "item": item, "summary": queue.snapshot()}
+
+    def retry_queue_kick(
+        self,
+        *,
+        queue_type: str = "all",
+        limit: int = 120,
+    ) -> dict[str, Any]:
+        queue = self._load_retry_queue()
+        items = queue.list_items(status="pending", queue_type=queue_type, limit=limit)
+        kicked = 0
+        for item in items:
+            item_id = str(item.get("id") or "").strip()
+            if not item_id:
+                continue
+            if queue.kick(item_id) is not None:
+                kicked += 1
+        return {"ok": True, "kicked": kicked, "summary": queue.snapshot()}
 
     def load_resume_view(self) -> dict[str, Any]:
         loader = self._get_resume_loader()
@@ -1360,6 +1536,29 @@ class DataBackend:
         except Exception as exc:
             return False, 0, str(exc)
 
+    def _resolve_retry_queue_path(self) -> Path:
+        default_path = self.data_dir / "retry_queue.json"
+        try:
+            settings = load_settings(str(self.config_path))
+            candidate = Path(str(settings.storage.retry_queue_path or "").strip() or str(default_path))
+        except Exception:
+            candidate = default_path
+        if not candidate.is_absolute():
+            candidate = self.workspace / candidate
+        return candidate
+
+    def _load_retry_queue(self) -> RetryQueue:
+        return RetryQueue(path=str(self.retry_queue_path))
+
+    @staticmethod
+    def _safe_run_id(run_id: str) -> str:
+        text = str(run_id or "").strip()
+        if not text:
+            return ""
+        if not re.fullmatch(r"[A-Za-z0-9._:-]+", text):
+            return ""
+        return text
+
     def _resolve_xhs_script_path(self, args: Any) -> Path:
         values: list[str] = []
         if isinstance(args, list):
@@ -1575,15 +1774,31 @@ class DataBackend:
         return rows
 
     @staticmethod
-    def _resolve_status(like_count: int, comment_count: int, has_summary: bool, has_job: bool) -> str:
+    def _resolve_status_key(like_count: int, comment_count: int, has_summary: bool, has_job: bool) -> str:
         score = like_count + comment_count * 2
         if has_job and score >= 20:
-            return "高优先级"
+            return "high_priority"
         if has_job:
-            return "可推进"
+            return "actionable"
         if has_summary:
-            return "待复核"
-        return "新线索"
+            return "pending_review"
+        return "new_lead"
+
+    @classmethod
+    def _resolve_status(cls, like_count: int, comment_count: int, has_summary: bool, has_job: bool) -> str:
+        key = cls._resolve_status_key(
+            like_count=like_count,
+            comment_count=comment_count,
+            has_summary=has_summary,
+            has_job=has_job,
+        )
+        labels = {
+            "high_priority": "高优先级",
+            "actionable": "可推进",
+            "pending_review": "待复核",
+            "new_lead": "新线索",
+        }
+        return labels.get(key, "新线索")
 
     @staticmethod
     def _to_int(value: Any) -> int:

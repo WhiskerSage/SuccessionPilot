@@ -439,6 +439,11 @@ body[data-skin="graphite-office"] {
   margin-bottom: 8px;
 }
 
+.table-panel .head-row {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .head-row h3 {
   margin: 0;
   font-size: 16px;
@@ -492,6 +497,41 @@ body[data-skin="graphite-office"] {
   background: #fff;
   color: var(--text);
   padding: 5px 8px;
+}
+
+.lead-filters-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.mini-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: #fff;
+  padding: 6px 8px;
+  color: var(--sub);
+  font-size: 12px;
+}
+
+.mini-field span {
+  white-space: nowrap;
+}
+
+.mini-field select {
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  padding: 0;
 }
 
 table {
@@ -608,6 +648,11 @@ tbody tr.active { background: var(--accent-soft); }
   border-radius: var(--radius);
   background: #f8fbff;
   padding: 9px 10px;
+}
+
+.run-item.active {
+  border-color: #8db4dc;
+  background: var(--accent-soft);
 }
 
 .run-head {
@@ -1022,6 +1067,70 @@ tbody tr.active { background: var(--accent-soft); }
   color: var(--text);
 }
 
+.muted {
+  margin: 0;
+  color: var(--sub);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.runtime-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 10px;
+}
+
+.runtime-progress-track {
+  flex: 1;
+  height: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--panel-soft);
+  overflow: hidden;
+}
+
+.runtime-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 220ms ease;
+}
+
+.runtime-progress-text {
+  min-width: 160px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--sub);
+}
+
+.run-detail-box {
+  margin-top: 10px;
+  border-top: 1px dashed var(--line);
+  padding-top: 10px;
+}
+
+.retry-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.retry-table-wrap {
+  max-height: 320px;
+}
+
+.retry-actions {
+  white-space: nowrap;
+}
+
+.retry-actions .btn {
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
 body[data-skin="graphite-office"] .side-card,
 body[data-skin="graphite-office"] .search,
 body[data-skin="graphite-office"] .btn.ghost,
@@ -1040,6 +1149,8 @@ body[data-skin="graphite-office"] .run-chip,
 body[data-skin="graphite-office"] .run-code,
 body[data-skin="graphite-office"] .badge,
 body[data-skin="graphite-office"] .pager-size select,
+body[data-skin="graphite-office"] .mini-field,
+body[data-skin="graphite-office"] .runtime-progress-track,
 body[data-skin="graphite-office"] .wizard-check-list,
 body[data-skin="graphite-office"] .wizard-step-tag {
   background: #202a36;
@@ -1067,6 +1178,11 @@ body[data-skin="graphite-office"] tbody tr:hover {
 
 body[data-skin="graphite-office"] tbody tr.active {
   background: #314457;
+}
+
+body[data-skin="graphite-office"] .run-item.active {
+  border-color: #56708a;
+  background: #2b3c4d;
 }
 
 body[data-skin="graphite-office"] .chip {

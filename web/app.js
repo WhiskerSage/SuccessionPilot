@@ -9,9 +9,20 @@
     search: "",
     view: startView || "overview",
     runItems: [],
+    selectedRunId: "",
+    runDetail: null,
     runtime: null,
     config: null,
     prevJobRunning: false,
+    leadFilters: {
+      status: "all",
+      dedupe: "all",
+    },
+    retryQueueFilters: {
+      status: "all",
+      queueType: "all",
+    },
+    retryQueueData: null,
     pagination: {
       page: 1,
       pageSize: 30,
@@ -101,6 +112,18 @@
     resumeTextArea: document.getElementById("resumeTextArea"),
     resumeChars: document.getElementById("resumeChars"),
     resumeSourceExists: document.getElementById("resumeSourceExists"),
+    leadStatusFilter: document.getElementById("leadStatusFilter"),
+    leadDedupeFilter: document.getElementById("leadDedupeFilter"),
+    runtimeProgressWrap: document.getElementById("runtimeProgressWrap"),
+    runtimeProgressBar: document.getElementById("runtimeProgressBar"),
+    runtimeProgressText: document.getElementById("runtimeProgressText"),
+    runDetailBox: document.getElementById("runDetailBox"),
+    retryQueueStatusFilter: document.getElementById("retryQueueStatusFilter"),
+    retryQueueTypeFilter: document.getElementById("retryQueueTypeFilter"),
+    retryQueueRefreshBtn: document.getElementById("retryQueueRefreshBtn"),
+    retryQueueReplayBtn: document.getElementById("retryQueueReplayBtn"),
+    retryQueueBody: document.getElementById("retryQueueBody"),
+    retryQueueSummary: document.getElementById("retryQueueSummary"),
   };
 
   let selectedResumeFile = null;
@@ -294,6 +317,138 @@
     return isSummaryView() ? DEFAULT_DETAIL_SUMMARY : DEFAULT_DETAIL_LEADS;
   }
 
+  function refreshDynamicDomRefs() {
+    dom.leadStatusFilter = document.getElementById("leadStatusFilter");
+    dom.leadDedupeFilter = document.getElementById("leadDedupeFilter");
+    dom.runtimeProgressWrap = document.getElementById("runtimeProgressWrap");
+    dom.runtimeProgressBar = document.getElementById("runtimeProgressBar");
+    dom.runtimeProgressText = document.getElementById("runtimeProgressText");
+    dom.runDetailBox = document.getElementById("runDetailBox");
+    dom.retryQueueStatusFilter = document.getElementById("retryQueueStatusFilter");
+    dom.retryQueueTypeFilter = document.getElementById("retryQueueTypeFilter");
+    dom.retryQueueRefreshBtn = document.getElementById("retryQueueRefreshBtn");
+    dom.retryQueueReplayBtn = document.getElementById("retryQueueReplayBtn");
+    dom.retryQueueBody = document.getElementById("retryQueueBody");
+    dom.retryQueueSummary = document.getElementById("retryQueueSummary");
+  }
+
+  function ensureEnhancedUi() {
+    const tableHead = document.querySelector(".table-panel .head-row");
+    if (tableHead && !document.getElementById("leadFiltersRow")) {
+      const row = document.createElement("div");
+      row.id = "leadFiltersRow";
+      row.className = "lead-filters-row";
+      row.innerHTML = `
+        <label class="mini-field">
+          <span>状态</span>
+          <select id="leadStatusFilter">
+            <option value="all">全部</option>
+            <option value="high_priority">高优先级</option>
+            <option value="actionable">可推进</option>
+            <option value="pending_review">待复核</option>
+            <option value="new_lead">新线索</option>
+          </select>
+        </label>
+        <label class="mini-field">
+          <span>去重状态</span>
+          <select id="leadDedupeFilter">
+            <option value="all">全部</option>
+            <option value="new">新增</option>
+            <option value="updated">已更新</option>
+          </select>
+        </label>
+      `;
+      tableHead.appendChild(row);
+    }
+
+    const runtimeLog = dom.runtimeLog;
+    const runtimeCard = runtimeLog ? runtimeLog.closest(".ops-card") : null;
+    if (runtimeCard && !document.getElementById("runtimeProgressWrap")) {
+      const wrap = document.createElement("div");
+      wrap.id = "runtimeProgressWrap";
+      wrap.className = "runtime-progress hidden";
+      wrap.innerHTML = `
+        <div class="runtime-progress-track"><div id="runtimeProgressBar" class="runtime-progress-bar"></div></div>
+        <div id="runtimeProgressText" class="runtime-progress-text">-</div>
+      `;
+      const meta = runtimeCard.querySelector(".runtime-meta");
+      if (meta && meta.nextSibling) {
+        runtimeCard.insertBefore(wrap, meta.nextSibling);
+      } else {
+        runtimeCard.appendChild(wrap);
+      }
+    }
+
+    const runsBox = document.querySelector(".runs-box");
+    if (runsBox && !document.getElementById("runDetailBox")) {
+      const detail = document.createElement("div");
+      detail.id = "runDetailBox";
+      detail.className = "run-detail-box";
+      detail.innerHTML = "<p class='muted'>点击一条运行记录后显示详细阶段、错误和诊断信息。</p>";
+      runsBox.appendChild(detail);
+    }
+
+    const opsGrid = document.querySelector("#controlSection .ops-grid");
+    if (opsGrid && !document.getElementById("retryQueueCard")) {
+      const card = document.createElement("article");
+      card.id = "retryQueueCard";
+      card.className = "ops-card span-2";
+      card.innerHTML = `
+        <div class="head-row">
+          <h4>失败重试队列</h4>
+          <span id="retryQueueSummary" class="count">-</span>
+        </div>
+        <div class="retry-toolbar">
+          <label class="mini-field">
+            <span>状态</span>
+            <select id="retryQueueStatusFilter">
+              <option value="all">全部</option>
+              <option value="pending">待执行</option>
+              <option value="running">执行中</option>
+              <option value="done">已完成</option>
+              <option value="dropped">已丢弃</option>
+            </select>
+          </label>
+          <label class="mini-field">
+            <span>类型</span>
+            <select id="retryQueueTypeFilter">
+              <option value="all">全部</option>
+              <option value="fetch">抓取</option>
+              <option value="llm_timeout">LLM超时</option>
+              <option value="email">邮件</option>
+            </select>
+          </label>
+          <button id="retryQueueRefreshBtn" class="btn ghost" type="button">刷新队列</button>
+          <button id="retryQueueReplayBtn" class="btn ghost" type="button">触发待执行重试</button>
+        </div>
+        <div class="table-wrap retry-table-wrap">
+          <table class="retry-table">
+            <thead>
+              <tr>
+                <th>类型/动作</th>
+                <th>状态</th>
+                <th>尝试</th>
+                <th>最近错误</th>
+                <th>更新时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="retryQueueBody">
+              <tr><td colspan="6" class="table-tip">暂无队列数据</td></tr>
+            </tbody>
+          </table>
+        </div>
+      `;
+      opsGrid.appendChild(card);
+    }
+
+    refreshDynamicDomRefs();
+    if (dom.leadStatusFilter) dom.leadStatusFilter.value = state.leadFilters.status;
+    if (dom.leadDedupeFilter) dom.leadDedupeFilter.value = state.leadFilters.dedupe;
+    if (dom.retryQueueStatusFilter) dom.retryQueueStatusFilter.value = state.retryQueueFilters.status;
+    if (dom.retryQueueTypeFilter) dom.retryQueueTypeFilter.value = state.retryQueueFilters.queueType;
+  }
+
   function compactOneLine(value, fallback = "-", maxLen = 120) {
     const text = String(value ?? "")
       .replace(/\s+/g, " ")
@@ -348,7 +503,14 @@
     if (!dom.runList) return;
     if (!state.runItems.length) {
       dom.runList.innerHTML = "<li>暂无运行记录</li>";
+      state.selectedRunId = "";
+      if (dom.runDetailBox) {
+        dom.runDetailBox.innerHTML = "<p class='muted'>暂无运行详情。</p>";
+      }
       return;
+    }
+    if (!state.selectedRunId || !state.runItems.some((item) => item && item.run_id === state.selectedRunId)) {
+      state.selectedRunId = String(state.runItems[0].run_id || "");
     }
     const normalizeSlowStages = (value) => {
       if (!Array.isArray(value)) return [];
@@ -372,6 +534,8 @@
     };
     dom.runList.innerHTML = state.runItems
       .map((item) => {
+        const runIdRaw = String(item.run_id || "");
+        const active = runIdRaw === state.selectedRunId ? "active" : "";
         const runId = toText(item.run_id);
         const t = fmtTime(item.recorded_at);
         const fetched = fmtInt(item.fetched);
@@ -397,7 +561,7 @@
           : '<span class="run-code empty">无</span>';
         const remainErrors = errorCodes.length > 4 ? `<span class="run-code">+${errorCodes.length - 4}</span>` : "";
         return `
-          <li class="run-item">
+          <li class="run-item ${active}" data-run-id="${escapeHtml(runIdRaw)}">
             <div class="run-head">
               <strong>${escapeHtml(runId)}</strong>
               <span>${escapeHtml(t)}</span>
@@ -416,6 +580,92 @@
         `;
       })
       .join("");
+    const runRows = dom.runList.querySelectorAll("li[data-run-id]");
+    runRows.forEach((row) => {
+      row.addEventListener("click", () => {
+        const runId = String(row.getAttribute("data-run-id") || "").trim();
+        if (!runId) return;
+        state.selectedRunId = runId;
+        renderRuns(state.runItems);
+        loadRunDetail(runId).catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (dom.runDetailBox) {
+            dom.runDetailBox.innerHTML = `<p class="table-tip error">${escapeHtml(msg)}</p>`;
+          }
+        });
+      });
+    });
+  }
+
+  function renderRunDetail(detail) {
+    if (!dom.runDetailBox) return;
+    state.runDetail = detail || null;
+    if (!detail || typeof detail !== "object") {
+      dom.runDetailBox.innerHTML = "<p class='muted'>暂无运行详情。</p>";
+      return;
+    }
+
+    const failedStages = Array.isArray(detail.failed_stages) ? detail.failed_stages : [];
+    const fetchFails = Array.isArray(detail.fetch_fail_events) ? detail.fetch_fail_events : [];
+    const retry = detail.retry && typeof detail.retry === "object" ? detail.retry : {};
+    const xhsDiagnosis = detail.xhs_diagnosis && typeof detail.xhs_diagnosis === "object" ? detail.xhs_diagnosis : {};
+    const stageErrorCodes = detail.stage_error_codes && typeof detail.stage_error_codes === "object" ? detail.stage_error_codes : {};
+    const llmErrorCodes = detail.llm_error_codes && typeof detail.llm_error_codes === "object" ? detail.llm_error_codes : {};
+
+    const listCodes = (obj) => {
+      const entries = Object.entries(obj || {}).filter(([, v]) => toInt(v, 0) > 0);
+      if (!entries.length) return "无";
+      return entries
+        .slice(0, 8)
+        .map(([k, v]) => `${k}: ${fmtInt(v)}`)
+        .join(" | ");
+    };
+    const failedStageHtml = failedStages.length
+      ? `<ul class="detail-list">${failedStages
+          .slice(0, 8)
+          .map((s) => `<li>${escapeHtml(toText(s.name, "unknown"))} · ${escapeHtml(toText(s.error_code, "failed"))}</li>`)
+          .join("")}</ul>`
+      : "<p class='muted'>无失败阶段</p>";
+
+    const fetchFailHtml = fetchFails.length
+      ? `<ul class="detail-list">${fetchFails
+          .slice(0, 8)
+          .map((s) => `<li>${escapeHtml(toText(s.stage, "-"))}: ${escapeHtml(toText(s.error, "-"))}</li>`)
+          .join("")}</ul>`
+      : "<p class='muted'>无抓取失败事件</p>";
+
+    const retryPending = retry.pending && typeof retry.pending === "object" ? retry.pending : {};
+    const retryRunning = retry.running && typeof retry.running === "object" ? retry.running : {};
+    const retryStats = retry.stats && typeof retry.stats === "object" ? retry.stats : {};
+
+    dom.runDetailBox.innerHTML = `
+      <div class="meta-line">Run: <span class="mono">${escapeHtml(toText(detail.run_id))}</span> · ${escapeHtml(fmtTime(detail.recorded_at))}</div>
+      <div class="detail-grid">
+        <div class="detail-item"><span>失败阶段</span><strong>${fmtInt(failedStages.length)}</strong></div>
+        <div class="detail-item"><span>抓取失败</span><strong>${fmtInt(fetchFails.length)}</strong></div>
+        <div class="detail-item"><span>重试待执行</span><strong>${fmtInt(Object.values(retryPending).reduce((a, b) => a + toInt(b, 0), 0))}</strong></div>
+        <div class="detail-item"><span>重试执行中</span><strong>${fmtInt(Object.values(retryRunning).reduce((a, b) => a + toInt(b, 0), 0))}</strong></div>
+      </div>
+      <div class="detail-block"><h5>阶段失败详情</h5>${failedStageHtml}</div>
+      <div class="detail-block"><h5>抓取失败事件</h5>${fetchFailHtml}</div>
+      <div class="detail-block"><h5>阶段错误码</h5><pre>${escapeHtml(listCodes(stageErrorCodes))}</pre></div>
+      <div class="detail-block"><h5>LLM错误码</h5><pre>${escapeHtml(listCodes(llmErrorCodes))}</pre></div>
+      <div class="detail-block"><h5>XHS诊断</h5><pre>${escapeHtml(JSON.stringify(xhsDiagnosis, null, 2) || "{}")}</pre></div>
+      <div class="detail-block"><h5>重试统计</h5><pre>${escapeHtml(JSON.stringify({ pending: retryPending, running: retryRunning, stats: retryStats }, null, 2))}</pre></div>
+    `;
+  }
+
+  async function loadRunDetail(runId) {
+    const id = String(runId || "").trim();
+    if (!id) {
+      renderRunDetail(null);
+      return;
+    }
+    if (dom.runDetailBox) {
+      dom.runDetailBox.innerHTML = "<p class='muted'>正在加载运行详情...</p>";
+    }
+    const detail = await fetchJson(`/api/runs/${encodeURIComponent(id)}`);
+    renderRunDetail(detail || null);
   }
 
   function renderPagination() {
@@ -463,6 +713,9 @@
     const comments = compactText(lead.comments_preview, 1600) || "暂无评论预览";
     const detailText = compactText(lead.detail_text, 2600) || "暂无正文详情";
     const risk = compactText(lead.risk_flags, 360) || "无";
+    const firstSeen = fmtTime(lead.first_seen_at);
+    const updatedAt = fmtTime(lead.updated_at);
+    const dedupeStatus = String(lead.dedupe_status || "new") === "updated" ? "已更新" : "新增";
     const url = String(lead.url || "").trim();
 
     if (isSummaryView()) {
@@ -470,6 +723,7 @@
       dom.detailBox.innerHTML = `
         <h4>${escapeHtml(summaryTitle)}</h4>
         <div class="meta-line">发布时间：${escapeHtml(publish)} | 作者：${escapeHtml(author)} | ID：<span class="mono">${escapeHtml(toText(lead.note_id))}</span></div>
+        <div class="meta-line">首次发现：${escapeHtml(firstSeen)} | 最近更新：${escapeHtml(updatedAt)} | 去重状态：${escapeHtml(dedupeStatus)}</div>
         <div class="detail-grid">
           <div class="detail-item"><span>公司</span><strong>${escapeHtml(company)}</strong></div>
           <div class="detail-item"><span>岗位</span><strong>${escapeHtml(position)}</strong></div>
@@ -486,6 +740,7 @@
     dom.detailBox.innerHTML = `
       <h4>${escapeHtml(title)}</h4>
       <div class="meta-line">作者：${escapeHtml(author)} | 发布时间：${escapeHtml(publish)} | ID：<span class="mono">${escapeHtml(toText(lead.note_id))}</span></div>
+      <div class="meta-line">首次发现：${escapeHtml(firstSeen)} | 最近更新：${escapeHtml(updatedAt)} | 去重状态：${escapeHtml(dedupeStatus)}</div>
       <div class="detail-grid">
         <div class="detail-item"><span>公司</span><strong>${escapeHtml(company)}</strong></div>
         <div class="detail-item"><span>岗位</span><strong>${escapeHtml(position)}</strong></div>
@@ -526,10 +781,11 @@
         if (isSummaryView()) {
           const requirementLine = compactOneLine(lead.requirements, "岗位要求待补充", 90);
           const summaryLine = compactOneLine(lead.summary, "暂无摘要", 130);
+          const dedupeText = String(lead.dedupe_status || "new") === "updated" ? "已更新" : "新增";
           return `
             <tr class="${active}" data-id="${escapeHtml(lead.note_id)}">
               <td>${escapeHtml(publish)}</td>
-              <td><div class="title-cell">${escapeHtml(jobLine)}</div><div class="sub-cell">${escapeHtml(toText(lead.location))}</div></td>
+              <td><div class="title-cell">${escapeHtml(jobLine)}</div><div class="sub-cell">${escapeHtml(toText(lead.location))} · ${escapeHtml(dedupeText)}</div></td>
               <td>${escapeHtml(requirementLine)}</td>
               <td>${escapeHtml(summaryLine)}</td>
             </tr>
@@ -539,10 +795,11 @@
         const location = toText(lead.location);
         const interact = `赞 ${fmtInt(lead.like_count)} / 评 ${fmtInt(lead.comment_count)}`;
         const badge = statusBadge(lead.status, lead.like_count, lead.comment_count);
+        const updateLine = `更新 ${fmtTime(lead.updated_at)} · ${String(lead.dedupe_status || "new") === "updated" ? "已更新" : "新增"}`;
         return `
           <tr class="${active}" data-id="${escapeHtml(lead.note_id)}">
             <td>${escapeHtml(publish)}</td>
-            <td><div class="title-cell">${escapeHtml(jobLine)}</div><div class="sub-cell">${escapeHtml(toText(lead.title))}</div></td>
+            <td><div class="title-cell">${escapeHtml(jobLine)}</div><div class="sub-cell">${escapeHtml(toText(lead.title))}</div><div class="sub-cell">${escapeHtml(updateLine)}</div></td>
             <td>${escapeHtml(location)}</td>
             <td>${escapeHtml(interact)}</td>
             <td>${badge}</td>
@@ -571,6 +828,22 @@
     dom.leadBody.innerHTML = `<tr><td colspan="${tableColumnCount()}" class="table-tip error">${escapeHtml(message)}</td></tr>`;
   }
 
+  function extractProgressFromLogs(logs) {
+    if (!Array.isArray(logs)) return null;
+    const re = /\[\s*[#\-]{6,}\s*\]\s*(\d{1,3})%\s*\|\s*(.+)$/;
+    for (let i = logs.length - 1; i >= 0; i -= 1) {
+      const line = String(logs[i] || "").trim();
+      if (!line) continue;
+      const match = line.match(re);
+      if (!match) continue;
+      return {
+        percent: Math.max(0, Math.min(100, toInt(match[1], 0))),
+        message: String(match[2] || "").trim(),
+      };
+    }
+    return null;
+  }
+
   function renderRuntime(runtime) {
     state.runtime = runtime || {};
     const daemon = (runtime && runtime.daemon) || {};
@@ -593,6 +866,20 @@
       logs = daemon.log_tail;
     }
     if (dom.runtimeLog) dom.runtimeLog.textContent = logs.length ? logs.join("\n") : "暂无运行输出";
+
+    const progress = (job && job.progress && typeof job.progress === "object" ? job.progress : null) || extractProgressFromLogs(logs);
+    if (dom.runtimeProgressWrap && dom.runtimeProgressBar && dom.runtimeProgressText) {
+      if (progress && typeof progress.percent === "number") {
+        const pct = Math.max(0, Math.min(100, toInt(progress.percent, 0)));
+        dom.runtimeProgressWrap.classList.remove("hidden");
+        dom.runtimeProgressBar.style.width = `${pct}%`;
+        dom.runtimeProgressText.textContent = `${pct}% · ${toText(progress.message, "处理中")}`;
+      } else {
+        dom.runtimeProgressWrap.classList.add("hidden");
+        dom.runtimeProgressBar.style.width = "0%";
+        dom.runtimeProgressText.textContent = "-";
+      }
+    }
 
     if (dom.runOnceBtn) dom.runOnceBtn.disabled = jobRunning;
     if (dom.sendLatestBtn) dom.sendLatestBtn.disabled = jobRunning;
@@ -831,6 +1118,9 @@
     const [summary, runsResp] = await Promise.all([fetchJson("/api/summary"), fetchJson("/api/runs?limit=10")]);
     renderSummary(summary || {});
     renderRuns((runsResp && runsResp.items) || []);
+    if (state.selectedRunId) {
+      await loadRunDetail(state.selectedRunId).catch(() => {});
+    }
   }
 
   async function loadLeads() {
@@ -840,6 +1130,8 @@
     query.set("limit", String(state.pagination.pageSize));
     query.set("page", String(state.pagination.page));
     query.set("view", state.view === "summary" ? "summary" : "all");
+    query.set("status", String(state.leadFilters.status || "all"));
+    query.set("dedupe", String(state.leadFilters.dedupe || "all"));
     if (q) query.set("q", q);
 
     const resp = await fetchJson(`/api/leads?${query.toString()}`);
@@ -958,7 +1250,104 @@
     if (dom.leadPageSize) dom.leadPageSize.value = String(state.pagination.pageSize);
     renderWorkspaceLayout();
     if (dom.detailBox) dom.detailBox.innerHTML = defaultDetailHtml();
+    ensureEnhancedUi();
     renderPagination();
+  }
+
+  function renderRetryQueue(data) {
+    state.retryQueueData = data || null;
+    if (!dom.retryQueueBody) return;
+    const summary = (data && data.summary) || {};
+    const pending = (summary && summary.pending) || {};
+    const running = (summary && summary.running) || {};
+    const stats = (summary && summary.stats) || {};
+
+    if (dom.retryQueueSummary) {
+      dom.retryQueueSummary.textContent = `待执行 ${fmtInt(pending.fetch || 0)}/${fmtInt(pending.llm_timeout || 0)}/${fmtInt(pending.email || 0)} · 运行中 ${fmtInt(running.fetch || 0)}/${fmtInt(running.llm_timeout || 0)}/${fmtInt(running.email || 0)} · 入队 ${fmtInt(stats.enqueued || 0)} / 成功 ${fmtInt(stats.succeeded || 0)} / 丢弃 ${fmtInt(stats.dropped || 0)}`;
+    }
+
+    const items = Array.isArray(data && data.items) ? data.items : [];
+    if (!items.length) {
+      dom.retryQueueBody.innerHTML = `<tr><td colspan="6" class="table-tip">暂无队列数据</td></tr>`;
+      return;
+    }
+
+    const statusLabel = (s) => {
+      const v = String(s || "").toLowerCase();
+      if (v === "pending") return "待执行";
+      if (v === "running") return "执行中";
+      if (v === "done") return "已完成";
+      if (v === "dropped") return "已丢弃";
+      return v || "-";
+    };
+
+    dom.retryQueueBody.innerHTML = items
+      .slice(0, 120)
+      .map((item) => {
+        const id = toText(item.id, "");
+        const qtype = toText(item.queue_type, "-");
+        const action = toText(item.action, "-");
+        const status = toText(item.status, "-");
+        const attempt = `${fmtInt(item.attempt)} / ${fmtInt(item.max_attempts || 0)}`;
+        const err = compactOneLine(item.last_error, "-", 120);
+        const updated = fmtTime(item.updated_at);
+        const disabled = String(status).toLowerCase() === "running" ? "disabled" : "";
+        return `
+          <tr data-retry-id="${escapeHtml(id)}">
+            <td><div class="title-cell">${escapeHtml(qtype)}</div><div class="sub-cell">${escapeHtml(action)}</div></td>
+            <td>${escapeHtml(statusLabel(status))}</td>
+            <td class="mono">${escapeHtml(attempt)}</td>
+            <td class="mono">${escapeHtml(err)}</td>
+            <td>${escapeHtml(updated)}</td>
+            <td class="retry-actions">
+              <button class="btn ghost retry-requeue" type="button" ${disabled}>重试</button>
+              <button class="btn ghost retry-drop" type="button" ${disabled}>丢弃</button>
+            </td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    dom.retryQueueBody.querySelectorAll("tr[data-retry-id]").forEach((row) => {
+      const id = String(row.getAttribute("data-retry-id") || "").trim();
+      if (!id) return;
+      const requeueBtn = row.querySelector(".retry-requeue");
+      const dropBtn = row.querySelector(".retry-drop");
+      if (requeueBtn) {
+        requeueBtn.addEventListener("click", async (ev) => {
+          ev.stopPropagation();
+          try {
+            await postJson("/api/retry-queue/requeue", { id });
+            showToast("已加入重试", "success");
+            await loadRetryQueue();
+          } catch (err) {
+            showToast(err instanceof Error ? err.message : String(err), "error");
+          }
+        });
+      }
+      if (dropBtn) {
+        dropBtn.addEventListener("click", async (ev) => {
+          ev.stopPropagation();
+          try {
+            await postJson("/api/retry-queue/drop", { id });
+            showToast("已丢弃", "success");
+            await loadRetryQueue();
+          } catch (err) {
+            showToast(err instanceof Error ? err.message : String(err), "error");
+          }
+        });
+      }
+    });
+  }
+
+  async function loadRetryQueue() {
+    if (!dom.retryQueueBody) return;
+    const query = new URLSearchParams();
+    query.set("status", String(state.retryQueueFilters.status || "all"));
+    query.set("queue_type", String(state.retryQueueFilters.queueType || "all"));
+    query.set("limit", "120");
+    const data = await fetchJson(`/api/retry-queue?${query.toString()}`);
+    renderRetryQueue(data || null);
   }
 
   async function refreshAll() {
@@ -968,7 +1357,7 @@
     setLoadingTable("正在加载实时数据...");
 
     try {
-      await Promise.all([loadSummaryAndRuns(), loadRuntime(), loadConfig(), loadResume()]);
+      await Promise.all([loadSummaryAndRuns(), loadRuntime(), loadConfig(), loadResume(), loadRetryQueue()]);
       if (isWorkspaceView(state.view)) {
         await loadLeads();
       } else {
@@ -1008,6 +1397,8 @@
   }
 
   function bindEvents() {
+    ensureEnhancedUi();
+
     if (dom.refreshBtn) {
       dom.refreshBtn.addEventListener("click", () => {
         refreshAll();
@@ -1055,6 +1446,56 @@
         state.pagination.pageSize = toInt(dom.leadPageSize.value, 30);
         state.pagination.page = 1;
         loadLeads().catch((err) => showToast(String(err), "error"));
+      });
+    }
+
+    if (dom.leadStatusFilter) {
+      dom.leadStatusFilter.addEventListener("change", () => {
+        state.leadFilters.status = String(dom.leadStatusFilter.value || "all");
+        state.pagination.page = 1;
+        if (isWorkspaceView(state.view)) {
+          loadLeads().catch((err) => showToast(String(err), "error"));
+        }
+      });
+    }
+    if (dom.leadDedupeFilter) {
+      dom.leadDedupeFilter.addEventListener("change", () => {
+        state.leadFilters.dedupe = String(dom.leadDedupeFilter.value || "all");
+        state.pagination.page = 1;
+        if (isWorkspaceView(state.view)) {
+          loadLeads().catch((err) => showToast(String(err), "error"));
+        }
+      });
+    }
+
+    if (dom.retryQueueStatusFilter) {
+      dom.retryQueueStatusFilter.addEventListener("change", () => {
+        state.retryQueueFilters.status = String(dom.retryQueueStatusFilter.value || "all");
+        loadRetryQueue().catch(() => {});
+      });
+    }
+    if (dom.retryQueueTypeFilter) {
+      dom.retryQueueTypeFilter.addEventListener("change", () => {
+        state.retryQueueFilters.queueType = String(dom.retryQueueTypeFilter.value || "all");
+        loadRetryQueue().catch(() => {});
+      });
+    }
+    if (dom.retryQueueRefreshBtn) {
+      dom.retryQueueRefreshBtn.addEventListener("click", () => {
+        loadRetryQueue().catch((err) => showToast(String(err), "error"));
+      });
+    }
+    if (dom.retryQueueReplayBtn) {
+      dom.retryQueueReplayBtn.addEventListener("click", async () => {
+        try {
+          const payload = { queue_type: String(state.retryQueueFilters.queueType || "all"), limit: 120 };
+          const resp = await postJson("/api/retry-queue/kick", payload);
+          const kicked = toInt(resp && resp.kicked, 0);
+          showToast(`已触发待执行重试 ${kicked} 条`, "success");
+          await loadRetryQueue();
+        } catch (err) {
+          showToast(err instanceof Error ? err.message : String(err), "error");
+        }
       });
     }
 
@@ -1215,6 +1656,7 @@
     setInterval(() => {
       loadSummaryAndRuns().catch(() => {});
       loadRuntime().catch(() => {});
+      loadRetryQueue().catch(() => {});
     }, 12000);
 
     setInterval(() => {

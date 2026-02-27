@@ -6,8 +6,10 @@ import tempfile
 import unittest
 
 import yaml
+from openpyxl import Workbook
 
 from auto_successor.dashboard_backend import DataBackend
+from auto_successor.excel_store import JOB_HEADERS, RAW_HEADERS, SUMMARY_HEADERS
 
 
 def _write_config(path: Path) -> None:
@@ -36,6 +38,36 @@ def _write_config(path: Path) -> None:
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+
+def _write_min_excel(path: Path, *, raw_rows: list[dict] | None = None, job_rows: list[dict] | None = None, summary_rows: list[dict] | None = None) -> None:
+    raw_rows = raw_rows or []
+    job_rows = job_rows or []
+    summary_rows = summary_rows or []
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "raw_notes"
+    ws.append(RAW_HEADERS)
+    for row in raw_rows:
+        ws.append([row.get(h, "") for h in RAW_HEADERS])
+
+    ws_summary = wb.create_sheet("succession_summary")
+    ws_summary.append(SUMMARY_HEADERS)
+    for row in summary_rows:
+        ws_summary.append([row.get(h, "") for h in SUMMARY_HEADERS])
+
+    ws_send = wb.create_sheet("send_log")
+    ws_send.append(["run_id", "note_id", "channel", "send_status", "send_response", "sent_at"])
+
+    ws_job = wb.create_sheet("jobs")
+    ws_job.append(JOB_HEADERS)
+    for row in job_rows:
+        ws_job.append([row.get(h, "") for h in JOB_HEADERS])
+
+    wb.save(path)
+    wb.close()
 
 
 def test_config_roundtrip(tmp_path: Path) -> None:
@@ -233,6 +265,133 @@ def test_load_xhs_accounts_view_lists_available_accounts(tmp_path: Path) -> None
     assert "default" in values
     assert "acc-a" in values
     assert "acc-b" in values
+
+
+def test_load_run_detail(tmp_path: Path) -> None:
+    workspace = tmp_path
+    _write_config(workspace / "config" / "config.yaml")
+    runs_dir = workspace / "data" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "run_id": "r-detail",
+        "recorded_at": "2026-02-27T10:00:00+00:00",
+        "mode": "auto",
+        "notification_mode": "digest",
+        "stats": {"fetched": 3, "llm_error_codes": {"read_timeout": 1}, "stage_error_codes": {"network": 2}},
+        "stage_records": [
+            {"name": "collector.search", "status": "success", "duration_ms": 1000},
+            {"name": "agent.extract", "status": "failed", "duration_ms": 800, "error_code": "network"},
+        ],
+        "fetch_fail_events": [{"stage": "collector.search_notes", "error": "timeout"}],
+        "xhs_diagnosis": {"failure_category": "mcp_unreachable"},
+        "retry": {"pending": {"fetch": 1, "llm_timeout": 0, "email": 0}},
+    }
+    (runs_dir / "r-detail.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    backend = DataBackend(workspace=workspace)
+    detail = backend.load_run_detail("r-detail")
+    assert detail["run_id"] == "r-detail"
+    assert len(detail["failed_stages"]) == 1
+    assert detail["llm_error_codes"]["read_timeout"] == 1
+    assert detail["stage_error_codes"]["network"] == 2
+
+
+def test_retry_queue_view_and_mutations(tmp_path: Path) -> None:
+    workspace = tmp_path
+    _write_config(workspace / "config" / "config.yaml")
+    backend = DataBackend(workspace=workspace)
+
+    queue = backend._load_retry_queue()
+    item = queue.enqueue(queue_type="fetch", action="search_notes", payload={"keyword": "继任"}, run_id="r-queue", error="x")
+    view = backend.load_retry_queue_view(status="all", queue_type="fetch", limit=20)
+    assert view["items"]
+    assert view["items"][0]["id"] == item["id"]
+
+    requeue_resp = backend.retry_queue_requeue(item["id"])
+    assert requeue_resp["ok"] is True
+    assert requeue_resp["item"]["status"] == "pending"
+
+    drop_resp = backend.retry_queue_drop(item["id"])
+    assert drop_resp["ok"] is True
+    assert drop_resp["item"]["status"] == "dropped"
+
+
+def test_load_leads_page_with_status_and_dedupe_filters(tmp_path: Path) -> None:
+    workspace = tmp_path
+    _write_config(workspace / "config" / "config.yaml")
+    excel_path = workspace / "data" / "output.xlsx"
+    _write_min_excel(
+        excel_path,
+        raw_rows=[
+            {
+                "run_id": "r1",
+                "keyword": "继任",
+                "note_id": "note_new",
+                "title": "title a",
+                "author": "author a",
+                "publish_time": "2026-02-27T11:00:00",
+                "publish_timestamp": 1772190000,
+                "publish_time_text": "10分钟前",
+                "publish_time_quality": "parsed",
+                "like_count": 1,
+                "comment_count": 0,
+                "share_count": 0,
+                "url": "u1",
+                "xsec_token": "x1",
+                "detail_text": "d1",
+                "comments_preview": "",
+                "fetched_at": "2026-02-27T11:05:00",
+                "first_seen_at": "2026-02-27T11:05:00",
+                "updated_at": "2026-02-27T11:05:00",
+                "raw_json": "{}",
+            },
+            {
+                "run_id": "r2",
+                "keyword": "继任",
+                "note_id": "note_updated",
+                "title": "title b",
+                "author": "author b",
+                "publish_time": "2026-02-27T12:00:00",
+                "publish_timestamp": 1772193600,
+                "publish_time_text": "5分钟前",
+                "publish_time_quality": "parsed",
+                "like_count": 30,
+                "comment_count": 2,
+                "share_count": 0,
+                "url": "u2",
+                "xsec_token": "x2",
+                "detail_text": "d2",
+                "comments_preview": "",
+                "fetched_at": "2026-02-27T12:10:00",
+                "first_seen_at": "2026-02-27T12:01:00",
+                "updated_at": "2026-02-27T12:10:00",
+                "raw_json": "{}",
+            },
+        ],
+        job_rows=[
+            {
+                "run_id": "r2",
+                "Company": "Acme",
+                "Position": "Intern",
+                "publish_time": "2026-02-27T12:00:00",
+                "Location": "Shanghai",
+                "Requirements": "SQL",
+                "PostID": "note_updated",
+            }
+        ],
+    )
+
+    backend = DataBackend(workspace=workspace)
+    all_rows = backend.load_leads_page(page=1, page_size=20, status_filter="all", dedupe_filter="all")
+    assert all_rows["total"] == 2
+
+    updated_rows = backend.load_leads_page(page=1, page_size=20, status_filter="all", dedupe_filter="updated")
+    assert updated_rows["total"] == 1
+    assert updated_rows["items"][0]["note_id"] == "note_updated"
+
+    high_rows = backend.load_leads_page(page=1, page_size=20, status_filter="high_priority", dedupe_filter="all")
+    assert high_rows["total"] == 1
+    assert high_rows["items"][0]["status_key"] == "high_priority"
 
 
 class TestDashboardBackendCore(unittest.TestCase):

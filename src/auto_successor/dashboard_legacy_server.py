@@ -41,6 +41,8 @@ def make_handler(backend: DataBackend, web_dir: Path):
                     page = int((query.get("page") or ["1"])[0])
                     q = (query.get("q") or [""])[0]
                     view = str((query.get("view") or ["all"])[0]).strip().lower()
+                    status = str((query.get("status") or ["all"])[0]).strip().lower()
+                    dedupe = str((query.get("dedupe") or ["all"])[0]).strip().lower()
                     summary_only = view == "summary"
                     self._json(
                         backend.load_leads_page(
@@ -48,6 +50,8 @@ def make_handler(backend: DataBackend, web_dir: Path):
                             page_size=limit,
                             q=q,
                             summary_only=summary_only,
+                            status_filter=status,
+                            dedupe_filter=dedupe,
                         )
                     )
                     return
@@ -55,6 +59,18 @@ def make_handler(backend: DataBackend, web_dir: Path):
                 if path == "/api/runs":
                     limit = int((query.get("limit") or ["20"])[0])
                     self._json({"items": backend.load_runs(limit=limit)})
+                    return
+
+                if path.startswith("/api/runs/"):
+                    run_id = path.removeprefix("/api/runs/")
+                    self._json(backend.load_run_detail(run_id=run_id))
+                    return
+
+                if path == "/api/retry-queue":
+                    status = str((query.get("status") or ["all"])[0]).strip().lower()
+                    queue_type = str((query.get("queue_type") or ["all"])[0]).strip().lower()
+                    limit = int((query.get("limit") or ["120"])[0])
+                    self._json(backend.load_retry_queue_view(status=status, queue_type=queue_type, limit=limit))
                     return
 
                 if path == "/api/runtime":
@@ -137,6 +153,19 @@ def make_handler(backend: DataBackend, web_dir: Path):
                     action = str(payload.get("action") or "").strip()
                     result = backend.run_action(action=action, payload=payload)
                     self._json(result)
+                    return
+                if path == "/api/retry-queue/requeue":
+                    item_id = str(payload.get("id") or "").strip()
+                    self._json(backend.retry_queue_requeue(item_id=item_id))
+                    return
+                if path == "/api/retry-queue/drop":
+                    item_id = str(payload.get("id") or "").strip()
+                    self._json(backend.retry_queue_drop(item_id=item_id))
+                    return
+                if path == "/api/retry-queue/kick":
+                    queue_type = str(payload.get("queue_type") or "all").strip().lower()
+                    limit = int(payload.get("limit") or 120)
+                    self._json(backend.retry_queue_kick(queue_type=queue_type, limit=limit))
                     return
                 self._json({"error": "not_found", "path": path}, status=HTTPStatus.NOT_FOUND)
             except Exception as exc:

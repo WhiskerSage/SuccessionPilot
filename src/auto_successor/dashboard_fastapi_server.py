@@ -56,7 +56,14 @@ def create_fastapi_app(backend: DataBackend, web_dir: Path):
         return backend.load_summary()
 
     @app.get("/api/leads")
-    async def api_leads(limit: int = 30, page: int = 1, q: str = "", view: str = "all") -> dict[str, Any]:
+    async def api_leads(
+        limit: int = 30,
+        page: int = 1,
+        q: str = "",
+        view: str = "all",
+        status: str = "all",
+        dedupe: str = "all",
+    ) -> dict[str, Any]:
         try:
             safe_limit = max(1, int(limit))
             safe_page = max(1, int(page))
@@ -68,6 +75,8 @@ def create_fastapi_app(backend: DataBackend, web_dir: Path):
             page_size=safe_limit,
             q=q,
             summary_only=summary_only,
+            status_filter=status,
+            dedupe_filter=dedupe,
         )
 
     @app.get("/api/runs")
@@ -77,6 +86,64 @@ def create_fastapi_app(backend: DataBackend, web_dir: Path):
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"invalid limit: {exc}") from exc
         return {"items": backend.load_runs(limit=safe_limit)}
+
+    @app.get("/api/runs/{run_id}")
+    async def api_run_detail(run_id: str) -> dict[str, Any]:
+        try:
+            return backend.load_run_detail(run_id=run_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.get("/api/retry-queue")
+    async def api_retry_queue(status: str = "all", queue_type: str = "all", limit: int = 120) -> dict[str, Any]:
+        try:
+            safe_limit = max(1, min(int(limit), 500))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"invalid limit: {exc}") from exc
+        return backend.load_retry_queue_view(status=status, queue_type=queue_type, limit=safe_limit)
+
+    @app.post("/api/retry-queue/requeue")
+    async def api_retry_requeue(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        item_id = str(payload.get("id") or "").strip()
+        if not item_id:
+            raise HTTPException(status_code=400, detail="missing id")
+        try:
+            return backend.retry_queue_requeue(item_id=item_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.post("/api/retry-queue/drop")
+    async def api_retry_drop(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        item_id = str(payload.get("id") or "").strip()
+        if not item_id:
+            raise HTTPException(status_code=400, detail="missing id")
+        try:
+            return backend.retry_queue_drop(item_id=item_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.post("/api/retry-queue/kick")
+    async def api_retry_kick(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        queue_type = str(payload.get("queue_type") or "all").strip().lower()
+        limit = payload.get("limit", 120)
+        try:
+            safe_limit = max(1, min(int(limit), 500))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"invalid limit: {exc}") from exc
+        try:
+            return backend.retry_queue_kick(queue_type=queue_type, limit=safe_limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     @app.get("/api/runtime")
     async def api_runtime() -> dict[str, Any]:

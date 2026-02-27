@@ -53,3 +53,28 @@ def test_retry_queue_dedupe_key(tmp_path: Path) -> None:
         dedupe_key="llm:r3:read_timeout",
     )
     assert first["id"] == second["id"]
+
+
+def test_retry_queue_list_requeue_drop(tmp_path: Path) -> None:
+    queue = RetryQueue(path=str(tmp_path / "retry.json"))
+    item = queue.enqueue(
+        queue_type="fetch",
+        action="search_notes",
+        payload={"keyword": "继任"},
+        run_id="r4",
+        error="init",
+    )
+    rows = queue.list_items(status="all", queue_type="fetch", limit=10)
+    assert rows
+    assert rows[0]["id"] == item["id"]
+
+    queue.mark_success(item["id"], result="ok")
+    requeued = queue.requeue(item["id"])
+    assert requeued is not None
+    assert requeued["status"] == "pending"
+    assert requeued["attempt"] == 0
+
+    dropped = queue.drop(item["id"], reason="manual_drop")
+    assert dropped is not None
+    assert dropped["status"] == "dropped"
+    assert dropped["last_error"] == "manual_drop"

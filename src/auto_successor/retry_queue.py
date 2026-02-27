@@ -208,6 +208,84 @@ class RetryQueue:
                 "total_items": len(self._items),
             }
 
+    def list_items(
+        self,
+        *,
+        status: str = "all",
+        queue_type: str = "all",
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        status_filter = str(status or "all").strip().lower() or "all"
+        type_filter = str(queue_type or "all").strip().lower() or "all"
+        size = max(1, int(limit))
+        with self._lock:
+            rows = []
+            for item in self._items:
+                qtype = str(item.get("queue_type") or "").strip().lower()
+                s = str(item.get("status") or "").strip().lower()
+                if type_filter != "all" and qtype != type_filter:
+                    continue
+                if status_filter != "all" and s != status_filter:
+                    continue
+                rows.append(deepcopy(item))
+
+            rows.sort(
+                key=lambda x: (
+                    _parse_iso(x.get("updated_at")) or _utc_now(),
+                    _parse_iso(x.get("created_at")) or _utc_now(),
+                ),
+                reverse=True,
+            )
+            return rows[:size]
+
+    def requeue(self, item_id: str) -> dict[str, Any] | None:
+        now = _utc_now()
+        with self._lock:
+            item = self._find_item_unlocked(item_id)
+            if item is None:
+                return None
+            if str(item.get("status") or "").strip().lower() == "running":
+                return None
+            item["status"] = "pending"
+            item["attempt"] = 0
+            item["next_run_at"] = _iso(now)
+            item["updated_at"] = _iso(now)
+            self._save_unlocked()
+            return deepcopy(item)
+
+    def kick(self, item_id: str) -> dict[str, Any] | None:
+        now = _utc_now()
+        with self._lock:
+            item = self._find_item_unlocked(item_id)
+            if item is None:
+                return None
+            status = str(item.get("status") or "").strip().lower()
+            if status == "running":
+                return None
+            # Bring it forward without resetting attempt counters.
+            item["status"] = "pending"
+            item["next_run_at"] = _iso(now)
+            item["updated_at"] = _iso(now)
+            self._save_unlocked()
+            return deepcopy(item)
+
+    def drop(self, item_id: str, *, reason: str = "") -> dict[str, Any] | None:
+        now = _utc_now()
+        with self._lock:
+            item = self._find_item_unlocked(item_id)
+            if item is None:
+                return None
+            previous = str(item.get("status") or "").strip().lower()
+            item["status"] = "dropped"
+            item["next_run_at"] = ""
+            item["updated_at"] = _iso(now)
+            if reason:
+                item["last_error"] = str(reason)[:800]
+            if previous != "dropped":
+                self._stats["dropped"] = int(self._stats.get("dropped", 0)) + 1
+            self._save_unlocked()
+            return deepcopy(item)
+
     def _find_item_unlocked(self, item_id: str) -> dict[str, Any] | None:
         target = str(item_id or "").strip()
         if not target:
@@ -274,4 +352,3 @@ class RetryQueue:
             "stats": self._stats,
         }
         self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-

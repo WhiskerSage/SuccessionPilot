@@ -18,6 +18,14 @@ $env:PYTHONIOENCODING = "utf-8"
 
 $ProjectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location -LiteralPath $ProjectRoot
+$ProjectSrc = Join-Path $ProjectRoot "src"
+if (Test-Path $ProjectSrc) {
+  if ($env:PYTHONPATH) {
+    $env:PYTHONPATH = "$ProjectSrc;$env:PYTHONPATH"
+  } else {
+    $env:PYTHONPATH = $ProjectSrc
+  }
+}
 
 $VenvPython = ".venv\Scripts\python.exe"
 if (Test-Path $VenvPython) {
