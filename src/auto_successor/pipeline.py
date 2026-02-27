@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 from datetime import datetime, timezone
@@ -907,22 +908,50 @@ class AutoSuccessorPipeline:
             return
         for item in items:
             item_id = str(item.get("id") or "")
+            queue_type = str(item.get("queue_type") or "").strip().lower()
+            action = str(item.get("action") or "").strip().lower()
+            attempt = max(0, int(item.get("attempt") or 0)) + 1
+            trace_id = f"rq-{item_id[:8]}-a{attempt}" if item_id else f"rq-unknown-a{attempt}"
+            started = time.perf_counter()
+            self.logger.info(
+                "重试执行开始 | trace=%s | queue=%s | action=%s | id=%s | attempt=%s/%s",
+                trace_id,
+                queue_type,
+                action,
+                item_id,
+                attempt,
+                int(item.get("max_attempts") or 0),
+            )
             try:
                 self._handle_retry_item(item)
-                self.retry_queue.mark_success(item_id, result="ok")
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                self.retry_queue.mark_success(item_id, result="ok", duration_ms=duration_ms, trace_id=trace_id)
                 self.logger.info(
-                    "重试成功 | queue=%s | action=%s | id=%s",
-                    item.get("queue_type"),
-                    item.get("action"),
+                    "重试成功 | trace=%s | queue=%s | action=%s | id=%s | duration_ms=%s",
+                    trace_id,
+                    queue_type,
+                    action,
                     item_id,
+                    duration_ms,
                 )
             except Exception as exc:
-                self.retry_queue.mark_retry(item_id, error=str(exc))
-                self.logger.warning(
-                    "重试失败，已回退重排 | queue=%s | action=%s | id=%s | error=%s",
-                    item.get("queue_type"),
-                    item.get("action"),
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                error_code = self._classify_retry_error_code(exc)
+                self.retry_queue.mark_retry(
                     item_id,
+                    error=str(exc),
+                    duration_ms=duration_ms,
+                    trace_id=trace_id,
+                    error_code=error_code,
+                )
+                self.logger.warning(
+                    "重试失败，已回退重排 | trace=%s | queue=%s | action=%s | id=%s | code=%s | duration_ms=%s | error=%s",
+                    trace_id,
+                    queue_type,
+                    action,
+                    item_id,
+                    error_code,
+                    duration_ms,
                     exc,
                 )
 
@@ -1003,6 +1032,14 @@ class AutoSuccessorPipeline:
             raise ValueError("missing email body")
         channels = payload.get("channels") if isinstance(payload.get("channels"), list) else ["email"]
         attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
+        idempotency_key = str(payload.get("idempotency_key") or item.get("idempotency_key") or "").strip()
+        if not idempotency_key:
+            idempotency_key = self._build_email_idempotency_key(subject=subject, body=text, channels=channels)
+
+        if self.retry_queue.has_completed_idempotency(queue_type="email", idempotency_key=idempotency_key):
+            self.logger.info("重试邮件幂等跳过 | key=%s | action=%s", idempotency_key[:48], action)
+            return
+
         logs = self.router.dispatch_digest(
             run_id=f"retry:{item.get('id')}",
             subject=subject,
@@ -1029,6 +1066,7 @@ class AutoSuccessorPipeline:
         error: str,
         payload: dict[str, Any] | None = None,
         dedupe_key: str = "",
+        idempotency_key: str = "",
     ) -> None:
         if not self._retry_enabled:
             return
@@ -1040,6 +1078,7 @@ class AutoSuccessorPipeline:
                 run_id=run_id,
                 error=error,
                 dedupe_key=dedupe_key,
+                idempotency_key=idempotency_key,
             )
             self.logger.info(
                 "重试入队 | queue=%s | action=%s | id=%s | run=%s",
@@ -1082,11 +1121,13 @@ class AutoSuccessorPipeline:
             }
         )
         attachments = dispatch_result.get("attachments")
+        idempotency_key = self._build_email_idempotency_key(subject=subject, body=body, channels=channels or ["email"])
         payload = {
             "subject": subject,
             "body": body,
             "channels": channels or ["email"],
             "attachments": [str(x) for x in (attachments or []) if str(x).strip()],
+            "idempotency_key": idempotency_key,
         }
         self._enqueue_retry(
             queue_type="email",
@@ -1095,6 +1136,7 @@ class AutoSuccessorPipeline:
             error="email_send_failed",
             payload=payload,
             dedupe_key=f"email-failed:{run_id}:{subject[:80]}",
+            idempotency_key=idempotency_key,
         )
 
     def _enqueue_llm_timeout_retries(self, *, run_id: str, llm_error_codes: dict[str, int]) -> None:
@@ -1113,7 +1155,34 @@ class AutoSuccessorPipeline:
                 error=f"llm_{key}:{num}",
                 payload={"error_code": key, "count": num, "scope": "retry_llm_timeout"},
                 dedupe_key=f"llm-timeout:{run_id}:{key}",
+                idempotency_key=f"llm-timeout:{run_id}:{key}",
             )
+
+    @staticmethod
+    def _classify_retry_error_code(exc: Exception) -> str:
+        text = str(exc or "").strip().lower()
+        if not text:
+            return "retry_failed"
+        if "timeout" in text:
+            return "timeout"
+        if "not found" in text or "404" in text:
+            return "not_found"
+        if "permission" in text or "denied" in text:
+            return "permission_denied"
+        if "auth" in text or "login" in text or "token" in text:
+            return "auth_failed"
+        if "network" in text or "connection" in text or "connect" in text:
+            return "network_error"
+        if "smtp" in text:
+            return "smtp_error"
+        return "retry_failed"
+
+    @staticmethod
+    def _build_email_idempotency_key(*, subject: str, body: str, channels: list[str]) -> str:
+        joined_channels = ",".join(sorted(str(x or "").strip().lower() for x in channels if str(x or "").strip()))
+        source = f"{subject.strip()}|{joined_channels}|{body.strip()}"
+        digest = hashlib.sha1(source.encode("utf-8", errors="ignore")).hexdigest()
+        return f"email:{digest}"
 
     def _probe_xhs_fetch_failure(self, *, run_id: str, fetch_fail_events: list[dict[str, str]]) -> dict[str, Any]:
         try:

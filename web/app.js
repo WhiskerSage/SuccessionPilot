@@ -124,6 +124,8 @@
     retryQueueReplayBtn: document.getElementById("retryQueueReplayBtn"),
     retryQueueBody: document.getElementById("retryQueueBody"),
     retryQueueSummary: document.getElementById("retryQueueSummary"),
+    retryDeadBody: document.getElementById("retryDeadBody"),
+    retryDeadSummary: document.getElementById("retryDeadSummary"),
   };
 
   let selectedResumeFile = null;
@@ -233,13 +235,42 @@
       const url = buildApiUrl(path, base);
       try {
         const resp = await fetch(url, options);
-        if (!resp.ok) {
-          const text = await resp.text();
-          throw new Error(`${resp.status} ${resp.statusText} ${text}`.trim());
-        }
         const contentType = resp.headers.get("Content-Type") || "";
-        if (contentType.includes("application/json")) {
-          return await resp.json();
+        const isJson = contentType.includes("application/json");
+        let payload = null;
+        let textBody = "";
+        if (isJson) {
+          try {
+            payload = await resp.json();
+          } catch (e) {
+            payload = null;
+          }
+        } else {
+          textBody = await resp.text();
+        }
+        if (!resp.ok) {
+          const errorObj = payload && typeof payload === "object" ? payload.error : null;
+          const code = errorObj && errorObj.code ? String(errorObj.code) : "";
+          const message = errorObj && errorObj.message ? String(errorObj.message) : (textBody || `${resp.status} ${resp.statusText}`);
+          const reason = errorObj && errorObj.reason ? String(errorObj.reason) : "";
+          const fix = errorObj && errorObj.fix_command ? String(errorObj.fix_command) : "";
+          const parts = [];
+          if (code) parts.push(`[${code}]`);
+          parts.push(message);
+          if (reason && reason !== message) parts.push(`原因: ${reason}`);
+          if (fix) parts.push(`修复: ${fix}`);
+          throw new Error(parts.join(" | ").trim());
+        }
+        if (isJson) {
+          if (payload && typeof payload === "object" && payload.ok === false && payload.error) {
+            const err = payload.error || {};
+            const code = err.code ? `[${err.code}] ` : "";
+            const message = String(err.message || "request failed");
+            const reason = err.reason ? ` | 原因: ${err.reason}` : "";
+            const fix = err.fix_command ? ` | 修复: ${err.fix_command}` : "";
+            throw new Error(`${code}${message}${reason}${fix}`.trim());
+          }
+          return payload || {};
         }
         return {};
       } catch (err) {
@@ -330,6 +361,8 @@
     dom.retryQueueReplayBtn = document.getElementById("retryQueueReplayBtn");
     dom.retryQueueBody = document.getElementById("retryQueueBody");
     dom.retryQueueSummary = document.getElementById("retryQueueSummary");
+    dom.retryDeadBody = document.getElementById("retryDeadBody");
+    dom.retryDeadSummary = document.getElementById("retryDeadSummary");
   }
 
   function ensureEnhancedUi() {
@@ -406,6 +439,7 @@
               <option value="pending">待执行</option>
               <option value="running">执行中</option>
               <option value="done">已完成</option>
+              <option value="dead_letter">死信</option>
               <option value="dropped">已丢弃</option>
             </select>
           </label>
@@ -428,15 +462,37 @@
                 <th>类型/动作</th>
                 <th>状态</th>
                 <th>尝试</th>
-                <th>最近错误</th>
+                <th>错误码/最近错误</th>
+                <th>耗时/Trace</th>
                 <th>更新时间</th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody id="retryQueueBody">
-              <tr><td colspan="6" class="table-tip">暂无队列数据</td></tr>
+              <tr><td colspan="7" class="table-tip">暂无队列数据</td></tr>
             </tbody>
           </table>
+        </div>
+        <div class="retry-dead-wrap">
+          <div class="head-row">
+            <h4>死信记录</h4>
+            <span id="retryDeadSummary" class="count">-</span>
+          </div>
+          <div class="table-wrap retry-dead-table-wrap">
+            <table class="retry-table retry-dead-table">
+              <thead>
+                <tr>
+                  <th>类型/动作</th>
+                  <th>尝试</th>
+                  <th>错误码/原因</th>
+                  <th>死信时间</th>
+                </tr>
+              </thead>
+              <tbody id="retryDeadBody">
+                <tr><td colspan="4" class="table-tip">暂无死信记录</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       `;
       opsGrid.appendChild(card);
@@ -1260,84 +1316,134 @@
     const summary = (data && data.summary) || {};
     const pending = (summary && summary.pending) || {};
     const running = (summary && summary.running) || {};
+    const deadLetter = (summary && summary.dead_letter) || {};
     const stats = (summary && summary.stats) || {};
+    const processingSuccess = toInt(stats.processing_success, 0);
+    const processingFailed = toInt(stats.processing_failed, 0);
+    const processedTotal = processingSuccess + processingFailed;
+    const avgDurationMs = processedTotal > 0 ? Math.round(toInt(stats.total_duration_ms, 0) / processedTotal) : 0;
 
     if (dom.retryQueueSummary) {
-      dom.retryQueueSummary.textContent = `待执行 ${fmtInt(pending.fetch || 0)}/${fmtInt(pending.llm_timeout || 0)}/${fmtInt(pending.email || 0)} · 运行中 ${fmtInt(running.fetch || 0)}/${fmtInt(running.llm_timeout || 0)}/${fmtInt(running.email || 0)} · 入队 ${fmtInt(stats.enqueued || 0)} / 成功 ${fmtInt(stats.succeeded || 0)} / 丢弃 ${fmtInt(stats.dropped || 0)}`;
+      dom.retryQueueSummary.textContent =
+        `待执行 ${fmtInt(pending.fetch || 0)}/${fmtInt(pending.llm_timeout || 0)}/${fmtInt(pending.email || 0)} · ` +
+        `运行中 ${fmtInt(running.fetch || 0)}/${fmtInt(running.llm_timeout || 0)}/${fmtInt(running.email || 0)} · ` +
+        `死信 ${fmtInt(deadLetter.fetch || 0)}/${fmtInt(deadLetter.llm_timeout || 0)}/${fmtInt(deadLetter.email || 0)} · ` +
+        `处理 成功 ${fmtInt(processingSuccess)} / 失败 ${fmtInt(processingFailed)} · ` +
+        `均时 ${fmtMs(avgDurationMs)}`;
+    }
+    if (dom.retryDeadSummary) {
+      dom.retryDeadSummary.textContent = `总计 ${fmtInt(summary.dead_letters_total || 0)}`;
     }
 
     const items = Array.isArray(data && data.items) ? data.items : [];
     if (!items.length) {
-      dom.retryQueueBody.innerHTML = `<tr><td colspan="6" class="table-tip">暂无队列数据</td></tr>`;
-      return;
+      dom.retryQueueBody.innerHTML = `<tr><td colspan="7" class="table-tip">暂无队列数据</td></tr>`;
+    } else {
+      const statusLabel = (s) => {
+        const v = String(s || "").toLowerCase();
+        if (v === "pending") return "待执行";
+        if (v === "running") return "执行中";
+        if (v === "done") return "已完成";
+        if (v === "dead_letter") return "死信";
+        if (v === "dropped") return "已丢弃";
+        return v || "-";
+      };
+
+      dom.retryQueueBody.innerHTML = items
+        .slice(0, 120)
+        .map((item) => {
+          const id = toText(item.id, "");
+          const qtype = toText(item.queue_type, "-");
+          const action = toText(item.action, "-");
+          const status = toText(item.status, "-");
+          const attempt = `${fmtInt(item.attempt)} / ${fmtInt(item.max_attempts || 0)}`;
+          const errCode = compactOneLine(item.last_error_code, "-", 32);
+          const err = compactOneLine(item.last_error, "-", 120);
+          const trace = compactOneLine(item.last_trace_id, "-", 42);
+          const duration = fmtMs(item.last_duration_ms);
+          const updated = fmtTime(item.updated_at);
+          const dedupeKey = compactOneLine(item.dedupe_key, "", 26);
+          const idemKey = compactOneLine(item.idempotency_key, "", 30);
+          const keyParts = [];
+          if (dedupeKey) keyParts.push(`dedupe:${dedupeKey}`);
+          if (idemKey) keyParts.push(`idem:${idemKey}`);
+          const keyLine = keyParts.length ? `<div class="sub-cell mono">${escapeHtml(keyParts.join(" | "))}</div>` : "";
+          const disabled = String(status).toLowerCase() === "running" ? "disabled" : "";
+          return `
+            <tr data-retry-id="${escapeHtml(id)}">
+              <td><div class="title-cell">${escapeHtml(qtype)}</div><div class="sub-cell">${escapeHtml(action)}</div>${keyLine}</td>
+              <td>${escapeHtml(statusLabel(status))}</td>
+              <td class="mono">${escapeHtml(attempt)}</td>
+              <td><div class="mono retry-code">${escapeHtml(errCode)}</div><div class="sub-cell">${escapeHtml(err)}</div></td>
+              <td><div class="mono">${escapeHtml(duration)}</div><div class="sub-cell mono">${escapeHtml(trace)}</div></td>
+              <td>${escapeHtml(updated)}</td>
+              <td class="retry-actions">
+                <button class="btn ghost retry-requeue" type="button" ${disabled}>重试</button>
+                <button class="btn ghost retry-drop" type="button" ${disabled}>丢弃</button>
+              </td>
+            </tr>
+          `;
+        })
+        .join("");
+
+      dom.retryQueueBody.querySelectorAll("tr[data-retry-id]").forEach((row) => {
+        const id = String(row.getAttribute("data-retry-id") || "").trim();
+        if (!id) return;
+        const requeueBtn = row.querySelector(".retry-requeue");
+        const dropBtn = row.querySelector(".retry-drop");
+        if (requeueBtn) {
+          requeueBtn.addEventListener("click", async (ev) => {
+            ev.stopPropagation();
+            try {
+              await postJson("/api/retry-queue/requeue", { id });
+              showToast("已加入重试", "success");
+              await loadRetryQueue();
+            } catch (err) {
+              showToast(err instanceof Error ? err.message : String(err), "error");
+            }
+          });
+        }
+        if (dropBtn) {
+          dropBtn.addEventListener("click", async (ev) => {
+            ev.stopPropagation();
+            try {
+              await postJson("/api/retry-queue/drop", { id });
+              showToast("已丢弃", "success");
+              await loadRetryQueue();
+            } catch (err) {
+              showToast(err instanceof Error ? err.message : String(err), "error");
+            }
+          });
+        }
+      });
     }
 
-    const statusLabel = (s) => {
-      const v = String(s || "").toLowerCase();
-      if (v === "pending") return "待执行";
-      if (v === "running") return "执行中";
-      if (v === "done") return "已完成";
-      if (v === "dropped") return "已丢弃";
-      return v || "-";
-    };
-
-    dom.retryQueueBody.innerHTML = items
-      .slice(0, 120)
-      .map((item) => {
-        const id = toText(item.id, "");
-        const qtype = toText(item.queue_type, "-");
-        const action = toText(item.action, "-");
-        const status = toText(item.status, "-");
-        const attempt = `${fmtInt(item.attempt)} / ${fmtInt(item.max_attempts || 0)}`;
-        const err = compactOneLine(item.last_error, "-", 120);
-        const updated = fmtTime(item.updated_at);
-        const disabled = String(status).toLowerCase() === "running" ? "disabled" : "";
-        return `
-          <tr data-retry-id="${escapeHtml(id)}">
-            <td><div class="title-cell">${escapeHtml(qtype)}</div><div class="sub-cell">${escapeHtml(action)}</div></td>
-            <td>${escapeHtml(statusLabel(status))}</td>
-            <td class="mono">${escapeHtml(attempt)}</td>
-            <td class="mono">${escapeHtml(err)}</td>
-            <td>${escapeHtml(updated)}</td>
-            <td class="retry-actions">
-              <button class="btn ghost retry-requeue" type="button" ${disabled}>重试</button>
-              <button class="btn ghost retry-drop" type="button" ${disabled}>丢弃</button>
-            </td>
-          </tr>
-        `;
-      })
-      .join("");
-
-    dom.retryQueueBody.querySelectorAll("tr[data-retry-id]").forEach((row) => {
-      const id = String(row.getAttribute("data-retry-id") || "").trim();
-      if (!id) return;
-      const requeueBtn = row.querySelector(".retry-requeue");
-      const dropBtn = row.querySelector(".retry-drop");
-      if (requeueBtn) {
-        requeueBtn.addEventListener("click", async (ev) => {
-          ev.stopPropagation();
-          try {
-            await postJson("/api/retry-queue/requeue", { id });
-            showToast("已加入重试", "success");
-            await loadRetryQueue();
-          } catch (err) {
-            showToast(err instanceof Error ? err.message : String(err), "error");
-          }
-        });
+    if (dom.retryDeadBody) {
+      const deadLetters = Array.isArray(data && data.dead_letters) ? data.dead_letters : [];
+      if (!deadLetters.length) {
+        dom.retryDeadBody.innerHTML = `<tr><td colspan="4" class="table-tip">暂无死信记录</td></tr>`;
+      } else {
+        dom.retryDeadBody.innerHTML = deadLetters
+          .slice(0, 100)
+          .map((item) => {
+            const qtype = toText(item.queue_type, "-");
+            const action = toText(item.action, "-");
+            const attempt = `${fmtInt(item.attempt)} / ${fmtInt(item.max_attempts || 0)}`;
+            const code = compactOneLine(item.error_code, "-", 32);
+            const reason = compactOneLine(item.reason, "-", 120);
+            const deadAt = fmtTime(item.dead_lettered_at);
+            return `
+              <tr>
+                <td><div class="title-cell">${escapeHtml(qtype)}</div><div class="sub-cell">${escapeHtml(action)}</div></td>
+                <td class="mono">${escapeHtml(attempt)}</td>
+                <td><div class="mono retry-code">${escapeHtml(code)}</div><div class="sub-cell">${escapeHtml(reason)}</div></td>
+                <td>${escapeHtml(deadAt)}</td>
+              </tr>
+            `;
+          })
+          .join("");
       }
-      if (dropBtn) {
-        dropBtn.addEventListener("click", async (ev) => {
-          ev.stopPropagation();
-          try {
-            await postJson("/api/retry-queue/drop", { id });
-            showToast("已丢弃", "success");
-            await loadRetryQueue();
-          } catch (err) {
-            showToast(err instanceof Error ? err.message : String(err), "error");
-          }
-        });
-      }
-    });
+    }
   }
 
   async function loadRetryQueue() {

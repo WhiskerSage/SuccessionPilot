@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .api_error import ApiError, error_payload, new_trace_id, status_to_code
 from .dashboard_backend import DataBackend
 
 FASTAPI_AVAILABLE = False
@@ -11,6 +12,7 @@ _IMPORT_ERROR: Exception | None = None
 try:
     from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
     from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import JSONResponse
     from fastapi.staticfiles import StaticFiles
     import uvicorn
 
@@ -44,6 +46,53 @@ def create_fastapi_app(backend: DataBackend, web_dir: Path):
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.exception_handler(ApiError)
+    async def api_error_handler(request: Request, exc: ApiError):  # type: ignore[unused-ignore]
+        return JSONResponse(status_code=exc.status_code, content=exc.to_payload())
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException):  # type: ignore[unused-ignore]
+        trace_id = new_trace_id("api")
+        detail = exc.detail
+        if isinstance(detail, dict):
+            inner = detail.get("error") if isinstance(detail.get("error"), dict) else detail
+            if isinstance(inner, dict):
+                code = str(inner.get("code") or status_to_code(exc.status_code)).strip().lower()
+                message = str(inner.get("message") or inner.get("detail") or "request failed").strip()
+                reason = str(inner.get("reason") or message).strip()
+                fix_command = str(inner.get("fix_command") or "").strip()
+                details = inner.get("details")
+                payload = error_payload(
+                    status_code=exc.status_code,
+                    code=code,
+                    message=message,
+                    reason=reason,
+                    fix_command=fix_command,
+                    details=details,
+                    trace_id=str(inner.get("trace_id") or trace_id),
+                )
+                return JSONResponse(status_code=exc.status_code, content=payload)
+        payload = error_payload(
+            status_code=exc.status_code,
+            code=status_to_code(exc.status_code),
+            message=str(detail or "request failed"),
+            reason=str(detail or "request failed"),
+            trace_id=trace_id,
+        )
+        return JSONResponse(status_code=exc.status_code, content=payload)
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception):  # type: ignore[unused-ignore]
+        trace_id = new_trace_id("api")
+        payload = error_payload(
+            status_code=500,
+            code="internal_error",
+            message="server error",
+            reason=str(exc)[:300],
+            trace_id=trace_id,
+        )
+        return JSONResponse(status_code=500, content=payload)
 
     @app.get("/api/health")
     async def api_health() -> dict[str, Any]:

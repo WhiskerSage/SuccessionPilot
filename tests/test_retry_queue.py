@@ -32,6 +32,12 @@ def test_retry_queue_retry_then_drop(tmp_path: Path) -> None:
     snap = queue.snapshot()
     assert snap["stats"]["retried"] >= 1
     assert snap["stats"]["dropped"] >= 1
+    assert snap["stats"]["dead_lettered"] >= 1
+    assert snap["dead_letter"]["email"] >= 1
+    rows = queue.list_items(status="all", queue_type="email", limit=10)
+    assert rows and rows[0]["status"] == "dead_letter"
+    dead_rows = queue.list_dead_letters(queue_type="email", limit=10)
+    assert dead_rows and dead_rows[0]["id"] == item["id"]
 
 
 def test_retry_queue_dedupe_key(tmp_path: Path) -> None:
@@ -53,6 +59,32 @@ def test_retry_queue_dedupe_key(tmp_path: Path) -> None:
         dedupe_key="llm:r3:read_timeout",
     )
     assert first["id"] == second["id"]
+
+
+def test_retry_queue_idempotency_done_skip_enqueue(tmp_path: Path) -> None:
+    queue = RetryQueue(path=str(tmp_path / "retry.json"))
+    first = queue.enqueue(
+        queue_type="email",
+        action="dispatch_digest",
+        payload={"subject": "s", "body": "b"},
+        run_id="r-idem",
+        error="",
+        idempotency_key="email:abc",
+    )
+    due = queue.pop_due(limit=1)
+    assert len(due) == 1
+    queue.mark_success(due[0]["id"], result="sent")
+    assert queue.has_completed_idempotency(queue_type="email", idempotency_key="email:abc") is True
+
+    second = queue.enqueue(
+        queue_type="email",
+        action="dispatch_digest",
+        payload={"subject": "s2", "body": "b2"},
+        run_id="r-idem2",
+        error="",
+        idempotency_key="email:abc",
+    )
+    assert second["id"] == first["id"]
 
 
 def test_retry_queue_list_requeue_drop(tmp_path: Path) -> None:

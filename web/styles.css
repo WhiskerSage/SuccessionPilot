@@ -1119,7 +1119,26 @@ tbody tr.active { background: var(--accent-soft); }
 }
 
 .retry-table-wrap {
-  max-height: 320px;
+  max-height: 340px;
+}
+
+.retry-table td {
+  vertical-align: top;
+}
+
+.retry-dead-wrap {
+  margin-top: 10px;
+}
+
+.retry-dead-table-wrap {
+  max-height: 220px;
+}
+
+.retry-code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
 }
 
 .retry-actions {

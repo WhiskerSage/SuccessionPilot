@@ -1,10 +1,16 @@
 ﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.3.14`
+- 项目版本：`0.3.15`
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
+
+### v0.3.15 更新要点
+- 失败重试队列升级为任务化执行：新增 `lease_until`、`last_error_code`、`last_duration_ms`、`last_trace_id`，并支持运行中超时任务自动回收。
+- 新增死信队列与幂等保障：达到最大重试自动进入 dead-letter；邮件/超时重试支持 `idempotency_key`，避免 at-least-once 下重复发送。
+- 可观测性增强：控制中心重试面板可直接查看错误码、耗时、Trace、死信记录与处理成功/失败统计。
+- API 统一错误模型：接口错误统一输出 `code/reason/fix_command/trace_id`，前端可直接展示可执行修复建议。
 
 ### v0.3.14 更新要点
 - Dashboard API 扩展：新增运行详情与重试队列接口（`GET /api/runs/{run_id}`、`GET/POST /api/retry-queue*`），支持页面查看失败原因并执行重试/丢弃/批量唤醒。
@@ -464,6 +470,8 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - 抓取失败（登录/搜索/详情）、LLM 超时、邮件失败会分别入队。
 - 队列持久化文件默认：`data/retry_queue.json`。
 - 重放在后台线程执行，不阻塞主流程抓取、入库和当前轮通知。
+- 重试超过最大次数会进入死信（dead-letter），可在控制中心查看并手动重试/丢弃。
+- 邮件与超时重试支持幂等键（`idempotency_key`），完成过的任务不会重复执行。
 
 当前项目 `config/config.example.yaml` 默认值。
 - `xhs.search_sort: time_descending`
@@ -726,6 +734,8 @@ node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 - `POST /api/setup/check`
 - `GET /api/runs` 关键字段：`stage_total_ms`、`stage_avg_ms`、`stage_failed_count`、`slow_stages`、`error_codes`
 - `GET /api/runs` 重试字段：`retry_pending`、`retry_running`、`retry_enqueued`、`retry_retried`、`retry_succeeded`、`retry_dropped`
+- `GET /api/retry-queue`：返回 `items`、`dead_letters` 与 `summary`（含 dead-letter 与处理耗时统计）
+- 错误响应统一格式：`{ ok: false, error: { code, message, reason, fix_command, trace_id } }`
 
 ## 常见问题
 ### 1. 无法登录小红书
@@ -819,6 +829,7 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
+| v0.3.15 | 2026-02-27 | 重试队列任务化升级（lease/error_code/duration/trace）；新增 dead-letter 与幂等键防重复发送；控制中心可视化死信与重试观测；API 错误统一为 `code/reason/fix_command/trace_id`。 |
 | v0.3.14 | 2026-02-27 | Dashboard 新增运行详情与重试队列 API（含重试/丢弃/批量唤醒）；控制中心联动支持状态/去重筛选与运行详情下钻；`start_dashboard.ps1` 注入项目 `src` 路径，修复旧安装包抢占导致的接口 404。 |
 | v0.3.13 | 2026-02-26 | 新增失败重试队列（抓取/LLM超时/邮件分队列）与后台重放；新增 XHS 多账号配置（`xhs.account`、`xhs.account_cookies_dir`）及控制中心账号选择；运行统计新增重试指标。 |
 | v0.3.12 | 2026-02-26 | 新增正文/评论链接噪声拦截：纯图片链接不再进入原文摘要；“文字+链接”保留文字并移除链接；补充对应单元测试。 |

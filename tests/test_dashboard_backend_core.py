@@ -306,6 +306,11 @@ def test_retry_queue_view_and_mutations(tmp_path: Path) -> None:
     view = backend.load_retry_queue_view(status="all", queue_type="fetch", limit=20)
     assert view["items"]
     assert view["items"][0]["id"] == item["id"]
+    assert "last_error_code" in view["items"][0]
+    assert "last_duration_ms" in view["items"][0]
+    assert "last_trace_id" in view["items"][0]
+    assert "idempotency_key" in view["items"][0]
+    assert isinstance(view.get("dead_letters"), list)
 
     requeue_resp = backend.retry_queue_requeue(item["id"])
     assert requeue_resp["ok"] is True
@@ -314,6 +319,10 @@ def test_retry_queue_view_and_mutations(tmp_path: Path) -> None:
     drop_resp = backend.retry_queue_drop(item["id"])
     assert drop_resp["ok"] is True
     assert drop_resp["item"]["status"] == "dropped"
+
+    view2 = backend.load_retry_queue_view(status="all", queue_type="fetch", limit=20)
+    assert view2["dead_letters"]
+    assert view2["dead_letters"][0]["id"] == item["id"]
 
 
 def test_load_leads_page_with_status_and_dedupe_filters(tmp_path: Path) -> None:

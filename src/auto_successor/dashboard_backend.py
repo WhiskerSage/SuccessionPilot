@@ -664,6 +664,7 @@ class DataBackend:
     ) -> dict[str, Any]:
         queue = self._load_retry_queue()
         items = queue.list_items(status=status, queue_type=queue_type, limit=limit)
+        dead_letters = queue.list_dead_letters(queue_type=queue_type, limit=min(200, max(20, int(limit))))
         snapshot = queue.snapshot()
         return {
             "items": [
@@ -679,10 +680,30 @@ class DataBackend:
                     "updated_at": str(item.get("updated_at") or ""),
                     "next_run_at": str(item.get("next_run_at") or ""),
                     "last_error": str(item.get("last_error") or ""),
+                    "last_error_code": str(item.get("last_error_code") or ""),
                     "last_result": str(item.get("last_result") or ""),
+                    "last_duration_ms": self._to_int(item.get("last_duration_ms")),
+                    "last_trace_id": str(item.get("last_trace_id") or ""),
                     "dedupe_key": str(item.get("dedupe_key") or ""),
+                    "idempotency_key": str(item.get("idempotency_key") or ""),
                 }
                 for item in items
+            ],
+            "dead_letters": [
+                {
+                    "id": str(item.get("id") or ""),
+                    "queue_type": str(item.get("queue_type") or ""),
+                    "action": str(item.get("action") or ""),
+                    "run_id": str(item.get("run_id") or ""),
+                    "attempt": self._to_int(item.get("attempt")),
+                    "max_attempts": self._to_int(item.get("max_attempts")),
+                    "dead_lettered_at": str(item.get("dead_lettered_at") or ""),
+                    "reason": str(item.get("reason") or ""),
+                    "error_code": str(item.get("error_code") or ""),
+                    "dedupe_key": str(item.get("dedupe_key") or ""),
+                    "idempotency_key": str(item.get("idempotency_key") or ""),
+                }
+                for item in dead_letters
             ],
             "summary": snapshot,
         }

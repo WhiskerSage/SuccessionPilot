@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .api_error import ApiError, error_payload, new_trace_id, status_to_code
 from .dashboard_backend import DataBackend
 
 
@@ -92,18 +93,15 @@ def make_handler(backend: DataBackend, web_dir: Path):
                     self._json(backend.run_setup_check(include_network=True, include_xhs_status=True))
                     return
 
-                self._json({"error": "not_found", "path": path}, status=HTTPStatus.NOT_FOUND)
+                self._api_error(status=HTTPStatus.NOT_FOUND, message=f"path not found: {path}", code="not_found")
             except Exception as exc:
-                self._json(
-                    {"error": "server_error", "message": str(exc)},
-                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
-                )
+                self._handle_exception(exc)
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
             path = parsed.path
             if not path.startswith("/api/"):
-                self._json({"error": "not_found", "path": path}, status=HTTPStatus.NOT_FOUND)
+                self._api_error(status=HTTPStatus.NOT_FOUND, message=f"path not found: {path}", code="not_found")
                 return
             try:
                 payload = self._read_json_body()
@@ -167,12 +165,9 @@ def make_handler(backend: DataBackend, web_dir: Path):
                     limit = int(payload.get("limit") or 120)
                     self._json(backend.retry_queue_kick(queue_type=queue_type, limit=limit))
                     return
-                self._json({"error": "not_found", "path": path}, status=HTTPStatus.NOT_FOUND)
+                self._api_error(status=HTTPStatus.NOT_FOUND, message=f"path not found: {path}", code="not_found")
             except Exception as exc:
-                self._json(
-                    {"error": "server_error", "message": str(exc)},
-                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
-                )
+                self._handle_exception(exc)
 
         def _read_json_body(self) -> dict[str, Any]:
             raw_len = self.headers.get("Content-Length", "0")
@@ -207,6 +202,55 @@ def make_handler(backend: DataBackend, web_dir: Path):
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept")
             self.end_headers()
+
+        def _api_error(
+            self,
+            *,
+            status: HTTPStatus,
+            message: str,
+            code: str = "",
+            reason: str = "",
+            fix_command: str = "",
+            details: Any = None,
+            trace_id: str = "",
+        ) -> None:
+            payload = error_payload(
+                status_code=int(status.value),
+                code=str(code or status_to_code(status.value)).strip().lower(),
+                message=str(message or "request failed"),
+                reason=str(reason or message or "request failed"),
+                fix_command=str(fix_command or ""),
+                details=details,
+                trace_id=str(trace_id or new_trace_id("api")),
+            )
+            self._json(payload, status=status)
+
+        def _handle_exception(self, exc: Exception) -> None:
+            if isinstance(exc, ApiError):
+                self._json(exc.to_payload(), status=HTTPStatus(int(exc.status_code)))
+                return
+            if isinstance(exc, FileNotFoundError):
+                self._api_error(
+                    status=HTTPStatus.NOT_FOUND,
+                    code="not_found",
+                    message=str(exc),
+                    reason=str(exc),
+                )
+                return
+            if isinstance(exc, ValueError):
+                self._api_error(
+                    status=HTTPStatus.BAD_REQUEST,
+                    code="invalid_request",
+                    message=str(exc) or "invalid request",
+                    reason=str(exc) or "invalid request",
+                )
+                return
+            self._api_error(
+                status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                code="internal_error",
+                message="server error",
+                reason=str(exc)[:300],
+            )
 
     return DashboardHandler
 
