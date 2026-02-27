@@ -87,7 +87,11 @@ class AutoSuccessorPipeline:
         orchestrator = RuntimeOrchestrator(runtime_name=self.settings.agent.runtime_name, logger=self.logger)
 
         if not self.lock.acquire():
-            self.logger.warning("跳过运行 | run=%s | 原因=检测到上一次运行锁未释放", run_id)
+            self.logger.warning(
+                "跳过运行 | run=%s | 原因=检测到上一次运行锁未释放 | lock=%s",
+                run_id,
+                self.lock.path,
+            )
             return {"skipped": True, "reason": "run_locked"}
 
         try:
@@ -654,7 +658,11 @@ class AutoSuccessorPipeline:
         mode = self._normalize_mode(self.settings.agent.mode or "auto")
 
         if not self.lock.acquire():
-            self.logger.warning("跳过发送 | run=%s | 原因=检测到上一次运行锁未释放", run_id)
+            self.logger.warning(
+                "跳过发送 | run=%s | 原因=检测到上一次运行锁未释放 | lock=%s",
+                run_id,
+                self.lock.path,
+            )
             return {"skipped": True, "reason": "run_locked"}
 
         try:
