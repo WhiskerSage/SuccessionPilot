@@ -429,6 +429,7 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - `keyword`：搜索关键词，建议固定为 `继任`
 - `max_results`：每轮最大抓取数量
 - `max_detail_fetch`：每轮详情抓取上限（当前建议 `18`）
+- 建议将 `max_detail_fetch` 调整到 `18`（或接近 `max_results`）；若该值过低，容易出现“帖子有正文但岗位要求/公司/岗位字段不完整”。
 - `login_timeout_seconds`：扫码登录超时
 - `command_timeout_seconds`：单次命令超时
 
