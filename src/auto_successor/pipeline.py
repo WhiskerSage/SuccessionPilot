@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,8 +14,9 @@ from .email_sender import EmailSender
 from .excel_store import ExcelStore, JOB_HEADERS
 from .llm_client import LLMClient
 from .llm_enricher import LLMEnricher
-from .models import JobRecord, SummaryRecord
+from .models import JobRecord, NoteRecord, SummaryRecord
 from .notification_router import NotificationChannel, NotificationRouter
+from .retry_queue import RetryQueue
 from .resume_loader import ResumeLoader
 from .run_journal import RunJournal
 from .run_lock import RunLock
@@ -42,6 +45,21 @@ class AutoSuccessorPipeline:
         self.llm_client = LLMClient(settings=settings, logger=logger)
         self.llm_enricher = LLMEnricher(llm_client=self.llm_client, settings=settings, logger=logger)
         self.resume_loader = ResumeLoader(settings.resume, logger)
+        self.retry_queue = RetryQueue(
+            path=settings.storage.retry_queue_path,
+            base_backoff_seconds=settings.retry.base_backoff_seconds,
+            max_backoff_seconds=settings.retry.max_backoff_seconds,
+            max_attempts_by_type={
+                "fetch": settings.retry.fetch_max_attempts,
+                "llm_timeout": settings.retry.llm_timeout_max_attempts,
+                "email": settings.retry.email_max_attempts,
+            },
+        )
+        self._retry_enabled = bool(settings.retry.enabled)
+        self._retry_worker_interval = max(5, int(settings.retry.worker_interval_seconds))
+        self._retry_batch_size = max(1, int(settings.retry.replay_batch_size))
+        self._retry_stop = threading.Event()
+        self._retry_worker: threading.Thread | None = None
 
         channels = [
             NotificationChannel(name="wechat_service", sender=WeChatServiceSender(settings, logger)),
@@ -56,6 +74,9 @@ class AutoSuccessorPipeline:
             llm_enricher=self.llm_enricher,
             logger=logger,
         )
+        if self._retry_enabled:
+            self._retry_worker = threading.Thread(target=self._retry_worker_loop, name="retry-worker", daemon=True)
+            self._retry_worker.start()
 
     def run_once(self, run_id: str, mode: str = "auto") -> dict:
         keyword = self.settings.xhs.keyword
@@ -79,22 +100,50 @@ class AutoSuccessorPipeline:
                 meta={"resume_source": self.settings.resume.source_txt_path},
             )
 
-            orchestrator.run_stage(
-                "collector.ensure_logged_in",
-                lambda: self.collector.ensure_logged_in(),
-                meta={"browser_path": self.settings.xhs.browser_path},
-            )
+            try:
+                orchestrator.run_stage(
+                    "collector.ensure_logged_in",
+                    lambda: self.collector.ensure_logged_in(),
+                    meta={"browser_path": self.settings.xhs.browser_path},
+                )
+            except Exception as exc:
+                self._enqueue_retry(
+                    queue_type="fetch",
+                    action="ensure_logged_in",
+                    run_id=run_id,
+                    error=str(exc),
+                    payload={
+                        "browser_path": self.settings.xhs.browser_path,
+                        "account": self.settings.xhs.account,
+                    },
+                    dedupe_key=f"ensure-login:{self.settings.xhs.account}",
+                )
             self._log_progress(run_id, 12, "登录态检查完成")
 
-            notes = orchestrator.run_stage(
-                "collector.search_notes",
-                lambda: self.collector.search_notes(
+            try:
+                notes = orchestrator.run_stage(
+                    "collector.search_notes",
+                    lambda: self.collector.search_notes(
+                        run_id=run_id,
+                        keyword=keyword,
+                        max_results=self.settings.xhs.max_results,
+                    ),
+                    meta={"keyword": keyword, "max_results": self.settings.xhs.max_results},
+                )
+            except Exception as exc:
+                notes = []
+                self._enqueue_retry(
+                    queue_type="fetch",
+                    action="search_notes",
                     run_id=run_id,
-                    keyword=keyword,
-                    max_results=self.settings.xhs.max_results,
-                ),
-                meta={"keyword": keyword, "max_results": self.settings.xhs.max_results},
-            )
+                    error=str(exc),
+                    payload={
+                        "keyword": keyword,
+                        "max_results": self.settings.xhs.max_results,
+                    },
+                    dedupe_key=f"search:{keyword}:{self.settings.xhs.max_results}",
+                )
+                self.logger.warning("搜索失败已入重试队列 | run=%s | error=%s", run_id, exc)
             notes = sorted(notes, key=lambda n: (n.publish_time, n.note_id), reverse=True)
             self._log_progress(run_id, 28, f"搜索完成，抓取到 {len(notes)} 条")
 
@@ -107,11 +156,27 @@ class AutoSuccessorPipeline:
             self._log_progress(run_id, 36, f"预过滤完成，候选新增 {len(pre_new_notes)} 条")
 
             initial_plan = self.planner.build_plan(mode=mode, fetched_count=len(notes), new_count=len(pre_new_notes))
-            orchestrator.run_stage(
-                "collector.enrich_note_details",
-                lambda: self.collector.enrich_note_details(pre_new_notes, max_notes=initial_plan.detail_fetch_limit),
-                meta={"max_detail_fetch": initial_plan.detail_fetch_limit},
-            )
+            try:
+                orchestrator.run_stage(
+                    "collector.enrich_note_details",
+                    lambda: self.collector.enrich_note_details(pre_new_notes, max_notes=initial_plan.detail_fetch_limit),
+                    meta={"max_detail_fetch": initial_plan.detail_fetch_limit},
+                )
+            except Exception as exc:
+                queued = 0
+                for note in pre_new_notes[: max(0, int(initial_plan.detail_fetch_limit))]:
+                    if not str(getattr(note, "xsec_token", "") or "").strip():
+                        continue
+                    self._enqueue_retry(
+                        queue_type="fetch",
+                        action="enrich_note_detail",
+                        run_id=run_id,
+                        error=str(exc),
+                        payload={"note_id": note.note_id, "xsec_token": note.xsec_token},
+                        dedupe_key=f"detail:{note.note_id}",
+                    )
+                    queued += 1
+                self.logger.warning("详情抓取失败已入队 | run=%s | queued=%s | error=%s", run_id, queued, exc)
             self._log_progress(run_id, 46, f"正文补全完成，详情抓取上限 {initial_plan.detail_fetch_limit}")
 
             new_notes = orchestrator.run_stage(
@@ -254,27 +319,48 @@ class AutoSuccessorPipeline:
 
             if notification_mode == "realtime":
                 if jobs:
-                    dispatch_result = orchestrator.run_stage(
-                        "agent.communication.batch_dispatch_realtime",
-                        lambda: self._dispatch_batch_with_compat(
+                    realtime_channels = list(self.settings.notification.realtime_channels)
+                    try:
+                        dispatch_result = orchestrator.run_stage(
+                            "agent.communication.batch_dispatch_realtime",
+                            lambda: self._dispatch_batch_with_compat(
+                                run_id=run_id,
+                                mode=mode,
+                                jobs=jobs,
+                                top_n=plan.top_n,
+                                resume_text=resume_text,
+                                channel_names=realtime_channels,
+                                attachments=[],
+                                digest_style=False,
+                            ),
+                            meta={
+                                "mode": mode,
+                                "channels": realtime_channels,
+                                "job_count": len(jobs),
+                            },
+                        )
+                    except Exception as exc:
+                        dispatch_result = self._build_retry_dispatch_fallback(
                             run_id=run_id,
                             mode=mode,
                             jobs=jobs,
-                            top_n=plan.top_n,
-                            resume_text=resume_text,
-                            channel_names=list(self.settings.notification.realtime_channels),
+                            channels=realtime_channels,
                             attachments=[],
-                            digest_style=False,
-                        ),
-                        meta={
-                            "mode": mode,
-                            "channels": list(self.settings.notification.realtime_channels),
-                            "job_count": len(jobs),
-                        },
-                    )
+                            reason=f"dispatch_realtime_failed: {exc}",
+                        )
+                        self._enqueue_retry(
+                            queue_type="email",
+                            action="dispatch_digest",
+                            run_id=run_id,
+                            error=str(exc),
+                            payload=dispatch_result,
+                            dedupe_key=f"email:realtime:{run_id}",
+                        )
+                        self.logger.warning("实时通知失败已入队 | run=%s | error=%s", run_id, exc)
                     send_logs = dispatch_result["logs"]
                     notify_note_ids = sorted({log.note_id for log in send_logs})
                     digest_subject = dispatch_result["subject"]
+                    self._enqueue_failed_email_dispatch(run_id=run_id, send_logs=send_logs, dispatch_result=dispatch_result)
                 self._log_progress(run_id, 94, f"实时通知完成，发送日志 {len(send_logs)} 条")
 
             elif notification_mode == "digest":
@@ -285,28 +371,48 @@ class AutoSuccessorPipeline:
                 if digest_due and (enough_new or allow_no_new) and jobs:
                     digest_attachments = self._collect_digest_attachments()
                     digest_channels = list(self.settings.notification.digest_channels)
-                    dispatch_result = orchestrator.run_stage(
-                        "agent.communication.batch_dispatch_digest",
-                        lambda: self._dispatch_batch_with_compat(
+                    try:
+                        dispatch_result = orchestrator.run_stage(
+                            "agent.communication.batch_dispatch_digest",
+                            lambda: self._dispatch_batch_with_compat(
+                                run_id=run_id,
+                                mode=mode,
+                                jobs=jobs,
+                                top_n=plan.top_n,
+                                resume_text=resume_text,
+                                channel_names=digest_channels,
+                                attachments=digest_attachments,
+                                digest_style=True,
+                            ),
+                            meta={
+                                "channels": digest_channels,
+                                "attachment_count": len(digest_attachments),
+                                "new_notes": len(new_notes),
+                                "target_notes": len(target_notes),
+                            },
+                        )
+                    except Exception as exc:
+                        dispatch_result = self._build_retry_dispatch_fallback(
                             run_id=run_id,
                             mode=mode,
                             jobs=jobs,
-                            top_n=plan.top_n,
-                            resume_text=resume_text,
-                            channel_names=digest_channels,
+                            channels=digest_channels,
                             attachments=digest_attachments,
-                            digest_style=True,
-                        ),
-                        meta={
-                            "channels": digest_channels,
-                            "attachment_count": len(digest_attachments),
-                            "new_notes": len(new_notes),
-                            "target_notes": len(target_notes),
-                        },
-                    )
+                            reason=f"dispatch_digest_failed: {exc}",
+                        )
+                        self._enqueue_retry(
+                            queue_type="email",
+                            action="dispatch_digest",
+                            run_id=run_id,
+                            error=str(exc),
+                            payload=dispatch_result,
+                            dedupe_key=f"email:digest:{run_id}",
+                        )
+                        self.logger.warning("摘要通知失败已入队 | run=%s | error=%s", run_id, exc)
                     send_logs = dispatch_result["logs"]
                     notify_note_ids = sorted({log.note_id for log in send_logs})
                     digest_subject = dispatch_result["subject"]
+                    self._enqueue_failed_email_dispatch(run_id=run_id, send_logs=send_logs, dispatch_result=dispatch_result)
                     digest_sent = any(
                         str(getattr(log, "send_status", "")).strip().lower() == "success"
                         for log in send_logs
@@ -342,6 +448,8 @@ class AutoSuccessorPipeline:
             llm_stage_calls = self.llm_enricher.stage_call_counts()
             llm_stage_fallbacks = self.llm_enricher.stage_fallback_counts()
             llm_fallback_total = sum(int(v) for v in llm_stage_fallbacks.values())
+            self._enqueue_llm_timeout_retries(run_id=run_id, llm_error_codes=llm_error_codes)
+            retry_snapshot = self.retry_queue.snapshot()
 
             stats = {
                 "runtime_name": self.settings.agent.runtime_name,
@@ -379,6 +487,12 @@ class AutoSuccessorPipeline:
                 "digest_due": digest_due,
                 "digest_sent": digest_sent,
                 "resume_chars": len(resume_text),
+                "retry_pending": retry_snapshot.get("pending", {}),
+                "retry_running": retry_snapshot.get("running", {}),
+                "retry_enqueued": int(retry_snapshot.get("stats", {}).get("enqueued", 0)),
+                "retry_retried": int(retry_snapshot.get("stats", {}).get("retried", 0)),
+                "retry_succeeded": int(retry_snapshot.get("stats", {}).get("succeeded", 0)),
+                "retry_dropped": int(retry_snapshot.get("stats", {}).get("dropped", 0)),
             }
             self.journal.write(
                 run_id,
@@ -410,6 +524,7 @@ class AutoSuccessorPipeline:
                         "details_count": len(parse_details),
                         "details": parse_details,
                     },
+                    "retry": retry_snapshot,
                     "stage_records": stage_records,
                 },
             )
@@ -483,18 +598,38 @@ class AutoSuccessorPipeline:
                 self.logger.info("手动发送完成 | run=%s | stats=%s", run_id, stats)
                 return stats
 
-            dispatch_result = self._dispatch_batch_with_compat(
-                run_id=run_id,
-                mode=mode,
-                jobs=jobs,
-                top_n=top_n,
-                resume_text=resume_text,
-                channel_names=digest_channels,
-                attachments=digest_attachments,
-                digest_style=True,
-            )
+            try:
+                dispatch_result = self._dispatch_batch_with_compat(
+                    run_id=run_id,
+                    mode=mode,
+                    jobs=jobs,
+                    top_n=top_n,
+                    resume_text=resume_text,
+                    channel_names=digest_channels,
+                    attachments=digest_attachments,
+                    digest_style=True,
+                )
+            except Exception as exc:
+                dispatch_result = self._build_retry_dispatch_fallback(
+                    run_id=run_id,
+                    mode=mode,
+                    jobs=jobs,
+                    channels=digest_channels,
+                    attachments=digest_attachments,
+                    reason=f"send_latest_failed: {exc}",
+                )
+                self._enqueue_retry(
+                    queue_type="email",
+                    action="dispatch_digest",
+                    run_id=run_id,
+                    error=str(exc),
+                    payload=dispatch_result,
+                    dedupe_key=f"email:send-latest:{run_id}",
+                )
+                self.logger.warning("发送最新失败已入队 | run=%s | error=%s", run_id, exc)
             self._log_progress(run_id, 72, "通知分发执行完成，正在写入发送日志")
             send_logs = dispatch_result["logs"]
+            self._enqueue_failed_email_dispatch(run_id=run_id, send_logs=send_logs, dispatch_result=dispatch_result)
             digest_sent = any(str(getattr(log, "send_status", "")).strip().lower() == "success" for log in send_logs)
 
             if send_logs:
@@ -649,7 +784,13 @@ class AutoSuccessorPipeline:
                 channel_names=channel_names,
                 attachments=attachments,
             )
-            return {"logs": result.logs, "subject": result.subject}
+            return {
+                "logs": result.logs,
+                "subject": result.subject,
+                "body": result.body,
+                "attachments": list(attachments),
+                "channels": list(channel_names),
+            }
 
         realtime_jobs = jobs
         if not digest_style and mode == "agent":
@@ -665,14 +806,285 @@ class AutoSuccessorPipeline:
                 attachments=attachments,
                 channel_names=channel_names,
             )
-            return {"logs": result.logs, "subject": result.subject}
+            return {
+                "logs": result.logs,
+                "subject": result.subject,
+                "body": result.body,
+                "attachments": list(attachments),
+                "channels": list(channel_names),
+            }
 
         logs = self.communication.dispatch_realtime(
             run_id=run_id,
             summaries=summaries,
             channel_names=channel_names,
         )
-        return {"logs": logs, "subject": ""}
+        body = "\n\n".join(str(item.summary or "").strip() for item in summaries if str(item.summary or "").strip())
+        return {
+            "logs": logs,
+            "subject": f"SuccessionPilot | realtime | {run_id}",
+            "body": body,
+            "attachments": list(attachments),
+            "channels": list(channel_names),
+        }
+
+    def _retry_worker_loop(self) -> None:
+        self.logger.info("重试队列后台线程已启动 | interval=%ss | batch=%s", self._retry_worker_interval, self._retry_batch_size)
+        while not self._retry_stop.wait(self._retry_worker_interval):
+            try:
+                self._process_retry_queue_once(limit=self._retry_batch_size)
+            except Exception as exc:
+                self.logger.warning("重试队列处理异常：%s", exc)
+
+    def _process_retry_queue_once(self, *, limit: int) -> None:
+        if not self._retry_enabled:
+            return
+        if self.lock.path.exists():
+            return
+        items = self.retry_queue.pop_due(limit=max(1, int(limit)))
+        if not items:
+            return
+        for item in items:
+            item_id = str(item.get("id") or "")
+            try:
+                self._handle_retry_item(item)
+                self.retry_queue.mark_success(item_id, result="ok")
+                self.logger.info(
+                    "重试成功 | queue=%s | action=%s | id=%s",
+                    item.get("queue_type"),
+                    item.get("action"),
+                    item_id,
+                )
+            except Exception as exc:
+                self.retry_queue.mark_retry(item_id, error=str(exc))
+                self.logger.warning(
+                    "重试失败，已回退重排 | queue=%s | action=%s | id=%s | error=%s",
+                    item.get("queue_type"),
+                    item.get("action"),
+                    item_id,
+                    exc,
+                )
+
+    def _handle_retry_item(self, item: dict[str, Any]) -> None:
+        queue_type = str(item.get("queue_type") or "").strip().lower()
+        if queue_type == "fetch":
+            self._handle_retry_fetch(item)
+            return
+        if queue_type == "llm_timeout":
+            self._handle_retry_llm_timeout(item)
+            return
+        if queue_type == "email":
+            self._handle_retry_email(item)
+            return
+        raise ValueError(f"unsupported queue type: {queue_type}")
+
+    def _handle_retry_fetch(self, item: dict[str, Any]) -> None:
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        action = str(item.get("action") or "").strip().lower()
+        if action == "ensure_logged_in":
+            self.collector.ensure_logged_in()
+            return
+        if action == "search_notes":
+            keyword = str(payload.get("keyword") or self.settings.xhs.keyword).strip() or self.settings.xhs.keyword
+            max_results = max(1, int(payload.get("max_results") or self.settings.xhs.max_results))
+            self.collector.search_notes(
+                run_id=f"retry-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
+                keyword=keyword,
+                max_results=max_results,
+            )
+            return
+        if action == "enrich_note_detail":
+            note_id = str(payload.get("note_id") or "").strip()
+            xsec_token = str(payload.get("xsec_token") or "").strip()
+            if not note_id or not xsec_token:
+                raise ValueError("missing note_id/xsec_token")
+            note = NoteRecord(
+                run_id=f"retry-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
+                keyword=self.settings.xhs.keyword,
+                note_id=note_id,
+                title="",
+                author="",
+                publish_time=datetime.now(timezone.utc),
+                publish_time_text="",
+                like_count=0,
+                comment_count=0,
+                share_count=0,
+                url=f"https://www.xiaohongshu.com/explore/{note_id}",
+                raw_json="{}",
+                xsec_token=xsec_token,
+            )
+            self.collector.enrich_note_details([note], max_notes=1)
+            return
+        raise ValueError(f"unsupported fetch action: {action}")
+
+    def _handle_retry_llm_timeout(self, item: dict[str, Any]) -> None:
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        error_code = str(payload.get("error_code") or "timeout").strip().lower()
+        scope = str(payload.get("scope") or "retry_llm_timeout").strip() or "retry_llm_timeout"
+        result = self.llm_client.chat_text(
+            system_prompt="You are a health checker. Reply with: ok",
+            user_prompt=f"llm timeout replay probe, code={error_code}",
+            temperature=0.0,
+            max_tokens=8,
+            scope=scope,
+        )
+        if not result:
+            raise RuntimeError(f"llm unavailable: {self.llm_client.last_error_code(scope=scope)}")
+
+    def _handle_retry_email(self, item: dict[str, Any]) -> None:
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        action = str(item.get("action") or "").strip().lower()
+        if action != "dispatch_digest":
+            raise ValueError(f"unsupported email action: {action}")
+        subject = str(payload.get("subject") or "").strip() or "SuccessionPilot | retry"
+        text = str(payload.get("body") or payload.get("text") or "").strip()
+        if not text:
+            raise ValueError("missing email body")
+        channels = payload.get("channels") if isinstance(payload.get("channels"), list) else ["email"]
+        attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
+        logs = self.router.dispatch_digest(
+            run_id=f"retry:{item.get('id')}",
+            subject=subject,
+            text=text,
+            attachments=[str(x) for x in attachments if str(x).strip()],
+            channel_names=[str(x) for x in channels if str(x).strip()],
+        )
+        failed = [
+            log
+            for log in logs
+            if str(getattr(log, "channel", "")).strip().lower() == "email"
+            and str(getattr(log, "send_status", "")).strip().lower() != "success"
+        ]
+        if failed:
+            errors = "; ".join(str(getattr(log, "send_response", "") or "") for log in failed)
+            raise RuntimeError(errors or "email retry failed")
+
+    def _enqueue_retry(
+        self,
+        *,
+        queue_type: str,
+        action: str,
+        run_id: str,
+        error: str,
+        payload: dict[str, Any] | None = None,
+        dedupe_key: str = "",
+    ) -> None:
+        if not self._retry_enabled:
+            return
+        try:
+            item = self.retry_queue.enqueue(
+                queue_type=queue_type,
+                action=action,
+                payload=payload or {},
+                run_id=run_id,
+                error=error,
+                dedupe_key=dedupe_key,
+            )
+            self.logger.info(
+                "重试入队 | queue=%s | action=%s | id=%s | run=%s",
+                queue_type,
+                action,
+                item.get("id"),
+                run_id,
+            )
+        except Exception as exc:
+            self.logger.warning("重试入队失败 | queue=%s | action=%s | run=%s | error=%s", queue_type, action, run_id, exc)
+
+    def _enqueue_failed_email_dispatch(
+        self,
+        *,
+        run_id: str,
+        send_logs: list[Any],
+        dispatch_result: dict[str, Any],
+    ) -> None:
+        if not self._retry_enabled:
+            return
+        if not send_logs:
+            return
+        failed_email = [
+            log
+            for log in send_logs
+            if str(getattr(log, "channel", "")).strip().lower() == "email"
+            and str(getattr(log, "send_status", "")).strip().lower() != "success"
+        ]
+        if not failed_email:
+            return
+        subject = str(dispatch_result.get("subject") or "").strip()
+        body = str(dispatch_result.get("body") or "").strip()
+        if not subject or not body:
+            return
+        channels = sorted(
+            {
+                str(getattr(log, "channel", "")).strip()
+                for log in failed_email
+                if str(getattr(log, "channel", "")).strip()
+            }
+        )
+        attachments = dispatch_result.get("attachments")
+        payload = {
+            "subject": subject,
+            "body": body,
+            "channels": channels or ["email"],
+            "attachments": [str(x) for x in (attachments or []) if str(x).strip()],
+        }
+        self._enqueue_retry(
+            queue_type="email",
+            action="dispatch_digest",
+            run_id=run_id,
+            error="email_send_failed",
+            payload=payload,
+            dedupe_key=f"email-failed:{run_id}:{subject[:80]}",
+        )
+
+    def _enqueue_llm_timeout_retries(self, *, run_id: str, llm_error_codes: dict[str, int]) -> None:
+        if not self._retry_enabled:
+            return
+        timeout_keys = {"connect_timeout", "read_timeout", "timeout"}
+        for code, count in (llm_error_codes or {}).items():
+            key = str(code or "").strip().lower()
+            num = max(0, int(count or 0))
+            if key not in timeout_keys or num <= 0:
+                continue
+            self._enqueue_retry(
+                queue_type="llm_timeout",
+                action="probe",
+                run_id=run_id,
+                error=f"llm_{key}:{num}",
+                payload={"error_code": key, "count": num, "scope": "retry_llm_timeout"},
+                dedupe_key=f"llm-timeout:{run_id}:{key}",
+            )
+
+    def _build_retry_dispatch_fallback(
+        self,
+        *,
+        run_id: str,
+        mode: str,
+        jobs: list[JobRecord],
+        channels: list[str],
+        attachments: list[str],
+        reason: str,
+    ) -> dict[str, Any]:
+        subject = self.communication._build_subject(
+            run_id=run_id,
+            mode=mode,
+            jobs=jobs,
+            headline="notification retry",
+        )
+        body = self.communication._build_body(
+            run_id=run_id,
+            mode=mode,
+            jobs=jobs,
+            headline="notification retry",
+            overview=f"主流程通知失败，已写入重试队列。reason={reason}",
+            attachments=attachments,
+        )
+        return {
+            "logs": [],
+            "subject": subject,
+            "body": body,
+            "attachments": list(attachments),
+            "channels": list(channels),
+        }
 
     def _jobs_to_summary_records(self, run_id: str, jobs: list[JobRecord]) -> list[SummaryRecord]:
         output: list[SummaryRecord] = []

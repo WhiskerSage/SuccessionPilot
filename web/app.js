@@ -70,6 +70,8 @@
     reloadConfigBtn: document.getElementById("reloadConfigBtn"),
     saveConfigBtn: document.getElementById("saveConfigBtn"),
     cfgKeyword: document.getElementById("cfgKeyword"),
+    cfgXhsAccount: document.getElementById("cfgXhsAccount"),
+    cfgXhsAccountDir: document.getElementById("cfgXhsAccountDir"),
     cfgSearchSort: document.getElementById("cfgSearchSort"),
     cfgMaxResults: document.getElementById("cfgMaxResults"),
     cfgMaxDetailFetch: document.getElementById("cfgMaxDetailFetch"),
@@ -608,6 +610,33 @@
     state.prevJobRunning = jobRunning;
   }
 
+  function renderXhsAccountOptions(options, selected) {
+    if (!dom.cfgXhsAccount) return;
+    const list = Array.isArray(options) ? options : [];
+    const safeSelected = String(selected || "default").trim() || "default";
+    const uniq = new Map();
+    uniq.set("default", { value: "default", label: "default", has_cookie: true });
+    list.forEach((item) => {
+      const value = String(item && item.value ? item.value : "").trim();
+      if (!value) return;
+      uniq.set(value, {
+        value,
+        label: String(item && item.label ? item.label : value),
+        has_cookie: Boolean(item && item.has_cookie),
+      });
+    });
+    if (!uniq.has(safeSelected)) {
+      uniq.set(safeSelected, { value: safeSelected, label: safeSelected, has_cookie: false });
+    }
+    dom.cfgXhsAccount.innerHTML = Array.from(uniq.values())
+      .map((item) => {
+        const suffix = item.has_cookie ? "" : " (no-cookies)";
+        return `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label + suffix)}</option>`;
+      })
+      .join("");
+    dom.cfgXhsAccount.value = safeSelected;
+  }
+
   function renderConfig(config) {
     state.config = config || {};
     const app = state.config.app || {};
@@ -617,8 +646,10 @@
     const email = state.config.email || {};
     const wechat = state.config.wechat_service || {};
     const llm = state.config.llm || {};
+    renderXhsAccountOptions(xhs.account_options || [], xhs.account || "default");
 
     if (dom.cfgKeyword) dom.cfgKeyword.value = String(xhs.keyword || "");
+    if (dom.cfgXhsAccountDir) dom.cfgXhsAccountDir.value = String(xhs.account_cookies_dir || "~/.xhs-mcp/accounts");
     if (dom.cfgSearchSort) dom.cfgSearchSort.value = String(xhs.search_sort || "time_descending");
     if (dom.cfgMaxResults) dom.cfgMaxResults.value = String(toInt(xhs.max_results, 20));
     if (dom.cfgMaxDetailFetch) dom.cfgMaxDetailFetch.value = String(toInt(xhs.max_detail_fetch, 5));
@@ -764,6 +795,8 @@
       },
       xhs: {
         keyword: String(dom.cfgKeyword ? dom.cfgKeyword.value : "").trim(),
+        account: String(dom.cfgXhsAccount ? dom.cfgXhsAccount.value : "default").trim() || "default",
+        account_cookies_dir: String(dom.cfgXhsAccountDir ? dom.cfgXhsAccountDir.value : "~/.xhs-mcp/accounts").trim() || "~/.xhs-mcp/accounts",
         search_sort: String(dom.cfgSearchSort ? dom.cfgSearchSort.value : "time_descending"),
         max_results: toInt(dom.cfgMaxResults ? dom.cfgMaxResults.value : 20, 20),
         max_detail_fetch: toInt(dom.cfgMaxDetailFetch ? dom.cfgMaxDetailFetch.value : 5, 5),
@@ -824,8 +857,18 @@
   }
 
   async function loadConfig() {
-    const resp = await fetchJson("/api/config");
-    renderConfig((resp && resp.config) || {});
+    const [resp, accountResp] = await Promise.all([
+      fetchJson("/api/config"),
+      fetchJson("/api/xhs/accounts").catch(() => null),
+    ]);
+    const config = (resp && resp.config) || {};
+    if (!config.xhs) config.xhs = {};
+    if (accountResp && typeof accountResp === "object") {
+      if (Array.isArray(accountResp.options)) config.xhs.account_options = accountResp.options;
+      if (accountResp.selected) config.xhs.account = accountResp.selected;
+      if (accountResp.account_cookies_dir) config.xhs.account_cookies_dir = accountResp.account_cookies_dir;
+    }
+    renderConfig(config);
   }
 
   function renderResume(resume) {

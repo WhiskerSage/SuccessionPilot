@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -24,8 +25,10 @@ class XHSMcpCliCollector:
         self.logger = logger
 
     def ensure_logged_in(self) -> None:
+        self._sync_selected_account_to_active()
         status = self._run_json(["status", "--compact"])
         if status.get("success") and status.get("loggedIn") is True:
+            self._sync_active_to_selected_account()
             return
 
         self.logger.warning("XHS 登录状态异常：未登录，开始尝试登录流程")
@@ -36,6 +39,7 @@ class XHSMcpCliCollector:
         status = self._run_json(["status", "--compact"])
         if not (status.get("success") and status.get("loggedIn") is True):
             raise XHSCollectorError(f"xhs status still not logged in after login: {status}")
+        self._sync_active_to_selected_account()
 
     def search_notes(self, run_id: str, keyword: str, max_results: int) -> list[NoteRecord]:
         payload = self._run_search_payload(keyword=keyword, max_results=max_results)
@@ -229,7 +233,7 @@ class XHSMcpCliCollector:
             str(self.cfg.command_timeout_seconds * 1000),
         ]
 
-        cookies_file = Path.home() / ".xhs-mcp" / "cookies.json"
+        cookies_file = self._resolve_cookies_file()
         if cookies_file.exists():
             cmd.extend(["--cookies-file", str(cookies_file)])
 
@@ -283,7 +287,7 @@ class XHSMcpCliCollector:
             "--timeout-ms",
             str(self.cfg.command_timeout_seconds * 1000),
         ]
-        cookies_file = Path.home() / ".xhs-mcp" / "cookies.json"
+        cookies_file = self._resolve_cookies_file()
         if cookies_file.exists():
             cmd.extend(["--cookies-file", str(cookies_file)])
         proc = subprocess.run(
@@ -300,6 +304,60 @@ class XHSMcpCliCollector:
         if payload is None:
             return {"success": False, "error": "invalid_detail_output", "raw": output[:300]}
         return payload
+
+    def _active_cookies_file(self) -> Path:
+        return Path.home() / ".xhs-mcp" / "cookies.json"
+
+    def _resolve_cookies_file(self) -> Path:
+        account = str(getattr(self.cfg, "account", "") or "").strip()
+        if not account or account.lower() == "default":
+            return self._active_cookies_file()
+
+        base_dir = Path(str(getattr(self.cfg, "account_cookies_dir", "~/.xhs-mcp/accounts"))).expanduser()
+        if account.lower().endswith(".json"):
+            flat = base_dir / account
+            nested = base_dir / account[: -len(".json")] / "cookies.json"
+        else:
+            flat = base_dir / f"{account}.json"
+            nested = base_dir / account / "cookies.json"
+
+        if flat.exists():
+            return flat
+        if nested.exists():
+            return nested
+        return flat
+
+    def _sync_selected_account_to_active(self) -> None:
+        selected = self._resolve_cookies_file()
+        active = self._active_cookies_file()
+        try:
+            if selected.resolve() == active.resolve():
+                return
+        except Exception:
+            pass
+        if not selected.exists():
+            return
+        active.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copyfile(selected, active)
+        except Exception as exc:
+            self.logger.warning("同步账号 cookies 到 active 失败：%s", exc)
+
+    def _sync_active_to_selected_account(self) -> None:
+        selected = self._resolve_cookies_file()
+        active = self._active_cookies_file()
+        try:
+            if selected.resolve() == active.resolve():
+                return
+        except Exception:
+            pass
+        if not active.exists():
+            return
+        selected.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copyfile(active, selected)
+        except Exception as exc:
+            self.logger.warning("同步 active cookies 到账号文件失败：%s", exc)
 
     @staticmethod
     def _parse_json_from_text(text: str) -> dict | None:

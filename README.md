@@ -1,10 +1,16 @@
 ﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.3.12`
+- 项目版本：`0.3.13`
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
+
+### v0.3.13 更新要点
+- 新增失败重试队列：抓取失败、LLM 超时、邮件失败分队列持久化（`data/retry_queue.json`）。
+- 新增后台重放线程：按批次自动重放重试任务，不阻塞主流程抓取与入库。
+- 新增多账号切换：`xhs.account` + `xhs.account_cookies_dir`，控制中心可选账号并用于登录/状态检查/抓取详情。
+- 运行观测增强：run stats 增加重试队列指标（pending/running/enqueued/retried/succeeded/dropped）。
 
 ### v0.3.12 更新要点
 - 原文摘要质量修复：新增链接噪声拦截，纯 URL/图片 CDN 链接不再作为正文进入 `detail_text` 与摘要。
@@ -163,6 +169,8 @@ XHS_PUPPETEER_REQUIRE=
 xhs:
   keyword: "继任"
   search_sort: "time_descending"
+  account: "default"
+  account_cookies_dir: "~/.xhs-mcp/accounts"
 
 email:
   enabled: true
@@ -184,6 +192,11 @@ notification:
   digest_channels: ["email"]
   attach_excel: false
   attach_jobs_csv: false
+
+retry:
+  enabled: true
+  worker_interval_seconds: 12
+  replay_batch_size: 3
 
 resume:
   source_txt_path: "config/resume.txt"
@@ -390,6 +403,8 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - `command`：执行命令，通常为 `node`
 - `args`：XHS MCP 主脚本路径
 - `browser_path`：Chrome 可执行文件路径
+- `account`：抓取与登录使用的账号标识（`default` 表示 `~/.xhs-mcp/cookies.json`）
+- `account_cookies_dir`：多账号 Cookies 目录（支持 `<dir>/<account>.json` 或 `<dir>/<account>/cookies.json`）
 - `search_sort`：搜索排序策略
 - `keyword`：搜索关键词，建议固定为 `继任`
 - `max_results`：每轮最大抓取数量
@@ -427,6 +442,21 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - `attach_excel`：是否附带 `output.xlsx`（默认关闭）
 - `attach_jobs_csv`：是否附带 `jobs.csv`（默认关闭）
 
+### retry
+- `enabled`：是否启用失败重试队列
+- `worker_interval_seconds`：后台重放轮询间隔（秒）
+- `replay_batch_size`：每轮重放任务数
+- `fetch_max_attempts`：抓取失败最大重试次数
+- `llm_timeout_max_attempts`：LLM 超时最大重试次数
+- `email_max_attempts`：邮件失败最大重试次数
+- `base_backoff_seconds`：指数退避起始秒数
+- `max_backoff_seconds`：指数退避上限秒数
+
+行为说明。
+- 抓取失败（登录/搜索/详情）、LLM 超时、邮件失败会分别入队。
+- 队列持久化文件默认：`data/retry_queue.json`。
+- 重放在后台线程执行，不阻塞主流程抓取、入库和当前轮通知。
+
 当前项目 `config/config.example.yaml` 默认值。
 - `xhs.search_sort: time_descending`
 - `notification.mode: digest`
@@ -449,6 +479,7 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - `excel_path`：Excel 主数据文件
 - `jobs_csv_path`：岗位 CSV 导出路径
 - `state_path`：状态文件路径
+- `retry_queue_path`：失败重试队列持久化文件路径（默认 `data/retry_queue.json`）
 
 ### email
 - `enabled`：是否启用邮件
@@ -513,14 +544,24 @@ xhs:
   args:
     - "vendor/xhs-mcp/dist/xhs-mcp.js"
   browser_path: "C:/Program Files/Google/Chrome/Application/chrome.exe"
+  account: "default"
+  account_cookies_dir: "~/.xhs-mcp/accounts"
   search_sort: "time_descending"
   keyword: "继任"
 ```
+
+多账号切换（控制中心）。
+- 打开 `http://127.0.0.1:8787/control.html`。
+- 在“XHS 账号”下拉框选择账号；在“账号 Cookies 目录”填写账号文件目录。
+- 点击“保存配置”后生效，后续登录检查、扫码登录、抓取都会使用所选账号。
+- 若账号文件不存在，可先选中该账号执行一次扫码登录，系统会自动写回对应账号 Cookies 文件。
 
 ### 2. 登录状态检查
 推荐使用脚本。
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1
+# 指定账号（可选）
+powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1 -Account acc-a -AccountCookiesDir "~/.xhs-mcp/accounts"
 ```
 
 指定浏览器路径示例。
@@ -537,6 +578,8 @@ node vendor/xhs-mcp/dist/xhs-mcp.js status --compact
 推荐使用脚本。
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/xhs_login.ps1 -Timeout 180
+# 指定账号（可选）
+powershell -ExecutionPolicy Bypass -File scripts/xhs_login.ps1 -Timeout 180 -Account acc-a -AccountCookiesDir "~/.xhs-mcp/accounts"
 ```
 
 指定浏览器路径示例。
@@ -670,9 +713,11 @@ node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 - `GET /api/leads?limit=200&q=关键词`
 - `GET /api/leads` 返回 `publish_time_display`（绝对时间显示字段）。
 - `GET /api/runs?limit=20`
+- `GET /api/xhs/accounts`
 - `GET /api/setup/check`
 - `POST /api/setup/check`
 - `GET /api/runs` 关键字段：`stage_total_ms`、`stage_avg_ms`、`stage_failed_count`、`slow_stages`、`error_codes`
+- `GET /api/runs` 重试字段：`retry_pending`、`retry_running`、`retry_enqueued`、`retry_retried`、`retry_succeeded`、`retry_dropped`
 
 ## 常见问题
 ### 1. 无法登录小红书
@@ -761,6 +806,7 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
+| v0.3.13 | 2026-02-26 | 新增失败重试队列（抓取/LLM超时/邮件分队列）与后台重放；新增 XHS 多账号配置（`xhs.account`、`xhs.account_cookies_dir`）及控制中心账号选择；运行统计新增重试指标。 |
 | v0.3.12 | 2026-02-26 | 新增正文/评论链接噪声拦截：纯图片链接不再进入原文摘要；“文字+链接”保留文字并移除链接；补充对应单元测试。 |
 | v0.3.11 | 2026-02-26 | 提取入口改为字节级解码（`utf-8/utf-8-sig/gb18030` 自动判定）；`clean_line` 停止自动转码避免正常中文被误改；岗位提取提示词补充 `company/location` 约束；新增编码相关单测。 |
 | v0.3.10 | 2026-02-26 | LLM 熔断改为按阶段隔离（`job` 与 `outreach`互不影响）；公司字段新增招聘口号清洗；地点新增常见乱码修复并归一为标准城市名。 |

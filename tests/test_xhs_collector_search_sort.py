@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime
+from pathlib import Path
+import tempfile
 
 from auto_successor.config import XHSConfig
 from auto_successor.xhs_collector import XHSMcpCliCollector
@@ -156,6 +158,39 @@ class TestXHSCollectorSearchSort(unittest.TestCase):
         dt4, q4 = collector._parse_publish_time_with_quality("未知时间格式", reference=base)
         self.assertEqual(q4, "fallback")
         self.assertEqual(dt4, base)
+
+    def test_resolve_cookies_file_default_account(self):
+        collector = _FakeCollector(
+            cfg=XHSConfig(account="default"),
+            timezone="Asia/Shanghai",
+            logger=_NullLogger(),
+        )
+        self.assertEqual(collector._resolve_cookies_file(), Path.home() / ".xhs-mcp" / "cookies.json")
+
+    def test_resolve_cookies_file_named_account_flat_file(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            account_file = base / "acc-a.json"
+            account_file.write_text("[]", encoding="utf-8")
+            collector = _FakeCollector(
+                cfg=XHSConfig(account="acc-a", account_cookies_dir=str(base)),
+                timezone="Asia/Shanghai",
+                logger=_NullLogger(),
+            )
+            self.assertEqual(collector._resolve_cookies_file(), account_file)
+
+    def test_resolve_cookies_file_named_account_nested_file(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            nested = base / "acc-b" / "cookies.json"
+            nested.parent.mkdir(parents=True, exist_ok=True)
+            nested.write_text("[]", encoding="utf-8")
+            collector = _FakeCollector(
+                cfg=XHSConfig(account="acc-b", account_cookies_dir=str(base)),
+                timezone="Asia/Shanghai",
+                logger=_NullLogger(),
+            )
+            self.assertEqual(collector._resolve_cookies_file(), nested)
 
 
 if __name__ == "__main__":

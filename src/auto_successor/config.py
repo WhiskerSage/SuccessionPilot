@@ -21,6 +21,8 @@ class XHSConfig:
     command: str = "node"
     args: list[str] | None = None
     browser_path: str = "C:/Program Files/Google/Chrome/Application/chrome.exe"
+    account: str = "default"
+    account_cookies_dir: str = "~/.xhs-mcp/accounts"
     search_sort: str = "time_descending"
     keyword: str = "继任"
     max_results: int = 20
@@ -78,6 +80,7 @@ class StorageConfig:
     excel_path: str = "data/output.xlsx"
     jobs_csv_path: str = "data/jobs.csv"
     state_path: str = "data/state.json"
+    retry_queue_path: str = "data/retry_queue.json"
 
 
 @dataclass
@@ -118,6 +121,18 @@ class NotificationConfig:
 
 
 @dataclass
+class RetryConfig:
+    enabled: bool = True
+    worker_interval_seconds: int = 12
+    replay_batch_size: int = 3
+    fetch_max_attempts: int = 3
+    llm_timeout_max_attempts: int = 3
+    email_max_attempts: int = 4
+    base_backoff_seconds: int = 20
+    max_backoff_seconds: int = 1200
+
+
+@dataclass
 class EmailConfig:
     enabled: bool = False
     smtp_host: str = "smtp.126.com"
@@ -141,6 +156,7 @@ class Settings:
     resume: ResumeConfig = field(default_factory=ResumeConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     notification: NotificationConfig = field(default_factory=NotificationConfig)
+    retry: RetryConfig = field(default_factory=RetryConfig)
 
     @property
     def wechat_app_id(self) -> str:
@@ -266,6 +282,8 @@ def load_settings(config_path: str) -> Settings:
     xhs = XHSConfig(**xhs_raw)
     xhs.args = _normalize_xhs_args(xhs.args)
     xhs.browser_path = _autofix_browser_path(xhs.browser_path)
+    xhs.account = str(xhs.account or "default").strip() or "default"
+    xhs.account_cookies_dir = str(xhs.account_cookies_dir or "~/.xhs-mcp/accounts").strip() or "~/.xhs-mcp/accounts"
 
     pipeline = PipelineConfig(**_section(data, "pipeline"))
     llm = LLMConfig(**_section(data, "llm"))
@@ -275,6 +293,7 @@ def load_settings(config_path: str) -> Settings:
     resume = ResumeConfig(**_section(data, "resume"))
     agent = AgentConfig(**_section(data, "agent"))
     notification = NotificationConfig(**_section(data, "notification"))
+    retry = RetryConfig(**_section(data, "retry"))
     notification.digest_channels = _as_name_list(notification.digest_channels, default=["email"])
     notification.realtime_channels = _as_name_list(notification.realtime_channels, default=["wechat_service", "email"])
 
@@ -304,6 +323,7 @@ def load_settings(config_path: str) -> Settings:
         resume=resume,
         agent=agent,
         notification=notification,
+        retry=retry,
     )
 
 

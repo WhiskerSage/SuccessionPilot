@@ -164,6 +164,10 @@ def create_fastapi_app(backend: DataBackend, web_dir: Path):
     async def api_config() -> dict[str, Any]:
         return {"config": backend.load_config_view()}
 
+    @app.get("/api/xhs/accounts")
+    async def api_xhs_accounts() -> dict[str, Any]:
+        return backend.load_xhs_accounts_view()
+
     @app.get("/api/setup/check")
     async def api_setup_check_get() -> dict[str, Any]:
         return backend.run_setup_check(include_network=True, include_xhs_status=True)

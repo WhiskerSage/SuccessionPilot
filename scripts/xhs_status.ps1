@@ -1,5 +1,7 @@
 param(
-  [string]$BrowserPath = ""
+  [string]$BrowserPath = "",
+  [string]$Account = "default",
+  [string]$AccountCookiesDir = "~/.xhs-mcp/accounts"
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,6 +39,43 @@ if ($BrowserPath) {
   $env:PUPPETEER_SKIP_DOWNLOAD = "true"
 } else {
   Write-Warning "No local Chrome/Edge found. xhs-mcp may require Chromium install."
+}
+
+$ActiveCookiesFile = Join-Path $HOME ".xhs-mcp/cookies.json"
+$AccountName = ("" + $Account).Trim()
+if (-not $AccountName) {
+  $AccountName = "default"
+}
+
+function Resolve-SelectedCookiesFile {
+  param(
+    [string]$Name,
+    [string]$Dir,
+    [string]$ActivePath
+  )
+  if ($Name -eq "default") {
+    return $ActivePath
+  }
+  $expanded = [Environment]::ExpandEnvironmentVariables($Dir)
+  if ($expanded.StartsWith("~")) {
+    $expanded = Join-Path $HOME $expanded.Substring(1).TrimStart("/","\\")
+  }
+  if ($Name.ToLower().EndsWith(".json")) {
+    return Join-Path $expanded $Name
+  }
+  return Join-Path $expanded ($Name + ".json")
+}
+
+$SelectedCookiesFile = Resolve-SelectedCookiesFile -Name $AccountName -Dir $AccountCookiesDir -ActivePath $ActiveCookiesFile
+if ($AccountName -ne "default") {
+  try {
+    if (Test-Path $SelectedCookiesFile) {
+      New-Item -ItemType Directory -Force -Path (Split-Path $ActiveCookiesFile -Parent) | Out-Null
+      Copy-Item -Path $SelectedCookiesFile -Destination $ActiveCookiesFile -Force
+    }
+  } catch {
+    Write-Warning "sync selected cookies to active failed: $($_.Exception.Message)"
+  }
 }
 
 try {

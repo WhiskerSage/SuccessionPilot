@@ -9,6 +9,8 @@ xhs:
   args:
     - "vendor/xhs-mcp/dist/xhs-mcp.js"
   browser_path: "C:/Program Files/Google/Chrome/Application/chrome.exe"
+  account: "default"
+  account_cookies_dir: "~/.xhs-mcp/accounts"
   search_sort: "time_descending"
   keyword: "继任"
   max_results: 20
@@ -81,6 +83,16 @@ notification:
     - "email"
   attach_excel: false
   attach_jobs_csv: false
+
+retry:
+  enabled: true
+  worker_interval_seconds: 12
+  replay_batch_size: 3
+  fetch_max_attempts: 3
+  llm_timeout_max_attempts: 3
+  email_max_attempts: 4
+  base_backoff_seconds: 20
+  max_backoff_seconds: 1200
 
 agent:
   runtime_name: "SuccessionPilot"

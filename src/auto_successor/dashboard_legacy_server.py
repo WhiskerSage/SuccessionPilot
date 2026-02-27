@@ -68,6 +68,9 @@ def make_handler(backend: DataBackend, web_dir: Path):
                 if path == "/api/config":
                     self._json({"config": backend.load_config_view()})
                     return
+                if path == "/api/xhs/accounts":
+                    self._json(backend.load_xhs_accounts_view())
+                    return
 
                 if path == "/api/setup/check":
                     self._json(backend.run_setup_check(include_network=True, include_xhs_status=True))

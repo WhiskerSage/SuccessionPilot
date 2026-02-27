@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -14,10 +14,12 @@ def _write_config(path: Path) -> None:
     data = {
         "app": {"interval_minutes": 15},
         "xhs": {
-            "keyword": "继任",
+            "keyword": "缁т换",
             "search_sort": "time_descending",
             "max_results": 20,
             "max_detail_fetch": 5,
+            "account": "default",
+            "account_cookies_dir": "~/.xhs-mcp/accounts",
         },
         "agent": {"mode": "auto"},
         "notification": {
@@ -42,18 +44,20 @@ def test_config_roundtrip(tmp_path: Path) -> None:
     backend = DataBackend(workspace=workspace)
 
     view = backend.load_config_view()
-    assert view["xhs"]["keyword"] == "继任"
+    assert view["xhs"]["keyword"] == "缁т换"
     assert view["notification"]["digest_interval_minutes"] == 30
+    assert view["xhs"]["account"] == "default"
 
     saved = backend.save_config_view(
         {
-            "xhs": {"keyword": "继任岗位", "max_results": 18},
+            "xhs": {"keyword": "缁т换宀椾綅", "max_results": 18, "account": "acc-a"},
             "notification": {"digest_interval_minutes": 60},
             "agent": {"mode": "agent"},
         }
     )
-    assert saved["xhs"]["keyword"] == "继任岗位"
+    assert saved["xhs"]["keyword"] == "缁т换宀椾綅"
     assert saved["xhs"]["max_results"] == 18
+    assert saved["xhs"]["account"] == "acc-a"
     assert saved["notification"]["digest_interval_minutes"] == 60
     assert saved["agent"]["mode"] == "agent"
 
@@ -200,6 +204,32 @@ def test_setup_check_offline_mode(tmp_path: Path) -> None:
     assert keys["llm_enabled"]["status"] == "warn"
 
 
+def test_load_xhs_accounts_view_lists_available_accounts(tmp_path: Path) -> None:
+    workspace = tmp_path
+    _write_config(workspace / "config" / "config.yaml")
+
+    cfg_path = workspace / "config" / "config.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    cfg.setdefault("xhs", {})
+    cfg["xhs"]["account"] = "acc-a"
+    cfg["xhs"]["account_cookies_dir"] = str(workspace / "accounts")
+    cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+    account_dir = workspace / "accounts"
+    account_dir.mkdir(parents=True, exist_ok=True)
+    (account_dir / "acc-a.json").write_text("[]", encoding="utf-8")
+    (account_dir / "acc-b" / "cookies.json").parent.mkdir(parents=True, exist_ok=True)
+    (account_dir / "acc-b" / "cookies.json").write_text("[]", encoding="utf-8")
+
+    backend = DataBackend(workspace=workspace)
+    view = backend.load_xhs_accounts_view()
+    values = {str(item.get("value") or "") for item in view.get("options", [])}
+    assert view["selected"] == "acc-a"
+    assert "default" in values
+    assert "acc-a" in values
+    assert "acc-b" in values
+
+
 class TestDashboardBackendCore(unittest.TestCase):
     def test_load_runs_with_stage_observability_from_stats_unittest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -212,3 +242,8 @@ class TestDashboardBackendCore(unittest.TestCase):
     def test_setup_check_offline_mode_unittest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             test_setup_check_offline_mode(Path(tmp_dir))
+
+    def test_load_xhs_accounts_view_lists_available_accounts_unittest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            test_load_xhs_accounts_view_lists_available_accounts(Path(tmp_dir))
+

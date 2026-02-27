@@ -94,6 +94,18 @@ class RuntimeManager:
             command.extend(["--send-latest", str(send_latest)])
         return command
 
+    def _read_xhs_account_settings(self) -> tuple[str, str]:
+        try:
+            settings = load_settings(str(self.config_path))
+            account = str(getattr(settings.xhs, "account", "default") or "default").strip() or "default"
+            account_dir = (
+                str(getattr(settings.xhs, "account_cookies_dir", "~/.xhs-mcp/accounts") or "~/.xhs-mcp/accounts").strip()
+                or "~/.xhs-mcp/accounts"
+            )
+            return account, account_dir
+        except Exception:
+            return "default", "~/.xhs-mcp/accounts"
+
     def _start_job(self, name: str, command: list[str]) -> dict[str, Any]:
         blocked_message = ""
         with self._lock:
@@ -200,6 +212,7 @@ class RuntimeManager:
 
     def start_xhs_login(self, timeout_seconds: int = 180) -> dict[str, Any]:
         script = self.workspace / "scripts" / "xhs_login.ps1"
+        account, account_dir = self._read_xhs_account_settings()
         command = [
             self._resolve_powershell(),
             "-ExecutionPolicy",
@@ -208,17 +221,26 @@ class RuntimeManager:
             str(script),
             "-Timeout",
             str(max(30, int(timeout_seconds))),
+            "-Account",
+            account,
+            "-AccountCookiesDir",
+            account_dir,
         ]
         return self._start_job(name="XHS 扫码登录", command=command)
 
     def check_xhs_status(self) -> dict[str, Any]:
         script = self.workspace / "scripts" / "xhs_status.ps1"
+        account, account_dir = self._read_xhs_account_settings()
         command = [
             self._resolve_powershell(),
             "-ExecutionPolicy",
             "Bypass",
             "-File",
             str(script),
+            "-Account",
+            account,
+            "-AccountCookiesDir",
+            account_dir,
         ]
         try:
             result = subprocess.run(
@@ -592,6 +614,64 @@ class DataBackend:
             raise ValueError(f"invalid base64 content: {exc}") from exc
         return self.parse_resume_file(filename=filename, content=content, mime_type=mime_type)
 
+    def load_xhs_accounts_view(self) -> dict[str, Any]:
+        config = self._read_config_data()
+        xhs = self._ensure_section(config, "xhs")
+        selected = str(xhs.get("account") or "default").strip() or "default"
+        account_cookies_dir = str(xhs.get("account_cookies_dir") or "~/.xhs-mcp/accounts").strip() or "~/.xhs-mcp/accounts"
+        base = Path(account_cookies_dir).expanduser()
+
+        options: dict[str, dict[str, Any]] = {
+            "default": {
+                "value": "default",
+                "label": "default",
+                "has_cookie": (Path.home() / ".xhs-mcp" / "cookies.json").exists(),
+                "path": str((Path.home() / ".xhs-mcp" / "cookies.json")),
+            }
+        }
+        if base.exists() and base.is_dir():
+            for file in base.glob("*.json"):
+                name = file.stem.strip()
+                if not name:
+                    continue
+                options[name] = {
+                    "value": name,
+                    "label": name,
+                    "has_cookie": file.exists(),
+                    "path": str(file),
+                }
+            for folder in base.iterdir():
+                if not folder.is_dir():
+                    continue
+                name = folder.name.strip()
+                if not name:
+                    continue
+                nested = folder / "cookies.json"
+                options[name] = {
+                    "value": name,
+                    "label": name,
+                    "has_cookie": nested.exists(),
+                    "path": str(nested),
+                }
+
+        if selected not in options:
+            fallback_file = base / f"{selected}.json"
+            options[selected] = {
+                "value": selected,
+                "label": selected,
+                "has_cookie": fallback_file.exists(),
+                "path": str(fallback_file),
+            }
+
+        ordered = [options["default"]]
+        for key in sorted(k for k in options.keys() if k != "default"):
+            ordered.append(options[key])
+        return {
+            "selected": selected,
+            "account_cookies_dir": account_cookies_dir,
+            "options": ordered,
+        }
+
     def load_config_view(self) -> dict[str, Any]:
         config = self._read_config_data()
         app = self._ensure_section(config, "app")
@@ -602,6 +682,7 @@ class DataBackend:
         wechat = self._ensure_section(config, "wechat_service")
         llm = self._ensure_section(config, "llm")
         resume = self._ensure_section(config, "resume")
+        xhs_account = self.load_xhs_accounts_view()
 
         return {
             "app": {"interval_minutes": self._coerce_int(app.get("interval_minutes"), 15, minimum=1)},
@@ -610,6 +691,9 @@ class DataBackend:
                 "search_sort": str(xhs.get("search_sort") or "time_descending"),
                 "max_results": self._coerce_int(xhs.get("max_results"), 20, minimum=1),
                 "max_detail_fetch": self._coerce_int(xhs.get("max_detail_fetch"), 5, minimum=1),
+                "account": xhs_account["selected"],
+                "account_cookies_dir": xhs_account["account_cookies_dir"],
+                "account_options": xhs_account["options"],
             },
             "agent": {"mode": self._normalize_mode(str(agent.get("mode") or "auto"))},
             "notification": {
@@ -659,6 +743,11 @@ class DataBackend:
             xhs["search_sort"] = str(xhs_in.get("search_sort") or xhs.get("search_sort") or "time_descending").strip() or "time_descending"
             xhs["max_results"] = self._coerce_int(xhs_in.get("max_results"), xhs.get("max_results", 20), minimum=1)
             xhs["max_detail_fetch"] = self._coerce_int(xhs_in.get("max_detail_fetch"), xhs.get("max_detail_fetch", 5), minimum=1)
+            xhs["account"] = str(xhs_in.get("account") or xhs.get("account") or "default").strip() or "default"
+            xhs["account_cookies_dir"] = (
+                str(xhs_in.get("account_cookies_dir") or xhs.get("account_cookies_dir") or "~/.xhs-mcp/accounts").strip()
+                or "~/.xhs-mcp/accounts"
+            )
 
         agent_in = payload.get("agent")
         if isinstance(agent_in, dict):
@@ -1278,6 +1367,12 @@ class DataBackend:
                     "stage_failed_count": stage_failed_count,
                     "slow_stages": slow_stages,
                     "error_codes": merged_error_codes,
+                    "retry_pending": stats.get("retry_pending") if isinstance(stats.get("retry_pending"), dict) else {},
+                    "retry_running": stats.get("retry_running") if isinstance(stats.get("retry_running"), dict) else {},
+                    "retry_enqueued": self._to_int(stats.get("retry_enqueued")),
+                    "retry_retried": self._to_int(stats.get("retry_retried")),
+                    "retry_succeeded": self._to_int(stats.get("retry_succeeded")),
+                    "retry_dropped": self._to_int(stats.get("retry_dropped")),
                 }
             )
         return out
