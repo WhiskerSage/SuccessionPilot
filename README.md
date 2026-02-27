@@ -1,10 +1,15 @@
 ﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.3.16`
+- 项目版本：`0.4.0`
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
+
+### v0.4.0 更新要点
+- 提取并行能力：新增 `pipeline.process_workers`（默认 `4`），支持“先抓取、后并行提取”。
+- 并行覆盖阶段：`单次直提` 与 `筛选+岗位结构化` 两条链路都支持线程池并行处理。
+- 顺序稳定：并行处理后仍按发布时间排序输出，不影响前端展示与发送顺序。
 
 ### v0.3.16 更新要点
 - 详情抓取策略调整：`xhs.max_detail_fetch` 调整为 `18`，每轮优先做近全量 detail 抓取，提高岗位字段完整度。
@@ -188,6 +193,9 @@ xhs:
   max_detail_fetch: 18
   account: "default"
   account_cookies_dir: "~/.xhs-mcp/accounts"
+
+pipeline:
+  process_workers: 4
 
 email:
   enabled: true
@@ -419,6 +427,10 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - `log_level`：日志级别
 - `interval_minutes`：循环模式间隔分钟数
 
+### pipeline
+- `min_confidence`：规则链路基础阈值
+- `process_workers`：提取阶段并行线程数（默认 `4`，建议 `2-8`）
+
 ### xhs
 - `command`：执行命令，通常为 `node`
 - `args`：XHS MCP 主脚本路径
@@ -482,6 +494,7 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 
 当前项目 `config/config.example.yaml` 默认值。
 - `xhs.search_sort: time_descending`
+- `pipeline.process_workers: 4`
 - `notification.mode: digest`
 - `notification.digest_interval_minutes: 30`
 - `notification.digest_send_when_no_new: false`
@@ -836,6 +849,7 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
+| v0.4.0 | 2026-02-27 | 新增 `pipeline.process_workers` 并发提取参数（默认 4）；实现“先抓取后并行处理”（单次直提与筛选+结构化均支持）；并行后仍保持发布时间排序稳定。 |
 | v0.3.16 | 2026-02-27 | `xhs.max_detail_fetch` 调整为 18（近全量详情抓取）；移除“目标岗位二次补全”阶段，回归单阶段提取；说明单轮耗时会相应上升。 |
 | v0.3.15 | 2026-02-27 | 重试队列任务化升级（lease/error_code/duration/trace）；新增 dead-letter 与幂等键防重复发送；控制中心可视化死信与重试观测；API 错误统一为 `code/reason/fix_command/trace_id`。 |
 | v0.3.14 | 2026-02-27 | Dashboard 新增运行详情与重试队列 API（含重试/丢弃/批量唤醒）；控制中心联动支持状态/去重筛选与运行详情下钻；`start_dashboard.ps1` 注入项目 `src` 路径，修复旧安装包抢占导致的接口 404。 |

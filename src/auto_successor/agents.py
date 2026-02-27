@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from html import escape as html_escape
 from math import floor
@@ -126,72 +127,148 @@ class IntelligenceAgent:
         self.llm_enricher = llm_enricher
         self.logger = logger
 
-    def filter_target_notes(self, notes: list[NoteRecord], max_filter_items: int) -> FilterOutcome:
+    def filter_target_notes(self, notes: list[NoteRecord], max_filter_items: int, workers: int = 1) -> FilterOutcome:
         targets: list[NoteRecord] = []
         filtered_out: list[dict] = []
         scores: dict[str, float] = {}
         total = len(notes)
         llm_budget = max(0, int(max_filter_items))
+        worker_count = self._effective_workers(workers=workers, total=total)
         progress_step = max(1, total // 5) if total > 0 else 1
-        self.logger.info("[阶段] 目标筛选开始：总条数=%s，LLM配额=%s", total, llm_budget)
+        self.logger.info("[阶段] 目标筛选开始：总条数=%s，LLM配额=%s，并行=%s", total, llm_budget, worker_count)
 
-        for idx, note in enumerate(notes):
-            allow_llm = idx < llm_budget
-            decision = self.llm_enricher.classify_target(note, allow_llm=allow_llm)
-            scores[note.note_id] = float(decision.score)
-            if decision.is_target:
+        results: list[tuple[NoteRecord, object] | None] = [None] * total
+        if worker_count <= 1:
+            for idx, note in enumerate(notes):
+                allow_llm = idx < llm_budget
+                decision = self.llm_enricher.classify_target(note, allow_llm=allow_llm)
+                results[idx] = (note, decision)
+                current = idx + 1
+                if current == total or current % progress_step == 0:
+                    pct = int(round(current * 100 / max(1, total)))
+                    self.logger.info("[阶段进度] 目标筛选 %s/%s (%s%%)", current, total, pct)
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="filter") as executor:
+                future_map = {}
+                for idx, note in enumerate(notes):
+                    allow_llm = idx < llm_budget
+                    future = executor.submit(self.llm_enricher.classify_target, note, allow_llm)
+                    future_map[future] = (idx, note)
+
+                completed = 0
+                for future in as_completed(future_map):
+                    idx, note = future_map[future]
+                    try:
+                        decision = future.result()
+                    except Exception as exc:
+                        self.logger.warning("并行筛选异常，回退规则 | note=%s | error=%s", note.note_id, exc)
+                        decision = self.llm_enricher.classify_target(note, allow_llm=False)
+                    results[idx] = (note, decision)
+                    completed += 1
+                    if completed == total or completed % progress_step == 0:
+                        pct = int(round(completed * 100 / max(1, total)))
+                        self.logger.info("[阶段进度] 目标筛选 %s/%s (%s%%)", completed, total, pct)
+
+        for result in results:
+            if not result:
+                continue
+            note, decision = result
+            scores[note.note_id] = float(getattr(decision, "score", 0.0))
+            if bool(getattr(decision, "is_target", False)):
                 targets.append(note)
-            else:
-                filtered_out.append(
-                    {
-                        "note_id": note.note_id,
-                        "title": note.title[:100],
-                        "score": round(decision.score, 4),
-                        "reason": decision.reason,
-                        "source": decision.source,
-                    }
-                )
-                self.logger.info(
-                    "过滤帖子 | note=%s | score=%.2f | source=%s | reason=%s",
-                    note.note_id,
-                    decision.score,
-                    decision.source,
-                    decision.reason,
-                )
-            current = idx + 1
-            if current == total or current % progress_step == 0:
-                pct = int(round(current * 100 / max(1, total)))
-                self.logger.info(
-                    "[阶段进度] 目标筛选 %s/%s (%s%%) | 命中=%s | 过滤=%s",
-                    current,
-                    total,
-                    pct,
-                    len(targets),
-                    len(filtered_out),
-                )
+                continue
+            filtered_out.append(
+                {
+                    "note_id": note.note_id,
+                    "title": note.title[:100],
+                    "score": round(float(getattr(decision, "score", 0.0)), 4),
+                    "reason": str(getattr(decision, "reason", "") or ""),
+                    "source": str(getattr(decision, "source", "") or ""),
+                }
+            )
+            self.logger.info(
+                "过滤帖子 | note=%s | score=%.2f | source=%s | reason=%s",
+                note.note_id,
+                float(getattr(decision, "score", 0.0)),
+                str(getattr(decision, "source", "") or ""),
+                str(getattr(decision, "reason", "") or ""),
+            )
+
+        self.logger.info(
+            "[阶段进度] 目标筛选完成 %s/%s (100%%) | 命中=%s | 过滤=%s",
+            total,
+            total,
+            len(targets),
+            len(filtered_out),
+        )
 
         return FilterOutcome(targets=targets, filtered_out=filtered_out, scores=scores)
 
-    def build_jobs(self, notes: list[NoteRecord], max_job_items: int, resume_text: str, mode: str) -> list[JobRecord]:
+    def build_jobs(
+        self,
+        notes: list[NoteRecord],
+        max_job_items: int,
+        resume_text: str,
+        mode: str,
+        workers: int = 1,
+    ) -> list[JobRecord]:
         jobs: list[JobRecord] = []
         total = len(notes)
         llm_budget = max(0, int(max_job_items))
+        worker_count = self._effective_workers(workers=workers, total=total)
         progress_step = max(1, total // 5) if total > 0 else 1
-        self.logger.info("[阶段] 岗位结构化开始：总条数=%s，LLM配额=%s", total, llm_budget)
-        for idx, note in enumerate(notes):
-            job = to_job_record(note)
-            job.mode = mode
-            if idx < llm_budget:
-                job = self.llm_enricher.enrich_job(note, job, resume_text=resume_text, mode=mode)
-            jobs.append(normalize_job_record(job))
-            current = idx + 1
-            if current == total or current % progress_step == 0:
-                pct = int(round(current * 100 / max(1, total)))
-                self.logger.info("[阶段进度] 岗位结构化 %s/%s (%s%%)", current, total, pct)
+        self.logger.info("[阶段] 岗位结构化开始：总条数=%s，LLM配额=%s，并行=%s", total, llm_budget, worker_count)
+
+        results: list[JobRecord | None] = [None] * total
+        if worker_count <= 1:
+            for idx, note in enumerate(notes):
+                job = to_job_record(note)
+                job.mode = mode
+                if idx < llm_budget:
+                    job = self.llm_enricher.enrich_job(note, job, resume_text=resume_text, mode=mode)
+                results[idx] = normalize_job_record(job)
+                current = idx + 1
+                if current == total or current % progress_step == 0:
+                    pct = int(round(current * 100 / max(1, total)))
+                    self.logger.info("[阶段进度] 岗位结构化 %s/%s (%s%%)", current, total, pct)
+        else:
+            def _worker(idx: int, note: NoteRecord) -> tuple[int, JobRecord]:
+                job = to_job_record(note)
+                job.mode = mode
+                if idx < llm_budget:
+                    job = self.llm_enricher.enrich_job(note, job, resume_text=resume_text, mode=mode)
+                return idx, normalize_job_record(job)
+
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="job") as executor:
+                future_map = {executor.submit(_worker, idx, note): (idx, note) for idx, note in enumerate(notes)}
+                completed = 0
+                for future in as_completed(future_map):
+                    idx, note = future_map[future]
+                    try:
+                        target_idx, job = future.result()
+                    except Exception as exc:
+                        self.logger.warning("并行岗位提取异常，回退规则 | note=%s | error=%s", note.note_id, exc)
+                        fallback_job = normalize_job_record(to_job_record(note))
+                        fallback_job.mode = mode
+                        target_idx, job = idx, fallback_job
+                    results[target_idx] = job
+                    completed += 1
+                    if completed == total or completed % progress_step == 0:
+                        pct = int(round(completed * 100 / max(1, total)))
+                        self.logger.info("[阶段进度] 岗位结构化 %s/%s (%s%%)", completed, total, pct)
+
+        jobs = [item for item in results if item is not None]
         jobs.sort(key=lambda item: item.publish_time, reverse=True)
         return jobs
 
-    def extract_target_jobs(self, notes: list[NoteRecord], max_job_items: int, resume_text: str, mode: str) -> ExtractOutcome:
+    def extract_target_jobs(
+        self,
+        notes: list[NoteRecord],
+        max_job_items: int,
+        resume_text: str,
+        mode: str,
+        workers: int = 1,
+    ) -> ExtractOutcome:
         """
         Fast path:
         - one pass over notes
@@ -204,54 +281,102 @@ class IntelligenceAgent:
 
         total = len(notes)
         llm_budget = max(0, int(max_job_items))
+        worker_count = self._effective_workers(workers=workers, total=total)
         progress_step = max(1, total // 5) if total > 0 else 1
-        self.logger.info("[阶段] 直接提取开始：总条数=%s，LLM配额=%s", total, llm_budget)
+        self.logger.info("[阶段] 直接提取开始：总条数=%s，LLM配额=%s，并行=%s", total, llm_budget, worker_count)
 
-        for idx, note in enumerate(notes):
-            allow_llm = idx < llm_budget
-            decision, job = self.llm_enricher.extract_target_job(
-                note,
-                resume_text=resume_text,
-                mode=mode,
-                allow_llm=allow_llm,
-            )
-            scores[note.note_id] = float(decision.score)
+        results: list[tuple[NoteRecord, object, JobRecord] | None] = [None] * total
+        if worker_count <= 1:
+            for idx, note in enumerate(notes):
+                allow_llm = idx < llm_budget
+                decision, job = self.llm_enricher.extract_target_job(
+                    note,
+                    resume_text=resume_text,
+                    mode=mode,
+                    allow_llm=allow_llm,
+                )
+                results[idx] = (note, decision, normalize_job_record(job))
+                current = idx + 1
+                if current == total or current % progress_step == 0:
+                    pct = int(round(current * 100 / max(1, total)))
+                    self.logger.info("[阶段进度] 直接提取 %s/%s (%s%%)", current, total, pct)
+        else:
+            def _worker(idx: int, note: NoteRecord) -> tuple[int, NoteRecord, object, JobRecord]:
+                allow_llm = idx < llm_budget
+                decision, job = self.llm_enricher.extract_target_job(
+                    note,
+                    resume_text=resume_text,
+                    mode=mode,
+                    allow_llm=allow_llm,
+                )
+                return idx, note, decision, normalize_job_record(job)
 
-            if decision.is_target:
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="extract") as executor:
+                future_map = {executor.submit(_worker, idx, note): (idx, note) for idx, note in enumerate(notes)}
+                completed = 0
+                for future in as_completed(future_map):
+                    idx, note = future_map[future]
+                    try:
+                        target_idx, note_ref, decision, job = future.result()
+                    except Exception as exc:
+                        self.logger.warning("并行直提异常，回退规则 | note=%s | error=%s", note.note_id, exc)
+                        decision, job = self.llm_enricher.extract_target_job(
+                            note,
+                            resume_text=resume_text,
+                            mode=mode,
+                            allow_llm=False,
+                        )
+                        target_idx, note_ref = idx, note
+                        job = normalize_job_record(job)
+                    results[target_idx] = (note_ref, decision, job)
+                    completed += 1
+                    if completed == total or completed % progress_step == 0:
+                        pct = int(round(completed * 100 / max(1, total)))
+                        self.logger.info("[阶段进度] 直接提取 %s/%s (%s%%)", completed, total, pct)
+
+        for result in results:
+            if not result:
+                continue
+            note, decision, job = result
+            scores[note.note_id] = float(getattr(decision, "score", 0.0))
+            if bool(getattr(decision, "is_target", False)):
                 targets.append(note)
                 jobs.append(normalize_job_record(job))
-            else:
-                filtered_out.append(
-                    {
-                        "note_id": note.note_id,
-                        "title": note.title[:100],
-                        "score": round(decision.score, 4),
-                        "reason": decision.reason,
-                        "source": decision.source,
-                    }
-                )
-                self.logger.info(
-                    "过滤帖子 | note=%s | score=%.2f | source=%s | reason=%s",
-                    note.note_id,
-                    decision.score,
-                    decision.source,
-                    decision.reason,
-                )
+                continue
+            filtered_out.append(
+                {
+                    "note_id": note.note_id,
+                    "title": note.title[:100],
+                    "score": round(float(getattr(decision, "score", 0.0)), 4),
+                    "reason": str(getattr(decision, "reason", "") or ""),
+                    "source": str(getattr(decision, "source", "") or ""),
+                }
+            )
+            self.logger.info(
+                "过滤帖子 | note=%s | score=%.2f | source=%s | reason=%s",
+                note.note_id,
+                float(getattr(decision, "score", 0.0)),
+                str(getattr(decision, "source", "") or ""),
+                str(getattr(decision, "reason", "") or ""),
+            )
 
-            current = idx + 1
-            if current == total or current % progress_step == 0:
-                pct = int(round(current * 100 / max(1, total)))
-                self.logger.info(
-                    "[阶段进度] 直接提取 %s/%s (%s%%) | 命中=%s | 过滤=%s",
-                    current,
-                    total,
-                    pct,
-                    len(targets),
-                    len(filtered_out),
-                )
+        self.logger.info(
+            "[阶段进度] 直接提取完成 %s/%s (100%%) | 命中=%s | 过滤=%s",
+            total,
+            total,
+            len(targets),
+            len(filtered_out),
+        )
 
         jobs.sort(key=lambda item: item.publish_time, reverse=True)
         return ExtractOutcome(targets=targets, jobs=jobs, filtered_out=filtered_out, scores=scores)
+
+    @staticmethod
+    def _effective_workers(*, workers: int, total: int) -> int:
+        if total <= 1:
+            return 1
+        value = max(1, int(workers or 1))
+        return min(value, total)
 
     def mark_opportunities(self, jobs: list[JobRecord]) -> list[JobRecord]:
         if not jobs:

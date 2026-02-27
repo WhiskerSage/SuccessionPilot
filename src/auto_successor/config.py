@@ -34,6 +34,7 @@ class XHSConfig:
 @dataclass
 class PipelineConfig:
     min_confidence: float = 0.55
+    process_workers: int = 4
 
 
 @dataclass

@@ -20,6 +20,7 @@ xhs:
 
 pipeline:
   min_confidence: 0.55
+  process_workers: 4 # 提取阶段并行线程数（建议 2-6）
 
 llm:
   enabled: false

@@ -240,6 +240,8 @@ class AutoSuccessorPipeline:
                 lambda: self.planner.build_plan(mode=mode, fetched_count=len(notes), new_count=len(new_notes)),
                 meta={"mode": mode},
             )
+            process_workers = max(1, int(getattr(self.settings.pipeline, "process_workers", 1)))
+            self.logger.info("提取并行配置 | run=%s | process_workers=%s", run_id, process_workers)
             use_single_pass_extract = bool(getattr(self.settings.llm, "single_pass_extract", True)) and bool(
                 self.settings.llm.enabled
             )
@@ -251,8 +253,13 @@ class AutoSuccessorPipeline:
                         max_job_items=plan.max_job_items,
                         resume_text=resume_text,
                         mode=mode,
+                        workers=process_workers,
                     ),
-                    meta={"max_job_items": plan.max_job_items, "single_pass_extract": True},
+                    meta={
+                        "max_job_items": plan.max_job_items,
+                        "single_pass_extract": True,
+                        "process_workers": process_workers,
+                    },
                 )
                 target_notes = extract_outcome.targets
                 filtered_out = extract_outcome.filtered_out
@@ -271,8 +278,12 @@ class AutoSuccessorPipeline:
             else:
                 filter_outcome = orchestrator.run_stage(
                     "agent.intelligence.filter_target_notes",
-                    lambda: self.intelligence.filter_target_notes(new_notes, max_filter_items=plan.max_filter_items),
-                    meta={"max_filter_items": plan.max_filter_items},
+                    lambda: self.intelligence.filter_target_notes(
+                        new_notes,
+                        max_filter_items=plan.max_filter_items,
+                        workers=process_workers,
+                    ),
+                    meta={"max_filter_items": plan.max_filter_items, "process_workers": process_workers},
                 )
                 target_notes = filter_outcome.targets
                 filtered_out = filter_outcome.filtered_out
@@ -295,8 +306,9 @@ class AutoSuccessorPipeline:
                         max_job_items=plan.max_job_items,
                         resume_text=resume_text,
                         mode=mode,
+                        workers=process_workers,
                     ),
-                    meta={"max_job_items": plan.max_job_items},
+                    meta={"max_job_items": plan.max_job_items, "process_workers": process_workers},
                 )
 
             jobs = orchestrator.run_stage(
@@ -512,6 +524,7 @@ class AutoSuccessorPipeline:
                 "jobs": len(jobs),
                 "opportunities": len(opportunity_post_ids),
                 "summaries": len(jobs),
+                "process_workers": process_workers,
                 "send_logs": len(send_logs),
                 "stages": len(stage_records),
                 "stage_total_ms": stage_timing["total_ms"],
@@ -574,6 +587,7 @@ class AutoSuccessorPipeline:
                         "max_job_items": plan.max_job_items,
                         "max_summary_items": plan.max_summary_items,
                         "top_n": plan.top_n,
+                        "process_workers": process_workers,
                     },
                     "digest": {
                         "subject": digest_subject,
