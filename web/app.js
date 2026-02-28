@@ -143,6 +143,8 @@
   };
 
   let selectedResumeFile = null;
+  let workspaceVue = null;
+  let workspaceVueApp = null;
 
   const SKINS = ["business-blue", "graphite-office"];
   const WIZARD_DONE_KEY = "successor_setup_wizard_done";
@@ -602,7 +604,478 @@
     return `${text.slice(0, maxLen)}…`;
   }
 
+  function buildLeadDetailHtml(lead, summaryView = isSummaryView()) {
+    if (!lead) return defaultDetailHtml();
+
+    const title = toText(lead.title);
+    const author = toText(lead.author);
+    const publish = toText(lead.publish_time_display || fmtTime(lead.publish_time));
+    const company = toText(lead.company);
+    const position = toText(lead.position);
+    const location = toText(lead.location);
+    const req = compactText(lead.requirements, 1200) || "N/A";
+    const summary = compactText(lead.summary, 3600) || "N/A";
+    const comments = compactText(lead.comments_preview, 1600) || "N/A";
+    const detailText = compactText(lead.detail_text, 2600) || "N/A";
+    const risk = compactText(lead.risk_flags, 360) || "-";
+    const firstSeen = fmtTime(lead.first_seen_at);
+    const updatedAt = fmtTime(lead.updated_at);
+    const dedupeStatus = String(lead.dedupe_status || "new") === "updated" ? "updated" : "new";
+    const url = String(lead.url || "").trim();
+
+    if (summaryView) {
+      const summaryTitle = `${toText(lead.position, "Position TBD")} / ${toText(lead.company, "Company TBD")}`;
+      return `
+        <h4>${escapeHtml(summaryTitle)}</h4>
+        <div class="meta-line">Published: ${escapeHtml(publish)} | Author: ${escapeHtml(author)} | ID: <span class="mono">${escapeHtml(toText(lead.note_id))}</span></div>
+        <div class="meta-line">First Seen: ${escapeHtml(firstSeen)} | Updated: ${escapeHtml(updatedAt)} | Dedupe: ${escapeHtml(dedupeStatus)}</div>
+        <div class="detail-grid">
+          <div class="detail-item"><span>Company</span><strong>${escapeHtml(company)}</strong></div>
+          <div class="detail-item"><span>Position</span><strong>${escapeHtml(position)}</strong></div>
+          <div class="detail-item"><span>Location</span><strong>${escapeHtml(location)}</strong></div>
+          <div class="detail-item"><span>Title</span><strong>${escapeHtml(title)}</strong></div>
+        </div>
+        <div class="detail-block"><h5>Requirements</h5><pre>${escapeHtml(req)}</pre></div>
+        <div class="detail-block"><h5>Summary</h5><pre>${escapeHtml(summary)}</pre></div>
+        ${renderQuickEditBlock(lead)}
+        ${url ? `<div class="detail-link"><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open Original</a></div>` : ""}
+      `;
+    }
+
+    return `
+      <h4>${escapeHtml(title)}</h4>
+      <div class="meta-line">Author: ${escapeHtml(author)} | Published: ${escapeHtml(publish)} | ID: <span class="mono">${escapeHtml(toText(lead.note_id))}</span></div>
+      <div class="meta-line">First Seen: ${escapeHtml(firstSeen)} | Updated: ${escapeHtml(updatedAt)} | Dedupe: ${escapeHtml(dedupeStatus)}</div>
+      <div class="detail-grid">
+        <div class="detail-item"><span>Company</span><strong>${escapeHtml(company)}</strong></div>
+        <div class="detail-item"><span>Position</span><strong>${escapeHtml(position)}</strong></div>
+        <div class="detail-item"><span>Location</span><strong>${escapeHtml(location)}</strong></div>
+        <div class="detail-item"><span>Stats</span><strong>Like ${fmtInt(lead.like_count)} / Comment ${fmtInt(lead.comment_count)} / Share ${fmtInt(lead.share_count)}</strong></div>
+      </div>
+      <div class="detail-block"><h5>Structured Requirements</h5><pre>${escapeHtml(req)}</pre></div>
+      <div class="detail-block"><h5>Summary</h5><pre>${escapeHtml(summary)}</pre></div>
+      <div class="detail-block"><h5>Poster Comments</h5><pre>${escapeHtml(comments)}</pre></div>
+      <div class="detail-block"><h5>Original Detail</h5><pre>${escapeHtml(detailText)}</pre></div>
+      <div class="meta-line">Risk Flags: ${escapeHtml(risk)}</div>
+      ${renderQuickEditBlock(lead)}
+      ${url ? `<div class="detail-link"><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open Original</a></div>` : ""}
+    `;
+  }
+
+  function buildRunItemInnerHtml(item) {
+    const normalizeSlowStages = (value) => {
+      if (!Array.isArray(value)) return [];
+      return value
+        .filter((entry) => entry && typeof entry === "object")
+        .map((entry) => ({
+          name: toText(entry.name, "unknown"),
+          durationMs: Math.max(0, toInt(entry.duration_ms, 0)),
+        }))
+        .filter((entry) => entry.durationMs > 0);
+    };
+    const normalizeErrorCodes = (value) => {
+      if (!value || typeof value !== "object") return [];
+      return Object.entries(value)
+        .map(([code, count]) => ({
+          code: String(code || "").trim().toLowerCase(),
+          count: Math.max(0, toInt(count, 0)),
+        }))
+        .filter((entry) => entry.code && entry.count > 0)
+        .sort((a, b) => b.count - a.count);
+    };
+
+    const runId = toText(item.run_id);
+    const t = fmtTime(item.recorded_at);
+    const fetched = fmtInt(item.fetched);
+    const jobs = fmtInt(item.jobs);
+    const sent = fmtInt(item.send_logs);
+    const digest = item.digest_sent ? "digest sent" : "digest not sent";
+    const digestCls = item.digest_sent ? "ok" : "warn";
+    const mode = toText(item.mode);
+    const notifyMode = toText(item.notification_mode);
+    const stageTotal = fmtMs(item.stage_total_ms);
+    const stageAvg = fmtMs(item.stage_avg_ms);
+    const stageFailed = Math.max(0, toInt(item.stage_failed_count, 0));
+    const slowStages = normalizeSlowStages(item.slow_stages).slice(0, 3);
+    const slowStageText = slowStages.length ? slowStages.map((s) => `${s.name} ${fmtMs(s.durationMs)}`).join(" · ") : "none";
+    const errorCodes = normalizeErrorCodes(item.error_codes);
+    const errorHtml = errorCodes.length
+      ? errorCodes
+          .slice(0, 4)
+          .map((entry) => `<span class="run-code">${escapeHtml(entry.code)} x ${fmtInt(entry.count)}</span>`)
+          .join("")
+      : '<span class="run-code empty">none</span>';
+    const remainErrors = errorCodes.length > 4 ? `<span class="run-code">+${errorCodes.length - 4}</span>` : "";
+
+    return `
+      <div class="run-head">
+        <strong>${escapeHtml(runId)}</strong>
+        <span>${escapeHtml(t)}</span>
+      </div>
+      <div class="run-meta">
+        <span>Fetched ${fetched}</span>
+        <span>Jobs ${jobs}</span>
+        <span>Sent ${sent}</span>
+        <span class="run-chip">${escapeHtml(mode)} / ${escapeHtml(notifyMode)}</span>
+        <span class="run-chip ${digestCls}">${digest}</span>
+      </div>
+      <div class="run-stage">Stage total ${escapeHtml(stageTotal)} · avg ${escapeHtml(stageAvg)} · failed ${fmtInt(stageFailed)}</div>
+      <div class="run-stage">Slow stages: ${escapeHtml(slowStageText)}</div>
+      <div class="run-codes"><span class="run-label">Error codes:</span>${errorHtml}${remainErrors}</div>
+    `;
+  }
+
+  function buildRunDetailHtml(detail) {
+    if (!detail || typeof detail !== "object") {
+      return "<p class='muted'>Select one run record to view details.</p>";
+    }
+
+    const failedStages = Array.isArray(detail.failed_stages) ? detail.failed_stages : [];
+    const fetchFails = Array.isArray(detail.fetch_fail_events) ? detail.fetch_fail_events : [];
+    const retry = detail.retry && typeof detail.retry === "object" ? detail.retry : {};
+    const xhsDiagnosis = detail.xhs_diagnosis && typeof detail.xhs_diagnosis === "object" ? detail.xhs_diagnosis : {};
+    const stageErrorCodes = detail.stage_error_codes && typeof detail.stage_error_codes === "object" ? detail.stage_error_codes : {};
+    const llmErrorCodes = detail.llm_error_codes && typeof detail.llm_error_codes === "object" ? detail.llm_error_codes : {};
+
+    const listCodes = (obj) => {
+      const entries = Object.entries(obj || {}).filter(([, v]) => toInt(v, 0) > 0);
+      if (!entries.length) return "none";
+      return entries
+        .slice(0, 8)
+        .map(([k, v]) => `${k}: ${fmtInt(v)}`)
+        .join(" | ");
+    };
+    const failedStageHtml = failedStages.length
+      ? `<ul class="detail-list">${failedStages
+          .slice(0, 8)
+          .map((s) => `<li>${escapeHtml(toText(s.name, "unknown"))} · ${escapeHtml(toText(s.error_code, "failed"))}</li>`)
+          .join("")}</ul>`
+      : "<p class='muted'>No failed stage.</p>";
+
+    const fetchFailHtml = fetchFails.length
+      ? `<ul class="detail-list">${fetchFails
+          .slice(0, 8)
+          .map((s) => `<li>${escapeHtml(toText(s.stage, "-"))}: ${escapeHtml(toText(s.error, "-"))}</li>`)
+          .join("")}</ul>`
+      : "<p class='muted'>No fetch failure.</p>";
+
+    const retryPending = retry.pending && typeof retry.pending === "object" ? retry.pending : {};
+    const retryRunning = retry.running && typeof retry.running === "object" ? retry.running : {};
+    const retryStats = retry.stats && typeof retry.stats === "object" ? retry.stats : {};
+
+    return `
+      <div class="meta-line">Run: <span class="mono">${escapeHtml(toText(detail.run_id))}</span> · ${escapeHtml(fmtTime(detail.recorded_at))}</div>
+      <div class="detail-grid">
+        <div class="detail-item"><span>Failed Stages</span><strong>${fmtInt(failedStages.length)}</strong></div>
+        <div class="detail-item"><span>Fetch Failures</span><strong>${fmtInt(fetchFails.length)}</strong></div>
+        <div class="detail-item"><span>Retry Pending</span><strong>${fmtInt(Object.values(retryPending).reduce((a, b) => a + toInt(b, 0), 0))}</strong></div>
+        <div class="detail-item"><span>Retry Running</span><strong>${fmtInt(Object.values(retryRunning).reduce((a, b) => a + toInt(b, 0), 0))}</strong></div>
+      </div>
+      <div class="detail-block"><h5>Failed Stages</h5>${failedStageHtml}</div>
+      <div class="detail-block"><h5>Fetch Fail Events</h5>${fetchFailHtml}</div>
+      <div class="detail-block"><h5>Stage Error Codes</h5><pre>${escapeHtml(listCodes(stageErrorCodes))}</pre></div>
+      <div class="detail-block"><h5>LLM Error Codes</h5><pre>${escapeHtml(listCodes(llmErrorCodes))}</pre></div>
+      <div class="detail-block"><h5>XHS Diagnosis</h5><pre>${escapeHtml(JSON.stringify(xhsDiagnosis, null, 2) || "{}")}</pre></div>
+      <div class="detail-block"><h5>Retry Snapshot</h5><pre>${escapeHtml(JSON.stringify({ pending: retryPending, running: retryRunning, stats: retryStats }, null, 2))}</pre></div>
+    `;
+  }
+
+  function ensureWorkspaceVue() {
+    if (workspaceVue || !dom.workspace || !window.Vue || !window.Vue.createApp) return workspaceVue;
+    const { createApp } = window.Vue;
+
+    workspaceVueApp = createApp({
+      data() {
+        return {
+          view: state.view,
+          leads: [],
+          selectedNoteId: "",
+          tableLoading: "",
+          tableError: "",
+          pagination: { ...state.pagination },
+          runItems: [],
+          selectedRunId: "",
+          runDetailHtml: "<p class='muted'>Select one run record to view details.</p>",
+        };
+      },
+      computed: {
+        summaryView() {
+          return this.view === "summary";
+        },
+        tableColspan() {
+          return this.summaryView ? 4 : 5;
+        },
+        leadCountText() {
+          return `${fmtInt(this.leads.length)} 条`;
+        },
+        pageCurrent() {
+          return toInt(this.pagination.page, 1);
+        },
+        pageTotal() {
+          return Math.max(1, toInt(this.pagination.totalPages, 1));
+        },
+        pageSizeText() {
+          return String(toInt(this.pagination.pageSize, 30));
+        },
+        prevDisabled() {
+          return this.pageCurrent <= 1;
+        },
+        nextDisabled() {
+          return this.pageCurrent >= this.pageTotal;
+        },
+        pageInfoText() {
+          const page = this.pageCurrent;
+          const totalPages = this.pageTotal;
+          const total = toInt(this.pagination.total, 0);
+          return `${page} / ${totalPages} · total ${fmtInt(total)}`;
+        },
+        selectedLead() {
+          if (!this.leads.length) return null;
+          const hit = this.leads.find((x) => x.note_id === this.selectedNoteId);
+          return hit || this.leads[0];
+        },
+        detailHtml() {
+          return buildLeadDetailHtml(this.selectedLead, this.summaryView);
+        },
+      },
+      methods: {
+        selectLead(noteId) {
+          const value = String(noteId || "").trim();
+          if (!value) return;
+          this.selectedNoteId = value;
+          state.selectedNoteId = value;
+        },
+        selectRun(runId) {
+          const value = String(runId || "").trim();
+          if (!value) return;
+          this.selectedRunId = value;
+          state.selectedRunId = value;
+          this.runDetailHtml = "<p class='muted'>Loading run detail...</p>";
+          if (typeof window.__spLoadRunDetail === "function") {
+            window.__spLoadRunDetail(value);
+          }
+        },
+        rowClass(noteId) {
+          return String(noteId || "").trim() === String(this.selectedNoteId || "").trim() ? "active" : "";
+        },
+        publishText(lead) {
+          return toText(lead.publish_time_display || fmtTime(lead.publish_time));
+        },
+        text(value, fallback = "-") {
+          return toText(value, fallback);
+        },
+        jobLine(lead) {
+          return `${toText(lead.position, "Position TBD")} / ${toText(lead.company, "Company TBD")}`;
+        },
+        requirementLine(lead) {
+          return compactOneLine(lead.requirements, "No requirements", 90);
+        },
+        summaryLine(lead) {
+          return compactOneLine(lead.summary, "No summary", 130);
+        },
+        dedupeText(lead) {
+          return String(lead.dedupe_status || "new") === "updated" ? "updated" : "new";
+        },
+        interactText(lead) {
+          return `Like ${fmtInt(lead.like_count)} / Comment ${fmtInt(lead.comment_count)}`;
+        },
+        updateLine(lead) {
+          return `Updated ${fmtTime(lead.updated_at)} · ${this.dedupeText(lead)}`;
+        },
+        statusBadgeHtml(lead) {
+          return statusBadge(lead.status, lead.like_count, lead.comment_count);
+        },
+        runItemInnerHtml(item) {
+          return buildRunItemInnerHtml(item);
+        },
+        applyLeads(items, pagination) {
+          this.tableLoading = "";
+          this.tableError = "";
+          this.leads = Array.isArray(items) ? items : [];
+          this.pagination = {
+            page: toInt(pagination.page, 1),
+            pageSize: toInt(pagination.pageSize, pageSizeForView(this.view)),
+            total: toInt(pagination.total, 0),
+            totalPages: Math.max(1, toInt(pagination.totalPages, 1)),
+          };
+          if (!this.leads.length) {
+            this.selectedNoteId = "";
+            state.selectedNoteId = "";
+            return;
+          }
+          if (!this.selectedNoteId || !this.leads.some((x) => x.note_id === this.selectedNoteId)) {
+            this.selectedNoteId = this.leads[0].note_id;
+          }
+          state.selectedNoteId = this.selectedNoteId;
+        },
+        setLoading(message) {
+          this.tableError = "";
+          this.tableLoading = String(message || "Loading...");
+          this.leads = [];
+        },
+        setError(message) {
+          this.tableLoading = "";
+          this.tableError = String(message || "Load failed");
+          this.leads = [];
+        },
+        applyRuns(items) {
+          this.runItems = Array.isArray(items) ? items : [];
+          if (!this.runItems.length) {
+            this.selectedRunId = "";
+            state.selectedRunId = "";
+            this.runDetailHtml = "<p class='muted'>No run records.</p>";
+            return;
+          }
+          const hasSelected = this.runItems.some((item) => item && item.run_id === this.selectedRunId);
+          if (!this.selectedRunId || !hasSelected) {
+            this.selectedRunId = String(this.runItems[0].run_id || "");
+          }
+          state.selectedRunId = this.selectedRunId;
+        },
+        applyRunDetail(detail) {
+          this.runDetailHtml = buildRunDetailHtml(detail);
+        },
+      },
+      template: `
+        <article class="panel table-panel enter" style="--delay: 320ms">
+          <div class="head-row">
+            <h3>{{ summaryView ? 'Summary List' : 'Leads List' }}</h3>
+            <span class="count" id="leadCount">{{ leadCountText }}</span>
+            <div id="leadFiltersRow" class="lead-filters-row">
+              <label class="mini-field">
+                <span>Status</span>
+                <select id="leadStatusFilter">
+                  <option value="all">All</option>
+                  <option value="high_priority">High Priority</option>
+                  <option value="actionable">Actionable</option>
+                  <option value="pending_review">Pending Review</option>
+                  <option value="new_lead">New Lead</option>
+                </select>
+              </label>
+              <label class="mini-field">
+                <span>Dedupe</span>
+                <select id="leadDedupeFilter">
+                  <option value="all">All</option>
+                  <option value="new">New</option>
+                  <option value="updated">Updated</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="pager" id="leadPager">
+            <button id="leadPrevBtn" class="btn ghost" type="button" :disabled="prevDisabled">Prev</button>
+            <span id="leadPageInfo">{{ pageInfoText }}</span>
+            <button id="leadNextBtn" class="btn ghost" type="button" :disabled="nextDisabled">Next</button>
+            <label class="pager-size">
+              <span>Size</span>
+              <select id="leadPageSize" :value="pageSizeText">
+                <option value="10">10</option>
+                <option value="20">20</option>
+                <option value="30">30</option>
+                <option value="50">50</option>
+              </select>
+            </label>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr v-if="summaryView">
+                  <th>Published</th>
+                  <th>Position / Company</th>
+                  <th>Requirements</th>
+                  <th>Summary</th>
+                </tr>
+                <tr v-else>
+                  <th>Published</th>
+                  <th>Position / Company</th>
+                  <th>Location</th>
+                  <th>Interaction</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="leadBody">
+                <tr v-if="tableLoading"><td :colspan="tableColspan" class="table-tip">{{ tableLoading }}</td></tr>
+                <tr v-else-if="tableError"><td :colspan="tableColspan" class="table-tip error">{{ tableError }}</td></tr>
+                <tr v-else-if="!leads.length"><td :colspan="tableColspan" class="table-tip">No matched leads</td></tr>
+                <template v-else>
+                  <tr
+                    v-for="lead in leads"
+                    :key="lead.note_id"
+                    :class="rowClass(lead.note_id)"
+                    :data-id="lead.note_id"
+                    @click="selectLead(lead.note_id)"
+                  >
+                    <td>{{ publishText(lead) }}</td>
+                    <td>
+                      <div class="title-cell">{{ jobLine(lead) }}</div>
+                      <div class="sub-cell" v-if="summaryView">{{ text(lead.location) }} · {{ dedupeText(lead) }}</div>
+                      <template v-else>
+                        <div class="sub-cell">{{ text(lead.title) }}</div>
+                        <div class="sub-cell">{{ updateLine(lead) }}</div>
+                      </template>
+                    </td>
+                    <td v-if="summaryView">{{ requirementLine(lead) }}</td>
+                    <td v-if="summaryView">{{ summaryLine(lead) }}</td>
+                    <td v-if="!summaryView">{{ text(lead.location) }}</td>
+                    <td v-if="!summaryView">{{ interactText(lead) }}</td>
+                    <td v-if="!summaryView" v-html="statusBadgeHtml(lead)"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="panel detail-panel enter" style="--delay: 370ms">
+          <div class="head-row">
+            <h3>{{ summaryView ? 'Summary Detail' : 'Lead Detail' }}</h3>
+            <span class="chip">{{ summaryView ? 'Structured' : 'Realtime' }}</span>
+          </div>
+          <div id="detailBox" class="detail-box" v-html="detailHtml"></div>
+          <div class="runs-box">
+            <h4>Run Records</h4>
+            <ul id="runList">
+              <li v-if="!runItems.length">No run records</li>
+              <li
+                v-for="item in runItems"
+                :key="String(item.run_id || '')"
+                class="run-item"
+                :class="{ active: String(item.run_id || '') === String(selectedRunId || '') }"
+                :data-run-id="String(item.run_id || '')"
+                @click="selectRun(item.run_id)"
+                v-html="runItemInnerHtml(item)"
+              ></li>
+            </ul>
+            <div id="runDetailBox" class="run-detail-box" v-html="runDetailHtml"></div>
+          </div>
+        </article>
+      `,
+    });
+
+    workspaceVue = workspaceVueApp.mount(dom.workspace);
+
+    dom.leadCount = document.getElementById("leadCount");
+    dom.leadBody = document.getElementById("leadBody");
+    dom.detailBox = document.getElementById("detailBox");
+    dom.runList = document.getElementById("runList");
+    dom.runDetailBox = document.getElementById("runDetailBox");
+    dom.leadPageInfo = document.getElementById("leadPageInfo");
+    dom.leadPrevBtn = document.getElementById("leadPrevBtn");
+    dom.leadNextBtn = document.getElementById("leadNextBtn");
+    dom.leadPageSize = document.getElementById("leadPageSize");
+    dom.leadPager = document.getElementById("leadPager");
+    dom.leadStatusFilter = document.getElementById("leadStatusFilter");
+    dom.leadDedupeFilter = document.getElementById("leadDedupeFilter");
+    return workspaceVue;
+  }
+
   function renderWorkspaceLayout() {
+    const vm = ensureWorkspaceVue();
+    if (vm) {
+      vm.view = state.view;
+      return;
+    }
+
     const summaryView = isSummaryView();
     if (dom.leadHeadRow) {
       dom.leadHeadRow.innerHTML = summaryView
@@ -764,6 +1237,10 @@
 
   function renderRuns(items) {
     state.runItems = Array.isArray(items) ? items : [];
+    if (workspaceVue && typeof workspaceVue.applyRuns === "function") {
+      workspaceVue.applyRuns(state.runItems);
+      return;
+    }
     if (!dom.runList) return;
     if (!state.runItems.length) {
       dom.runList.innerHTML = "<li>暂无运行记录</li>";
@@ -862,62 +1339,16 @@
   }
 
   function renderRunDetail(detail) {
-    if (!dom.runDetailBox) return;
-    state.runDetail = detail || null;
-    if (!detail || typeof detail !== "object") {
-      dom.runDetailBox.innerHTML = "<p class='muted'>暂无运行详情。</p>";
+    if (workspaceVue && typeof workspaceVue.applyRunDetail === "function") {
+      state.runDetail = detail || null;
+      workspaceVue.applyRunDetail(state.runDetail);
       return;
     }
-
-    const failedStages = Array.isArray(detail.failed_stages) ? detail.failed_stages : [];
-    const fetchFails = Array.isArray(detail.fetch_fail_events) ? detail.fetch_fail_events : [];
-    const retry = detail.retry && typeof detail.retry === "object" ? detail.retry : {};
-    const xhsDiagnosis = detail.xhs_diagnosis && typeof detail.xhs_diagnosis === "object" ? detail.xhs_diagnosis : {};
-    const stageErrorCodes = detail.stage_error_codes && typeof detail.stage_error_codes === "object" ? detail.stage_error_codes : {};
-    const llmErrorCodes = detail.llm_error_codes && typeof detail.llm_error_codes === "object" ? detail.llm_error_codes : {};
-
-    const listCodes = (obj) => {
-      const entries = Object.entries(obj || {}).filter(([, v]) => toInt(v, 0) > 0);
-      if (!entries.length) return "无";
-      return entries
-        .slice(0, 8)
-        .map(([k, v]) => `${k}: ${fmtInt(v)}`)
-        .join(" | ");
-    };
-    const failedStageHtml = failedStages.length
-      ? `<ul class="detail-list">${failedStages
-          .slice(0, 8)
-          .map((s) => `<li>${escapeHtml(toText(s.name, "unknown"))} · ${escapeHtml(toText(s.error_code, "failed"))}</li>`)
-          .join("")}</ul>`
-      : "<p class='muted'>无失败阶段</p>";
-
-    const fetchFailHtml = fetchFails.length
-      ? `<ul class="detail-list">${fetchFails
-          .slice(0, 8)
-          .map((s) => `<li>${escapeHtml(toText(s.stage, "-"))}: ${escapeHtml(toText(s.error, "-"))}</li>`)
-          .join("")}</ul>`
-      : "<p class='muted'>无抓取失败事件</p>";
-
-    const retryPending = retry.pending && typeof retry.pending === "object" ? retry.pending : {};
-    const retryRunning = retry.running && typeof retry.running === "object" ? retry.running : {};
-    const retryStats = retry.stats && typeof retry.stats === "object" ? retry.stats : {};
-
-    dom.runDetailBox.innerHTML = `
-      <div class="meta-line">Run: <span class="mono">${escapeHtml(toText(detail.run_id))}</span> · ${escapeHtml(fmtTime(detail.recorded_at))}</div>
-      <div class="detail-grid">
-        <div class="detail-item"><span>失败阶段</span><strong>${fmtInt(failedStages.length)}</strong></div>
-        <div class="detail-item"><span>抓取失败</span><strong>${fmtInt(fetchFails.length)}</strong></div>
-        <div class="detail-item"><span>重试待执行</span><strong>${fmtInt(Object.values(retryPending).reduce((a, b) => a + toInt(b, 0), 0))}</strong></div>
-        <div class="detail-item"><span>重试执行中</span><strong>${fmtInt(Object.values(retryRunning).reduce((a, b) => a + toInt(b, 0), 0))}</strong></div>
-      </div>
-      <div class="detail-block"><h5>阶段失败详情</h5>${failedStageHtml}</div>
-      <div class="detail-block"><h5>抓取失败事件</h5>${fetchFailHtml}</div>
-      <div class="detail-block"><h5>阶段错误码</h5><pre>${escapeHtml(listCodes(stageErrorCodes))}</pre></div>
-      <div class="detail-block"><h5>LLM错误码</h5><pre>${escapeHtml(listCodes(llmErrorCodes))}</pre></div>
-      <div class="detail-block"><h5>XHS诊断</h5><pre>${escapeHtml(JSON.stringify(xhsDiagnosis, null, 2) || "{}")}</pre></div>
-      <div class="detail-block"><h5>重试统计</h5><pre>${escapeHtml(JSON.stringify({ pending: retryPending, running: retryRunning, stats: retryStats }, null, 2))}</pre></div>
-    `;
+    if (!dom.runDetailBox) return;
+    state.runDetail = detail || null;
+    dom.runDetailBox.innerHTML = buildRunDetailHtml(detail);
   }
+
 
   async function loadRunDetail(runId) {
     const id = String(runId || "").trim();
@@ -925,14 +1356,25 @@
       renderRunDetail(null);
       return;
     }
-    if (dom.runDetailBox) {
-      dom.runDetailBox.innerHTML = "<p class='muted'>正在加载运行详情...</p>";
+    if (workspaceVue && typeof workspaceVue.applyRunDetail === "function") {
+      workspaceVue.applyRunDetail({ run_id: id, recorded_at: "", failed_stages: [], fetch_fail_events: [] });
+    } else if (dom.runDetailBox) {
+      dom.runDetailBox.innerHTML = "<p class='muted'>Loading run detail...</p>";
     }
     const detail = await fetchJson(`/api/runs/${encodeURIComponent(id)}`);
     renderRunDetail(detail || null);
   }
 
   function renderPagination() {
+    if (workspaceVue) {
+      workspaceVue.pagination = {
+        page: toInt(state.pagination.page, 1),
+        pageSize: toInt(state.pagination.pageSize, pageSizeForView(state.view)),
+        total: toInt(state.pagination.total, 0),
+        totalPages: Math.max(1, toInt(state.pagination.totalPages, 1)),
+      };
+      return;
+    }
     if (!dom.leadPageInfo || !dom.leadPrevBtn || !dom.leadNextBtn || !dom.leadPager) return;
     const { page, totalPages, total, pageSize } = state.pagination;
     dom.leadPageInfo.textContent = `${page} / ${totalPages} · 共 ${fmtInt(total)} 条`;
@@ -945,10 +1387,12 @@
   }
 
   function getSelectedLead() {
+    const currentSelected = workspaceVue ? String(workspaceVue.selectedNoteId || state.selectedNoteId || "") : state.selectedNoteId;
     if (!state.leads.length) return null;
-    const byId = state.leads.find((x) => x.note_id === state.selectedNoteId);
+    const byId = state.leads.find((x) => x.note_id === currentSelected);
     if (byId) return byId;
     state.selectedNoteId = state.leads[0].note_id;
+    if (workspaceVue) workspaceVue.selectedNoteId = state.selectedNoteId;
     return state.leads[0];
   }
 
@@ -1014,71 +1458,23 @@
   }
 
   function renderDetail(lead) {
+    const noteId = lead && lead.note_id ? String(lead.note_id) : "";
+    state.selectedNoteId = noteId;
+    if (workspaceVue) {
+      workspaceVue.selectedNoteId = noteId;
+      return;
+    }
     if (!dom.detailBox) return;
-    if (!lead) {
-      dom.detailBox.innerHTML = defaultDetailHtml();
-      return;
-    }
-
-    const title = toText(lead.title);
-    const author = toText(lead.author);
-    const publish = toText(lead.publish_time_display || fmtTime(lead.publish_time));
-    const company = toText(lead.company);
-    const position = toText(lead.position);
-    const location = toText(lead.location);
-    const req = compactText(lead.requirements, 1200) || "暂无";
-    const summary = compactText(lead.summary, 3600) || "暂无摘要";
-    const comments = compactText(lead.comments_preview, 1600) || "暂无评论预览";
-    const detailText = compactText(lead.detail_text, 2600) || "暂无正文详情";
-    const risk = compactText(lead.risk_flags, 360) || "无";
-    const firstSeen = fmtTime(lead.first_seen_at);
-    const updatedAt = fmtTime(lead.updated_at);
-    const dedupeStatus = String(lead.dedupe_status || "new") === "updated" ? "已更新" : "新增";
-    const url = String(lead.url || "").trim();
-
-    if (isSummaryView()) {
-      const summaryTitle = `${toText(lead.position, "岗位待补充")} / ${toText(lead.company, "公司待补充")}`;
-      dom.detailBox.innerHTML = `
-        <h4>${escapeHtml(summaryTitle)}</h4>
-        <div class="meta-line">发布时间：${escapeHtml(publish)} | 作者：${escapeHtml(author)} | ID：<span class="mono">${escapeHtml(toText(lead.note_id))}</span></div>
-        <div class="meta-line">首次发现：${escapeHtml(firstSeen)} | 最近更新：${escapeHtml(updatedAt)} | 去重状态：${escapeHtml(dedupeStatus)}</div>
-        <div class="detail-grid">
-          <div class="detail-item"><span>公司</span><strong>${escapeHtml(company)}</strong></div>
-          <div class="detail-item"><span>岗位</span><strong>${escapeHtml(position)}</strong></div>
-          <div class="detail-item"><span>地点</span><strong>${escapeHtml(location)}</strong></div>
-          <div class="detail-item"><span>标题</span><strong>${escapeHtml(title)}</strong></div>
-        </div>
-        <div class="detail-block"><h5>岗位要求</h5><pre>${escapeHtml(req)}</pre></div>
-        <div class="detail-block"><h5>摘要</h5><pre>${escapeHtml(summary)}</pre></div>
-        ${renderQuickEditBlock(lead)}
-        ${url ? `<div class="detail-link"><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">打开原帖链接</a></div>` : ""}
-      `;
-      return;
-    }
-
-    dom.detailBox.innerHTML = `
-      <h4>${escapeHtml(title)}</h4>
-      <div class="meta-line">作者：${escapeHtml(author)} | 发布时间：${escapeHtml(publish)} | ID：<span class="mono">${escapeHtml(toText(lead.note_id))}</span></div>
-      <div class="meta-line">首次发现：${escapeHtml(firstSeen)} | 最近更新：${escapeHtml(updatedAt)} | 去重状态：${escapeHtml(dedupeStatus)}</div>
-      <div class="detail-grid">
-        <div class="detail-item"><span>公司</span><strong>${escapeHtml(company)}</strong></div>
-        <div class="detail-item"><span>岗位</span><strong>${escapeHtml(position)}</strong></div>
-        <div class="detail-item"><span>地点</span><strong>${escapeHtml(location)}</strong></div>
-        <div class="detail-item"><span>互动</span><strong>赞 ${fmtInt(lead.like_count)} / 评 ${fmtInt(lead.comment_count)} / 转 ${fmtInt(lead.share_count)}</strong></div>
-      </div>
-      <div class="detail-block"><h5>结构化要求</h5><pre>${escapeHtml(req)}</pre></div>
-      <div class="detail-block"><h5>摘要</h5><pre>${escapeHtml(summary)}</pre></div>
-      <div class="detail-block"><h5>评论预览</h5><pre>${escapeHtml(comments)}</pre></div>
-      <div class="detail-block"><h5>原帖正文详情</h5><pre>${escapeHtml(detailText)}</pre></div>
-      <div class="meta-line">风险标签：${escapeHtml(risk)}</div>
-      ${renderQuickEditBlock(lead)}
-      ${url ? `<div class="detail-link"><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">打开原帖链接</a></div>` : ""}
-    `;
+    dom.detailBox.innerHTML = buildLeadDetailHtml(lead, isSummaryView());
   }
 
   function renderLeads(items) {
     state.leads = Array.isArray(items) ? items : [];
-    if (dom.leadCount) dom.leadCount.textContent = `${state.leads.length} 条`;
+    if (workspaceVue && typeof workspaceVue.applyLeads === "function") {
+      workspaceVue.applyLeads(state.leads, state.pagination);
+      return;
+    }
+    if (dom.leadCount) dom.leadCount.textContent = `${fmtInt(state.leads.length)} 条`;
 
     if (!dom.leadBody) return;
     if (!state.leads.length) {
@@ -1142,11 +1538,19 @@
   }
 
   function setLoadingTable(message = "加载中...") {
+    if (workspaceVue && typeof workspaceVue.setLoading === "function") {
+      workspaceVue.setLoading(message);
+      return;
+    }
     if (!dom.leadBody) return;
     dom.leadBody.innerHTML = `<tr><td colspan="${tableColumnCount()}" class="table-tip">${escapeHtml(message)}</td></tr>`;
   }
 
   function setTableError(message) {
+    if (workspaceVue && typeof workspaceVue.setError === "function") {
+      workspaceVue.setError(message);
+      return;
+    }
     if (!dom.leadBody) return;
     dom.leadBody.innerHTML = `<tr><td colspan="${tableColumnCount()}" class="table-tip error">${escapeHtml(message)}</td></tr>`;
   }
@@ -1347,25 +1751,48 @@
       return;
     }
 
-    dom.wizardCheckList.innerHTML = items
-      .map((item) => {
+    const sortedItems = items.slice().sort((a, b) => {
+      const rank = (status) => {
+        const key = String(status || "").toLowerCase();
+        if (key === "fail") return 0;
+        if (key === "warn") return 1;
+        return 2;
+      };
+      return rank(a && a.status) - rank(b && b.status);
+    });
+
+    const renderItem = (item) => {
         const status = String(item.status || "warn").toLowerCase();
         const statusText = status === "pass" ? "通过" : status === "fail" ? "失败" : "警告";
         const reason = String(item.reason || item.message || "").trim();
         const detail = String(item.detail || "").trim();
         const suggestion = String(item.suggestion || "").trim();
         const fixCommand = String(item.fix_command || "").trim();
-        return [
-          '<div class="wizard-check-item">',
-          `<div class="wizard-check-head"><strong>${escapeHtml(String(item.name || "-"))}</strong><span class="wizard-check-status ${status}">${statusText}</span></div>`,
+        const openByDefault = status !== "pass";
+        const openAttr = openByDefault ? " open" : "";
+        const bodyHtml = [
           `<p>${escapeHtml(reason || "-")}</p>`,
           detail ? `<p class="wizard-check-detail">${escapeHtml(detail)}</p>` : "",
           suggestion ? `<p class="wizard-check-tip">建议：${escapeHtml(suggestion)}</p>` : "",
           fixCommand ? `<p class="wizard-check-tip">修复命令：<code>${escapeHtml(fixCommand)}</code></p>` : "",
-          "</div>",
+        ]
+          .filter(Boolean)
+          .join("");
+        return [
+          `<details class="wizard-check-item ${status}"${openAttr}>`,
+          `<summary class="wizard-check-head"><strong>${escapeHtml(String(item.name || "-"))}</strong><span class="wizard-check-status ${status}">${statusText}</span></summary>`,
+          `<div class="wizard-check-body">${bodyHtml}</div>`,
+          "</details>",
         ].join("");
-      })
-      .join("");
+    };
+
+    dom.wizardCheckList.innerHTML = [
+      '<div class="wizard-check-toolbar">',
+      '<button type="button" class="btn ghost small" data-role="wizard-expand-all">展开全部</button>',
+      '<button type="button" class="btn ghost small" data-role="wizard-collapse-all">收起通过项</button>',
+      "</div>",
+      ...sortedItems.map(renderItem),
+    ].join("");
   }
 
   async function saveConfigForm(successMsg = "配置已保存") {
@@ -2050,6 +2477,28 @@
         }
       });
     }
+    if (dom.wizardCheckList) {
+      dom.wizardCheckList.addEventListener("click", (event) => {
+        const target = event.target && event.target.closest ? event.target.closest("[data-role]") : null;
+        if (!target) return;
+        const role = String(target.getAttribute("data-role") || "").trim();
+        if (!role) return;
+        const details = Array.from(dom.wizardCheckList.querySelectorAll("details.wizard-check-item"));
+        if (!details.length) return;
+        if (role === "wizard-expand-all") {
+          details.forEach((item) => {
+            item.open = true;
+          });
+          return;
+        }
+        if (role === "wizard-collapse-all") {
+          details.forEach((item) => {
+            const isPass = item.classList.contains("pass");
+            item.open = !isPass;
+          });
+        }
+      });
+    }
     if (dom.wizardMarkDoneBtn) {
       dom.wizardMarkDoneBtn.addEventListener("click", () => {
         localStorage.setItem(WIZARD_DONE_KEY, "1");
@@ -2110,6 +2559,16 @@
   }
 
   function boot() {
+    window.__spLoadRunDetail = (runId) =>
+      loadRunDetail(runId).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (workspaceVue && typeof workspaceVue.applyRunDetail === "function") {
+          workspaceVue.applyRunDetail({ run_id: runId, recorded_at: "", failed_stages: [], fetch_fail_events: [] });
+          workspaceVue.runDetailHtml = `<p class="table-tip error">${escapeHtml(msg)}</p>`;
+        } else if (dom.runDetailBox) {
+          dom.runDetailBox.innerHTML = `<p class="table-tip error">${escapeHtml(msg)}</p>`;
+        }
+      });
     loadSkin();
     applyViewMode(state.view);
     bindEvents();

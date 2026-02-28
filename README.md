@@ -1,10 +1,23 @@
 ﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.4.3`
+- 项目版本：`0.4.5`
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
+
+### v0.4.5 更新要点
+- 控制中心“配置向导”整块支持折叠/展开（默认展开），减少页面占用并便于聚焦其他操作区。
+- 配置向导的“一键自检结果”升级为可折叠视图：每项可展开/收起，默认展开失败和警告项，通过项默认折叠。
+- 新增自检结果快捷操作：`展开全部`、`收起通过项`，便于集中处理异常项。
+- 自检结果按状态优先级排序（失败 > 警告 > 通过），问题项自动前置。
+- 前端静态资源版本更新为 `web/app.js?v=20260227-8`（仅缓存版本升级，无新增配置字段）。
+
+### v0.4.4 更新要点
+- 前端工作区（线索列表/摘要列表/详情面板/运行记录）改为 Vue 响应式渲染，保留现有办公风样式与交互结构。
+- 运行记录详情加载链路统一：页面点击 run 记录通过 `__spLoadRunDetail` 桥接，避免旧 DOM 与新状态不同步。
+- 四个页面统一加载 `Vue 3`（CDN），并将前端脚本缓存版本更新为 `web/app.js?v=20260227-7`。
+- 配置项无新增字段：`config/config.yaml`、`.env` 继续沿用现有配置即可。
 
 ### v0.4.3 更新要点
 - 提取链路升级为每条 note 一个显式 NoteAgent 任务，按 `pipeline.process_workers` 并行处理，单条失败回退不阻塞其他条。
@@ -372,6 +385,7 @@ powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1
 - Node.js 18 及以上
 - Google Chrome（用于 XHS MCP 登录与抓取）
 - Windows PowerShell（示例命令按 Windows 编写）
+- Dashboard 前端默认从 CDN 加载 Vue 3（`https://unpkg.com/vue@3/dist/vue.global.prod.js`）；若网络不可达会自动回退到 legacy 渲染。
 
 ## 手动安装（可选）
 ```powershell
@@ -873,6 +887,8 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
+| v0.4.5 | 2026-02-27 | 控制中心“配置向导”整块支持折叠/展开；自检结果支持折叠/展开与“展开全部/收起通过项”；结果按失败/警告/通过排序；前端缓存版本升级为 `app.js?v=20260227-8`。 |
+| v0.4.4 | 2026-02-27 | 前端工作区改为 Vue 响应式渲染（保留原样式）；运行记录详情改为 `__spLoadRunDetail` 桥接；四个页面统一接入 Vue CDN 并更新 `app.js` 缓存版本；本次无新增配置字段。 |
 | v0.4.3 | 2026-02-27 | 提取链路改为每帖 NoteAgent 并行；岗位提取改为全量 LLM 尝试（取消预算截断）；`llm.max_job_items` 标记弃用并同步配置示例。 |
 | v0.4.2 | 2026-02-27 | 新增线索“快速改字段”并回写 `output.xlsx`（`POST /api/leads/update`）；前端修复双栏固定与点击不重绘；统一无时区时间按 UTC 解析并修复相对发布时间漂移。 |
 | v0.4.1 | 2026-02-27 | 新增 `xhs.detail_workers` 并行 detail 抓取（默认 3）；控制中心与总览新增性能看板（耗时均值/P50/P95、失败率、慢阶段、错误码）；Dashboard 新增 `GET /api/performance`。 |

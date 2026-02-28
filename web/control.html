@@ -91,20 +91,28 @@
 
         <div class="ops-grid">
           <article class="ops-card span-2">
-            <div class="head-row">
-              <h4>配置向导</h4>
-              <span id="wizardGuideBadge" class="chip">未完成</span>
-            </div>
-            <div id="wizardGuideSteps" class="wizard-steps"></div>
-            <div class="btn-row">
-              <button id="wizardApplyBtn" class="btn ghost" type="button">应用推荐配置</button>
-              <button id="wizardCheckBtn" class="btn primary" type="button">一键自检</button>
-              <button id="wizardMarkDoneBtn" class="btn ghost" type="button">标记向导完成</button>
-            </div>
-            <p id="wizardCheckSummary" class="tip-line">建议优先执行“应用推荐配置”与“一键自检”。</p>
-            <div id="wizardCheckList" class="wizard-check-list">
-              <p class="wizard-check-empty">暂无自检结果</p>
-            </div>
+            <details id="wizardPanel" class="wizard-panel" open>
+              <summary class="wizard-panel-summary">
+                <div class="head-row">
+                  <h4>配置向导</h4>
+                  <span id="wizardGuideBadge" class="chip">未完成</span>
+                </div>
+                <span class="wizard-panel-chevron" aria-hidden="true"></span>
+              </summary>
+              <div class="wizard-panel-body">
+                <p class="tip-line">点击标题可折叠/展开配置向导。</p>
+                <div id="wizardGuideSteps" class="wizard-steps"></div>
+                <div class="btn-row">
+                  <button id="wizardApplyBtn" class="btn ghost" type="button">应用推荐配置</button>
+                  <button id="wizardCheckBtn" class="btn primary" type="button">一键自检</button>
+                  <button id="wizardMarkDoneBtn" class="btn ghost" type="button">标记向导完成</button>
+                </div>
+                <p id="wizardCheckSummary" class="tip-line">建议优先执行“应用推荐配置”与“一键自检”。</p>
+                <div id="wizardCheckList" class="wizard-check-list">
+                  <p class="wizard-check-empty">暂无自检结果</p>
+                </div>
+              </div>
+            </details>
           </article>
 
           <article class="ops-card">
@@ -342,6 +350,7 @@
     </main>
   </div>
 
-  <script src="./app.js?v=20260227-6"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="./app.js?v=20260227-8"></script>
 </body>
 </html>
