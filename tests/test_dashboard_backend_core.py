@@ -274,6 +274,108 @@ def test_load_performance_includes_alert_aggregates(tmp_path: Path) -> None:
     assert "fetch_fail_streak" in codes
 
 
+def test_load_performance_includes_quality_metrics(tmp_path: Path) -> None:
+    workspace = tmp_path
+    _write_config(workspace / "config" / "config.yaml")
+    excel_path = workspace / "data" / "output.xlsx"
+    _write_min_excel(
+        excel_path,
+        raw_rows=[
+            {
+                "run_id": "r1",
+                "keyword": "继任",
+                "note_id": "n1",
+                "title": "t1",
+                "author": "a1",
+                "publish_time": "2026-02-27T12:00:00",
+                "publish_timestamp": 1772193600,
+                "publish_time_text": "5分钟前",
+                "publish_time_quality": "parsed",
+                "like_count": 1,
+                "comment_count": 0,
+                "share_count": 0,
+                "url": "u1",
+                "xsec_token": "x1",
+                "detail_text": "正文 1",
+                "comments_preview": "",
+                "fetched_at": "2026-02-27T12:01:00",
+                "first_seen_at": "2026-02-27T12:01:00",
+                "updated_at": "2026-02-27T12:01:00",
+                "raw_json": "{}",
+            },
+            {
+                "run_id": "r1",
+                "keyword": "继任",
+                "note_id": "n2",
+                "title": "t2",
+                "author": "a2",
+                "publish_time": "2026-02-27T12:02:00",
+                "publish_timestamp": 1772193720,
+                "publish_time_text": "3分钟前",
+                "publish_time_quality": "parsed",
+                "like_count": 2,
+                "comment_count": 0,
+                "share_count": 0,
+                "url": "u2",
+                "xsec_token": "x2",
+                "detail_text": "",
+                "comments_preview": "",
+                "fetched_at": "2026-02-27T12:03:00",
+                "first_seen_at": "2026-02-27T12:03:00",
+                "updated_at": "2026-02-27T12:03:00",
+                "raw_json": "{}",
+            },
+        ],
+        job_rows=[
+            {
+                "run_id": "r1",
+                "Company": "Acme",
+                "Position": "Intern",
+                "publish_time": "2026-02-27T12:00:00",
+                "Location": "Shanghai",
+                "Requirements": "SQL",
+                "PostID": "n1",
+            },
+            {
+                "run_id": "r1",
+                "Company": "",
+                "Position": "Analyst",
+                "publish_time": "2026-02-27T12:02:00",
+                "Location": "",
+                "Requirements": "",
+                "PostID": "n2",
+            },
+        ],
+    )
+
+    runs_dir = workspace / "data" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    run_payload = {
+        "run_id": "r1",
+        "recorded_at": "2026-02-27T12:05:00+00:00",
+        "stats": {
+            "target_notes": 2,
+            "jobs": 1,
+            "llm_calls": 4,
+            "llm_success": 3,
+            "detail_target_notes": 2,
+            "detail_missing": 1,
+        },
+    }
+    (runs_dir / "r1.json").write_text(json.dumps(run_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    backend = DataBackend(workspace=workspace)
+    perf = backend.load_performance(limit=10)
+    quality = perf.get("quality") or {}
+    assert quality["raw_total"] == 2
+    assert quality["jobs_total"] == 2
+    assert 0.49 <= float(quality["detail_fill_rate"]) <= 0.51
+    assert 0.49 <= float(quality["position_fill_rate"]) <= 1.0
+    assert 0.49 <= float(quality["structured_complete_rate"]) <= 0.51
+    assert 0.49 <= float(quality["recent_extraction_hit_rate"]) <= 0.51
+    assert quality.get("trend")
+
+
 def test_setup_check_offline_mode(tmp_path: Path) -> None:
     workspace = tmp_path
     _write_config(workspace / "config" / "config.yaml")
@@ -493,4 +595,8 @@ class TestDashboardBackendCore(unittest.TestCase):
     def test_load_performance_includes_alert_aggregates_unittest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             test_load_performance_includes_alert_aggregates(Path(tmp_dir))
+
+    def test_load_performance_includes_quality_metrics_unittest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            test_load_performance_includes_quality_metrics(Path(tmp_dir))
 

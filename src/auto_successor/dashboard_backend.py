@@ -743,6 +743,7 @@ class DataBackend:
                 "alert_codes": [],
                 "error_codes": [],
                 "slow_stages": [],
+                "quality": self._empty_quality_metrics(),
                 "generated_at": datetime.now().isoformat(timespec="seconds"),
             }
 
@@ -840,6 +841,7 @@ class DataBackend:
             key=lambda item: (self._to_int(item.get("count")), self._to_int(item.get("p95_ms"))),
             reverse=True,
         )
+        quality = self._build_quality_metrics(runs=runs)
 
         return {
             "sample_size": sample_size,
@@ -864,6 +866,7 @@ class DataBackend:
             "alert_codes": alert_code_list[:12],
             "error_codes": error_list[:12],
             "slow_stages": slow_stage_list[:10],
+            "quality": quality,
             "generated_at": datetime.now().isoformat(timespec="seconds"),
         }
 
@@ -894,6 +897,111 @@ class DataBackend:
             return int(values[lower])
         weight = pos - lower
         return int(round(values[lower] + (values[upper] - values[lower]) * weight))
+
+    @classmethod
+    def _safe_rate(cls, numerator: int, denominator: int) -> float:
+        num = cls._to_int(numerator)
+        den = cls._to_int(denominator)
+        return float(num) / float(den) if den > 0 else 0.0
+
+    @classmethod
+    def _empty_quality_metrics(cls) -> dict[str, Any]:
+        return {
+            "raw_total": 0,
+            "jobs_total": 0,
+            "detail_fill_rate": 0.0,
+            "structured_complete_rate": 0.0,
+            "company_fill_rate": 0.0,
+            "position_fill_rate": 0.0,
+            "location_fill_rate": 0.0,
+            "requirements_fill_rate": 0.0,
+            "recent_extraction_hit_rate": 0.0,
+            "recent_llm_success_rate": 0.0,
+            "recent_detail_fill_rate": 0.0,
+            "missing_fields_top": [],
+            "trend": [],
+        }
+
+    def _build_quality_metrics(self, *, runs: list[dict[str, Any]]) -> dict[str, Any]:
+        try:
+            rows = self._load_workbook_rows()
+        except Exception:
+            rows = {"raw_notes": [], "jobs": []}
+        raw_rows = rows.get("raw_notes", []) if isinstance(rows.get("raw_notes"), list) else []
+        jobs_rows = rows.get("jobs", []) if isinstance(rows.get("jobs"), list) else []
+        raw_total = len(raw_rows)
+        jobs_total = len(jobs_rows)
+
+        detail_filled = sum(1 for item in raw_rows if str(item.get("detail_text") or "").strip())
+
+        required_mapping = {
+            "company": "Company",
+            "position": "Position",
+            "location": "Location",
+            "requirements": "Requirements",
+        }
+        fill_counts: dict[str, int] = {}
+        missing_counts: dict[str, int] = {}
+        complete_count = 0
+        for row in jobs_rows:
+            present_flags = []
+            for label, key in required_mapping.items():
+                value = str(row.get(key) or "").strip()
+                present = bool(value)
+                present_flags.append(present)
+                fill_counts[label] = self._to_int(fill_counts.get(label)) + (1 if present else 0)
+                missing_counts[label] = self._to_int(missing_counts.get(label)) + (0 if present else 1)
+            if all(present_flags):
+                complete_count += 1
+
+        recent_runs = runs[: max(1, min(20, len(runs)))]
+        target_total = sum(self._to_int(item.get("target_notes")) for item in recent_runs)
+        jobs_total_recent = sum(self._to_int(item.get("jobs")) for item in recent_runs)
+        llm_calls_total = sum(self._to_int(item.get("llm_calls")) for item in recent_runs)
+        llm_success_total = sum(self._to_int(item.get("llm_success")) for item in recent_runs)
+        detail_target_total = sum(self._to_int(item.get("detail_target_notes")) for item in recent_runs)
+        detail_missing_total = sum(self._to_int(item.get("detail_missing")) for item in recent_runs)
+
+        trend_rows: list[dict[str, Any]] = []
+        for item in recent_runs[:12]:
+            target_notes = self._to_int(item.get("target_notes"))
+            jobs = self._to_int(item.get("jobs"))
+            llm_calls = self._to_int(item.get("llm_calls"))
+            llm_success = self._to_int(item.get("llm_success"))
+            detail_target = self._to_int(item.get("detail_target_notes"))
+            detail_missing = self._to_int(item.get("detail_missing"))
+            trend_rows.append(
+                {
+                    "run_id": str(item.get("run_id") or ""),
+                    "recorded_at": str(item.get("recorded_at") or ""),
+                    "extraction_hit_rate": self._safe_rate(jobs, target_notes),
+                    "llm_success_rate": self._safe_rate(llm_success, llm_calls),
+                    "detail_fill_rate": self._safe_rate(max(0, detail_target - detail_missing), detail_target),
+                }
+            )
+
+        missing_top = [
+            {"field": key, "missing": self._to_int(value)}
+            for key, value in missing_counts.items()
+            if self._to_int(value) > 0
+        ]
+        missing_top.sort(key=lambda item: self._to_int(item.get("missing")), reverse=True)
+
+        return {
+            "raw_total": raw_total,
+            "jobs_total": jobs_total,
+            "detail_fill_rate": self._safe_rate(detail_filled, raw_total),
+            "structured_complete_rate": self._safe_rate(complete_count, jobs_total),
+            "company_fill_rate": self._safe_rate(fill_counts.get("company", 0), jobs_total),
+            "position_fill_rate": self._safe_rate(fill_counts.get("position", 0), jobs_total),
+            "location_fill_rate": self._safe_rate(fill_counts.get("location", 0), jobs_total),
+            "requirements_fill_rate": self._safe_rate(fill_counts.get("requirements", 0), jobs_total),
+            "recent_extraction_hit_rate": self._safe_rate(jobs_total_recent, target_total),
+            "recent_llm_success_rate": self._safe_rate(llm_success_total, llm_calls_total),
+            "recent_detail_fill_rate": self._safe_rate(max(0, detail_target_total - detail_missing_total), detail_target_total),
+            "missing_fields_top": missing_top[:4],
+            "trend": trend_rows,
+        }
 
     def load_runtime(self) -> dict[str, Any]:
         return self.runtime.status()

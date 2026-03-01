@@ -152,6 +152,19 @@
     perfSlowStages: document.getElementById("perfSlowStages"),
     perfErrorCodes: document.getElementById("perfErrorCodes"),
     perfAlertCodes: document.getElementById("perfAlertCodes"),
+    qualityRawTotal: document.getElementById("qualityRawTotal"),
+    qualityJobsTotal: document.getElementById("qualityJobsTotal"),
+    qualityDetailFillRate: document.getElementById("qualityDetailFillRate"),
+    qualityStructuredRate: document.getElementById("qualityStructuredRate"),
+    qualityCompanyRate: document.getElementById("qualityCompanyRate"),
+    qualityPositionRate: document.getElementById("qualityPositionRate"),
+    qualityLocationRate: document.getElementById("qualityLocationRate"),
+    qualityRequirementsRate: document.getElementById("qualityRequirementsRate"),
+    qualityExtractionHitRate: document.getElementById("qualityExtractionHitRate"),
+    qualityLlmSuccessRate: document.getElementById("qualityLlmSuccessRate"),
+    qualityRecentDetailRate: document.getElementById("qualityRecentDetailRate"),
+    qualityMissingFields: document.getElementById("qualityMissingFields"),
+    qualityTrend: document.getElementById("qualityTrend"),
   };
 
   let selectedResumeFile = null;
@@ -418,6 +431,19 @@
     dom.perfSlowStages = document.getElementById("perfSlowStages");
     dom.perfErrorCodes = document.getElementById("perfErrorCodes");
     dom.perfAlertCodes = document.getElementById("perfAlertCodes");
+    dom.qualityRawTotal = document.getElementById("qualityRawTotal");
+    dom.qualityJobsTotal = document.getElementById("qualityJobsTotal");
+    dom.qualityDetailFillRate = document.getElementById("qualityDetailFillRate");
+    dom.qualityStructuredRate = document.getElementById("qualityStructuredRate");
+    dom.qualityCompanyRate = document.getElementById("qualityCompanyRate");
+    dom.qualityPositionRate = document.getElementById("qualityPositionRate");
+    dom.qualityLocationRate = document.getElementById("qualityLocationRate");
+    dom.qualityRequirementsRate = document.getElementById("qualityRequirementsRate");
+    dom.qualityExtractionHitRate = document.getElementById("qualityExtractionHitRate");
+    dom.qualityLlmSuccessRate = document.getElementById("qualityLlmSuccessRate");
+    dom.qualityRecentDetailRate = document.getElementById("qualityRecentDetailRate");
+    dom.qualityMissingFields = document.getElementById("qualityMissingFields");
+    dom.qualityTrend = document.getElementById("qualityTrend");
   }
 
   function ensureEnhancedUi() {
@@ -671,6 +697,35 @@
           <div class="perf-block">
             <h4>告警码分布</h4>
             <ul id="perfAlertCodes"><li class="table-tip">暂无</li></ul>
+          </div>
+        </div>
+        <div class="quality-wrap">
+          <div class="head-row">
+            <h4>质量面板</h4>
+            <span class="count">字段完整率与最近趋势</span>
+          </div>
+          <div class="quality-grid">
+            <div class="perf-item"><span>原始线索总数</span><strong id="qualityRawTotal">0</strong></div>
+            <div class="perf-item"><span>结构化岗位总数</span><strong id="qualityJobsTotal">0</strong></div>
+            <div class="perf-item"><span>正文覆盖率(raw)</span><strong id="qualityDetailFillRate">-</strong></div>
+            <div class="perf-item"><span>结构化完整率</span><strong id="qualityStructuredRate">-</strong></div>
+            <div class="perf-item"><span>公司字段完整率</span><strong id="qualityCompanyRate">-</strong></div>
+            <div class="perf-item"><span>岗位字段完整率</span><strong id="qualityPositionRate">-</strong></div>
+            <div class="perf-item"><span>地点字段完整率</span><strong id="qualityLocationRate">-</strong></div>
+            <div class="perf-item"><span>要求字段完整率</span><strong id="qualityRequirementsRate">-</strong></div>
+            <div class="perf-item"><span>近期提取命中率</span><strong id="qualityExtractionHitRate">-</strong></div>
+            <div class="perf-item"><span>近期LLM成功率</span><strong id="qualityLlmSuccessRate">-</strong></div>
+            <div class="perf-item"><span>近期详情覆盖率</span><strong id="qualityRecentDetailRate">-</strong></div>
+          </div>
+          <div class="perf-lists">
+            <div class="perf-block">
+              <h4>缺失字段 Top</h4>
+              <ul id="qualityMissingFields"><li class="table-tip">暂无</li></ul>
+            </div>
+            <div class="perf-block">
+              <h4>最近质量趋势</h4>
+              <ul id="qualityTrend"><li class="table-tip">暂无</li></ul>
+            </div>
           </div>
         </div>
       `;
@@ -1302,6 +1357,27 @@
     const slowStages = Object.values(slowAgg)
       .sort((a, b) => (b.count - a.count) || (b.max_ms - a.max_ms))
       .slice(0, 10);
+    const llmCallsTotal = runs.reduce((sum, item) => sum + toInt(item.llm_calls, 0), 0);
+    const llmSuccessTotal = runs.reduce((sum, item) => sum + toInt(item.llm_success, 0), 0);
+    const detailTargetTotal = runs.reduce((sum, item) => sum + toInt(item.detail_target_notes, 0), 0);
+    const detailMissingTotal = runs.reduce((sum, item) => sum + toInt(item.detail_missing, 0), 0);
+    const targetTotal = runs.reduce((sum, item) => sum + toInt(item.target_notes, 0), 0);
+    const jobsTotalRecent = runs.reduce((sum, item) => sum + toInt(item.jobs, 0), 0);
+    const trend = runs.slice(0, 12).map((item) => {
+      const target = toInt(item.target_notes, 0);
+      const jobs = toInt(item.jobs, 0);
+      const llmCalls = toInt(item.llm_calls, 0);
+      const llmSuccess = toInt(item.llm_success, 0);
+      const detailTarget = toInt(item.detail_target_notes, 0);
+      const detailMissing = toInt(item.detail_missing, 0);
+      return {
+        run_id: toText(item.run_id, ""),
+        recorded_at: toText(item.recorded_at, ""),
+        extraction_hit_rate: target > 0 ? jobs / target : 0,
+        llm_success_rate: llmCalls > 0 ? llmSuccess / llmCalls : 0,
+        detail_fill_rate: detailTarget > 0 ? Math.max(0, detailTarget - detailMissing) / detailTarget : 0,
+      };
+    });
 
     return {
       sample_size: sampleSize,
@@ -1322,6 +1398,21 @@
       error_codes: errorCodes,
       alert_codes: alertCodes,
       slow_stages: slowStages,
+      quality: {
+        raw_total: 0,
+        jobs_total: 0,
+        detail_fill_rate: 0,
+        structured_complete_rate: 0,
+        company_fill_rate: 0,
+        position_fill_rate: 0,
+        location_fill_rate: 0,
+        requirements_fill_rate: 0,
+        recent_extraction_hit_rate: targetTotal > 0 ? jobsTotalRecent / targetTotal : 0,
+        recent_llm_success_rate: llmCallsTotal > 0 ? llmSuccessTotal / llmCallsTotal : 0,
+        recent_detail_fill_rate: detailTargetTotal > 0 ? Math.max(0, detailTargetTotal - detailMissingTotal) / detailTargetTotal : 0,
+        missing_fields_top: [],
+        trend,
+      },
     };
   }
 
@@ -1340,6 +1431,9 @@
     const slowStages = Array.isArray(data.slow_stages) ? data.slow_stages : [];
     const errorCodes = Array.isArray(data.error_codes) ? data.error_codes : [];
     const alertCodes = Array.isArray(data.alert_codes) ? data.alert_codes : [];
+    const quality = data.quality && typeof data.quality === "object" ? data.quality : {};
+    const missingFieldsTop = Array.isArray(quality.missing_fields_top) ? quality.missing_fields_top : [];
+    const qualityTrend = Array.isArray(quality.trend) ? quality.trend : [];
 
     dom.perfSample.textContent = `最近 ${fmtInt(sample)} 轮`;
     if (dom.perfTotalAvg) dom.perfTotalAvg.textContent = fmtMs(total.avg);
@@ -1352,6 +1446,17 @@
     if (dom.perfAlertTriggeredTotal) dom.perfAlertTriggeredTotal.textContent = fmtInt(alertTriggeredTotal);
     if (dom.perfAlertNotifiedTotal) dom.perfAlertNotifiedTotal.textContent = fmtInt(alertNotifiedTotal);
     if (dom.perfAlertRunRate) dom.perfAlertRunRate.textContent = formatRate(alertTriggeredRate);
+    if (dom.qualityRawTotal) dom.qualityRawTotal.textContent = fmtInt(toInt(quality.raw_total, 0));
+    if (dom.qualityJobsTotal) dom.qualityJobsTotal.textContent = fmtInt(toInt(quality.jobs_total, 0));
+    if (dom.qualityDetailFillRate) dom.qualityDetailFillRate.textContent = formatRate(Number(quality.detail_fill_rate || 0));
+    if (dom.qualityStructuredRate) dom.qualityStructuredRate.textContent = formatRate(Number(quality.structured_complete_rate || 0));
+    if (dom.qualityCompanyRate) dom.qualityCompanyRate.textContent = formatRate(Number(quality.company_fill_rate || 0));
+    if (dom.qualityPositionRate) dom.qualityPositionRate.textContent = formatRate(Number(quality.position_fill_rate || 0));
+    if (dom.qualityLocationRate) dom.qualityLocationRate.textContent = formatRate(Number(quality.location_fill_rate || 0));
+    if (dom.qualityRequirementsRate) dom.qualityRequirementsRate.textContent = formatRate(Number(quality.requirements_fill_rate || 0));
+    if (dom.qualityExtractionHitRate) dom.qualityExtractionHitRate.textContent = formatRate(Number(quality.recent_extraction_hit_rate || 0));
+    if (dom.qualityLlmSuccessRate) dom.qualityLlmSuccessRate.textContent = formatRate(Number(quality.recent_llm_success_rate || 0));
+    if (dom.qualityRecentDetailRate) dom.qualityRecentDetailRate.textContent = formatRate(Number(quality.recent_detail_fill_rate || 0));
 
     if (dom.perfSlowStages) {
       if (!slowStages.length) {
@@ -1386,6 +1491,32 @@
         dom.perfAlertCodes.innerHTML = alertCodes
           .slice(0, 6)
           .map((item) => `<li><span>${escapeHtml(toText(item.code))}</span><span>${fmtInt(item.count)}</span></li>`)
+          .join("");
+      }
+    }
+    if (dom.qualityMissingFields) {
+      if (!missingFieldsTop.length) {
+        dom.qualityMissingFields.innerHTML = "<li class='table-tip'>暂无</li>";
+      } else {
+        dom.qualityMissingFields.innerHTML = missingFieldsTop
+          .slice(0, 6)
+          .map((item) => `<li><span>${escapeHtml(toText(item.field))}</span><span>${fmtInt(item.missing)}</span></li>`)
+          .join("");
+      }
+    }
+    if (dom.qualityTrend) {
+      if (!qualityTrend.length) {
+        dom.qualityTrend.innerHTML = "<li class='table-tip'>暂无</li>";
+      } else {
+        dom.qualityTrend.innerHTML = qualityTrend
+          .slice(0, 8)
+          .map((item) => {
+            const runText = toText(item.run_id, "-");
+            const hitRate = formatRate(Number(item.extraction_hit_rate || 0));
+            const detailRate = formatRate(Number(item.detail_fill_rate || 0));
+            const llmRate = formatRate(Number(item.llm_success_rate || 0));
+            return `<li><span>${escapeHtml(runText)}</span><span>命中 ${hitRate} · 详情 ${detailRate} · LLM ${llmRate}</span></li>`;
+          })
           .join("");
       }
     }

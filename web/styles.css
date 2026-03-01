@@ -790,6 +790,21 @@ tbody tr.active { background: var(--accent-soft); }
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
 }
 
+.quality-wrap {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+  padding: 10px;
+}
+
+.quality-grid {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+}
+
 .perf-block {
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -1416,6 +1431,7 @@ body[data-skin="graphite-office"] .runs-box,
 body[data-skin="graphite-office"] .run-item,
 body[data-skin="graphite-office"] .perf-item,
 body[data-skin="graphite-office"] .perf-block,
+body[data-skin="graphite-office"] .quality-wrap,
 body[data-skin="graphite-office"] .detail-block,
 body[data-skin="graphite-office"] .quick-edit-block,
 body[data-skin="graphite-office"] .toast,
