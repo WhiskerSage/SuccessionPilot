@@ -1276,7 +1276,34 @@ class DataBackend:
         resume = self._ensure_section(config, "resume")
         observability = self._ensure_section(config, "observability")
         alerts = self._ensure_section(observability, "alerts")
+        fetch_alert = self._ensure_section(alerts, "fetch_fail_streak")
+        llm_alert = self._ensure_section(alerts, "llm_timeout_rate")
+        detail_alert = self._ensure_section(alerts, "detail_missing_rate")
         xhs_account = self.load_xhs_accounts_view()
+
+        fetch_short_threshold = self._coerce_int(
+            fetch_alert.get("short_threshold"),
+            self._coerce_int(alerts.get("fetch_fail_streak_threshold"), 2, minimum=1),
+            minimum=1,
+        )
+        llm_short_threshold = self._coerce_rate(
+            llm_alert.get("short_threshold"),
+            self._coerce_rate(alerts.get("llm_timeout_rate_threshold"), 0.35),
+        )
+        llm_short_min_samples = self._coerce_int(
+            llm_alert.get("short_min_samples"),
+            self._coerce_int(alerts.get("llm_timeout_min_calls"), 6, minimum=1),
+            minimum=1,
+        )
+        detail_short_threshold = self._coerce_rate(
+            detail_alert.get("short_threshold"),
+            self._coerce_rate(alerts.get("detail_missing_rate_threshold"), 0.45),
+        )
+        detail_short_min_samples = self._coerce_int(
+            detail_alert.get("short_min_samples"),
+            self._coerce_int(alerts.get("detail_missing_min_samples"), 6, minimum=1),
+            minimum=1,
+        )
 
         return {
             "app": {"interval_minutes": self._coerce_int(app.get("interval_minutes"), 15, minimum=1)},
@@ -1313,21 +1340,41 @@ class DataBackend:
                 "alerts": {
                     "enabled": bool(alerts.get("enabled", True)),
                     "cooldown_minutes": self._coerce_int(alerts.get("cooldown_minutes"), 60, minimum=1),
-                    "fetch_fail_streak_threshold": self._coerce_int(
-                        alerts.get("fetch_fail_streak_threshold"),
-                        2,
-                        minimum=1,
-                    ),
-                    "llm_timeout_rate_threshold": self._coerce_rate(
-                        alerts.get("llm_timeout_rate_threshold"),
-                        0.35,
-                    ),
-                    "llm_timeout_min_calls": self._coerce_int(alerts.get("llm_timeout_min_calls"), 6, minimum=1),
-                    "detail_missing_rate_threshold": self._coerce_rate(
-                        alerts.get("detail_missing_rate_threshold"),
-                        0.45,
-                    ),
-                    "detail_missing_min_samples": self._coerce_int(alerts.get("detail_missing_min_samples"), 6, minimum=1),
+                    # Legacy fields are kept for existing UI controls.
+                    "fetch_fail_streak_threshold": fetch_short_threshold,
+                    "llm_timeout_rate_threshold": llm_short_threshold,
+                    "llm_timeout_min_calls": llm_short_min_samples,
+                    "detail_missing_rate_threshold": detail_short_threshold,
+                    "detail_missing_min_samples": detail_short_min_samples,
+                    # Dual-window fields are the runtime source of truth.
+                    "fetch_fail_streak": {
+                        "short_window_runs": self._coerce_int(fetch_alert.get("short_window_runs"), 1, minimum=1),
+                        "short_threshold": fetch_short_threshold,
+                        "short_min_runs": self._coerce_int(fetch_alert.get("short_min_runs"), 1, minimum=1),
+                        "long_window_runs": self._coerce_int(fetch_alert.get("long_window_runs"), 6, minimum=1),
+                        "long_threshold": self._coerce_float(
+                            fetch_alert.get("long_threshold"),
+                            max(1.0, float(fetch_short_threshold) * 0.6),
+                            minimum=1.0,
+                        ),
+                        "long_min_runs": self._coerce_int(fetch_alert.get("long_min_runs"), 3, minimum=1),
+                    },
+                    "llm_timeout_rate": {
+                        "short_window_runs": self._coerce_int(llm_alert.get("short_window_runs"), 1, minimum=1),
+                        "short_threshold": llm_short_threshold,
+                        "short_min_samples": llm_short_min_samples,
+                        "long_window_runs": self._coerce_int(llm_alert.get("long_window_runs"), 8, minimum=1),
+                        "long_threshold": self._coerce_rate(llm_alert.get("long_threshold"), llm_short_threshold * 0.7),
+                        "long_min_samples": self._coerce_int(llm_alert.get("long_min_samples"), max(12, llm_short_min_samples * 3), minimum=1),
+                    },
+                    "detail_missing_rate": {
+                        "short_window_runs": self._coerce_int(detail_alert.get("short_window_runs"), 1, minimum=1),
+                        "short_threshold": detail_short_threshold,
+                        "short_min_samples": detail_short_min_samples,
+                        "long_window_runs": self._coerce_int(detail_alert.get("long_window_runs"), 8, minimum=1),
+                        "long_threshold": self._coerce_rate(detail_alert.get("long_threshold"), detail_short_threshold * 0.7),
+                        "long_min_samples": self._coerce_int(detail_alert.get("long_min_samples"), max(12, detail_short_min_samples * 3), minimum=1),
+                    },
                     "channels": self._to_name_list(alerts.get("channels"), default=[]),
                 }
             },
@@ -1428,6 +1475,9 @@ class DataBackend:
         if isinstance(observability_in, dict):
             alerts_in = observability_in.get("alerts")
             if isinstance(alerts_in, dict):
+                fetch_alert = self._ensure_section(alerts, "fetch_fail_streak")
+                llm_alert = self._ensure_section(alerts, "llm_timeout_rate")
+                detail_alert = self._ensure_section(alerts, "detail_missing_rate")
                 if "enabled" in alerts_in:
                     alerts["enabled"] = bool(alerts_in.get("enabled"))
                 if "cooldown_minutes" in alerts_in:
@@ -1437,35 +1487,168 @@ class DataBackend:
                         minimum=1,
                     )
                 if "fetch_fail_streak_threshold" in alerts_in:
-                    alerts["fetch_fail_streak_threshold"] = self._coerce_int(
+                    legacy_fetch_threshold = self._coerce_int(
                         alerts_in.get("fetch_fail_streak_threshold"),
                         alerts.get("fetch_fail_streak_threshold", 2),
                         minimum=1,
                     )
+                    alerts["fetch_fail_streak_threshold"] = legacy_fetch_threshold
+                    fetch_alert["short_threshold"] = legacy_fetch_threshold
                 if "llm_timeout_rate_threshold" in alerts_in:
-                    alerts["llm_timeout_rate_threshold"] = self._coerce_rate(
+                    legacy_llm_threshold = self._coerce_rate(
                         alerts_in.get("llm_timeout_rate_threshold"),
                         alerts.get("llm_timeout_rate_threshold", 0.35),
                     )
+                    alerts["llm_timeout_rate_threshold"] = legacy_llm_threshold
+                    llm_alert["short_threshold"] = legacy_llm_threshold
                 if "llm_timeout_min_calls" in alerts_in:
-                    alerts["llm_timeout_min_calls"] = self._coerce_int(
+                    legacy_llm_min_calls = self._coerce_int(
                         alerts_in.get("llm_timeout_min_calls"),
                         alerts.get("llm_timeout_min_calls", 6),
                         minimum=1,
                     )
+                    alerts["llm_timeout_min_calls"] = legacy_llm_min_calls
+                    llm_alert["short_min_samples"] = legacy_llm_min_calls
                 if "detail_missing_rate_threshold" in alerts_in:
-                    alerts["detail_missing_rate_threshold"] = self._coerce_rate(
+                    legacy_detail_threshold = self._coerce_rate(
                         alerts_in.get("detail_missing_rate_threshold"),
                         alerts.get("detail_missing_rate_threshold", 0.45),
                     )
+                    alerts["detail_missing_rate_threshold"] = legacy_detail_threshold
+                    detail_alert["short_threshold"] = legacy_detail_threshold
                 if "detail_missing_min_samples" in alerts_in:
-                    alerts["detail_missing_min_samples"] = self._coerce_int(
+                    legacy_detail_min_samples = self._coerce_int(
                         alerts_in.get("detail_missing_min_samples"),
                         alerts.get("detail_missing_min_samples", 6),
                         minimum=1,
                     )
+                    alerts["detail_missing_min_samples"] = legacy_detail_min_samples
+                    detail_alert["short_min_samples"] = legacy_detail_min_samples
                 if "channels" in alerts_in:
                     alerts["channels"] = self._to_name_list(alerts_in.get("channels"), default=[])
+
+                fetch_in = alerts_in.get("fetch_fail_streak")
+                if isinstance(fetch_in, dict):
+                    if "short_window_runs" in fetch_in:
+                        fetch_alert["short_window_runs"] = self._coerce_int(
+                            fetch_in.get("short_window_runs"),
+                            fetch_alert.get("short_window_runs", 1),
+                            minimum=1,
+                        )
+                    if "short_threshold" in fetch_in:
+                        short_threshold = self._coerce_int(
+                            fetch_in.get("short_threshold"),
+                            fetch_alert.get("short_threshold", alerts.get("fetch_fail_streak_threshold", 2)),
+                            minimum=1,
+                        )
+                        fetch_alert["short_threshold"] = short_threshold
+                        alerts["fetch_fail_streak_threshold"] = short_threshold
+                    if "short_min_runs" in fetch_in:
+                        fetch_alert["short_min_runs"] = self._coerce_int(
+                            fetch_in.get("short_min_runs"),
+                            fetch_alert.get("short_min_runs", 1),
+                            minimum=1,
+                        )
+                    if "long_window_runs" in fetch_in:
+                        fetch_alert["long_window_runs"] = self._coerce_int(
+                            fetch_in.get("long_window_runs"),
+                            fetch_alert.get("long_window_runs", 6),
+                            minimum=1,
+                        )
+                    if "long_threshold" in fetch_in:
+                        fetch_alert["long_threshold"] = self._coerce_float(
+                            fetch_in.get("long_threshold"),
+                            fetch_alert.get("long_threshold", 1.2),
+                            minimum=1.0,
+                        )
+                    if "long_min_runs" in fetch_in:
+                        fetch_alert["long_min_runs"] = self._coerce_int(
+                            fetch_in.get("long_min_runs"),
+                            fetch_alert.get("long_min_runs", 3),
+                            minimum=1,
+                        )
+
+                llm_in = alerts_in.get("llm_timeout_rate")
+                if isinstance(llm_in, dict):
+                    if "short_window_runs" in llm_in:
+                        llm_alert["short_window_runs"] = self._coerce_int(
+                            llm_in.get("short_window_runs"),
+                            llm_alert.get("short_window_runs", 1),
+                            minimum=1,
+                        )
+                    if "short_threshold" in llm_in:
+                        short_threshold = self._coerce_rate(
+                            llm_in.get("short_threshold"),
+                            llm_alert.get("short_threshold", alerts.get("llm_timeout_rate_threshold", 0.35)),
+                        )
+                        llm_alert["short_threshold"] = short_threshold
+                        alerts["llm_timeout_rate_threshold"] = short_threshold
+                    if "short_min_samples" in llm_in:
+                        short_min_samples = self._coerce_int(
+                            llm_in.get("short_min_samples"),
+                            llm_alert.get("short_min_samples", alerts.get("llm_timeout_min_calls", 6)),
+                            minimum=1,
+                        )
+                        llm_alert["short_min_samples"] = short_min_samples
+                        alerts["llm_timeout_min_calls"] = short_min_samples
+                    if "long_window_runs" in llm_in:
+                        llm_alert["long_window_runs"] = self._coerce_int(
+                            llm_in.get("long_window_runs"),
+                            llm_alert.get("long_window_runs", 8),
+                            minimum=1,
+                        )
+                    if "long_threshold" in llm_in:
+                        llm_alert["long_threshold"] = self._coerce_rate(
+                            llm_in.get("long_threshold"),
+                            llm_alert.get("long_threshold", 0.25),
+                        )
+                    if "long_min_samples" in llm_in:
+                        llm_alert["long_min_samples"] = self._coerce_int(
+                            llm_in.get("long_min_samples"),
+                            llm_alert.get("long_min_samples", 18),
+                            minimum=1,
+                        )
+
+                detail_in = alerts_in.get("detail_missing_rate")
+                if isinstance(detail_in, dict):
+                    if "short_window_runs" in detail_in:
+                        detail_alert["short_window_runs"] = self._coerce_int(
+                            detail_in.get("short_window_runs"),
+                            detail_alert.get("short_window_runs", 1),
+                            minimum=1,
+                        )
+                    if "short_threshold" in detail_in:
+                        short_threshold = self._coerce_rate(
+                            detail_in.get("short_threshold"),
+                            detail_alert.get("short_threshold", alerts.get("detail_missing_rate_threshold", 0.45)),
+                        )
+                        detail_alert["short_threshold"] = short_threshold
+                        alerts["detail_missing_rate_threshold"] = short_threshold
+                    if "short_min_samples" in detail_in:
+                        short_min_samples = self._coerce_int(
+                            detail_in.get("short_min_samples"),
+                            detail_alert.get("short_min_samples", alerts.get("detail_missing_min_samples", 6)),
+                            minimum=1,
+                        )
+                        detail_alert["short_min_samples"] = short_min_samples
+                        alerts["detail_missing_min_samples"] = short_min_samples
+                    if "long_window_runs" in detail_in:
+                        detail_alert["long_window_runs"] = self._coerce_int(
+                            detail_in.get("long_window_runs"),
+                            detail_alert.get("long_window_runs", 8),
+                            minimum=1,
+                        )
+                    if "long_threshold" in detail_in:
+                        detail_alert["long_threshold"] = self._coerce_rate(
+                            detail_in.get("long_threshold"),
+                            detail_alert.get("long_threshold", 0.3),
+                        )
+                    if "long_min_samples" in detail_in:
+                        detail_alert["long_min_samples"] = self._coerce_int(
+                            detail_in.get("long_min_samples"),
+                            detail_alert.get("long_min_samples", 18),
+                            minimum=1,
+                        )
 
         resume_in = payload.get("resume")
         if isinstance(resume_in, dict):
@@ -2526,6 +2709,16 @@ class DataBackend:
         if parsed > 1.0 and parsed <= 100.0:
             parsed = parsed / 100.0
         return max(0.0, min(1.0, parsed))
+
+    @staticmethod
+    def _coerce_float(value: Any, default: float, minimum: float = 0.0) -> float:
+        try:
+            parsed = float(value)
+        except Exception:
+            parsed = float(default)
+        if parsed < float(minimum):
+            parsed = float(minimum)
+        return parsed
 
     @staticmethod
     def _normalize_mode(value: str) -> str:

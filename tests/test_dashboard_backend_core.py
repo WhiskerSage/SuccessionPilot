@@ -94,6 +94,57 @@ def test_config_roundtrip(tmp_path: Path) -> None:
     assert saved["agent"]["mode"] == "agent"
 
 
+def test_config_observability_dual_window_roundtrip(tmp_path: Path) -> None:
+    workspace = tmp_path
+    _write_config(workspace / "config" / "config.yaml")
+    backend = DataBackend(workspace=workspace)
+
+    saved = backend.save_config_view(
+        {
+            "observability": {
+                "alerts": {
+                    "fetch_fail_streak": {
+                        "short_window_runs": 1,
+                        "short_threshold": 3,
+                        "short_min_runs": 1,
+                        "long_window_runs": 7,
+                        "long_threshold": 1.5,
+                        "long_min_runs": 4,
+                    },
+                    "llm_timeout_rate": {
+                        "short_window_runs": 1,
+                        "short_threshold": 0.4,
+                        "short_min_samples": 8,
+                        "long_window_runs": 10,
+                        "long_threshold": 0.25,
+                        "long_min_samples": 30,
+                    },
+                    "detail_missing_rate": {
+                        "short_window_runs": 1,
+                        "short_threshold": 0.5,
+                        "short_min_samples": 8,
+                        "long_window_runs": 10,
+                        "long_threshold": 0.35,
+                        "long_min_samples": 30,
+                    },
+                }
+            }
+        }
+    )
+    alerts = saved["observability"]["alerts"]
+    assert alerts["fetch_fail_streak"]["short_threshold"] == 3
+    assert alerts["fetch_fail_streak"]["long_threshold"] == 1.5
+    assert alerts["fetch_fail_streak_threshold"] == 3
+    assert alerts["llm_timeout_rate"]["short_threshold"] == 0.4
+    assert alerts["llm_timeout_rate"]["long_threshold"] == 0.25
+    assert alerts["llm_timeout_rate_threshold"] == 0.4
+    assert alerts["llm_timeout_min_calls"] == 8
+    assert alerts["detail_missing_rate"]["short_threshold"] == 0.5
+    assert alerts["detail_missing_rate"]["long_threshold"] == 0.35
+    assert alerts["detail_missing_rate_threshold"] == 0.5
+    assert alerts["detail_missing_min_samples"] == 8
+
+
 def test_runtime_no_job_stop_is_safe(tmp_path: Path) -> None:
     workspace = tmp_path
     _write_config(workspace / "config" / "config.yaml")

@@ -103,11 +103,24 @@
     cfgLlmBaseUrl: document.getElementById("cfgLlmBaseUrl"),
     cfgAlertEnabled: document.getElementById("cfgAlertEnabled"),
     cfgAlertCooldown: document.getElementById("cfgAlertCooldown"),
+    cfgAlertFetchShortWindowRuns: document.getElementById("cfgAlertFetchShortWindowRuns"),
     cfgAlertFetchStreak: document.getElementById("cfgAlertFetchStreak"),
+    cfgAlertFetchShortMinRuns: document.getElementById("cfgAlertFetchShortMinRuns"),
+    cfgAlertFetchLongWindowRuns: document.getElementById("cfgAlertFetchLongWindowRuns"),
+    cfgAlertFetchLongThreshold: document.getElementById("cfgAlertFetchLongThreshold"),
+    cfgAlertFetchLongMinRuns: document.getElementById("cfgAlertFetchLongMinRuns"),
+    cfgAlertLlmShortWindowRuns: document.getElementById("cfgAlertLlmShortWindowRuns"),
     cfgAlertLlmTimeoutRate: document.getElementById("cfgAlertLlmTimeoutRate"),
     cfgAlertLlmTimeoutMinCalls: document.getElementById("cfgAlertLlmTimeoutMinCalls"),
+    cfgAlertLlmLongWindowRuns: document.getElementById("cfgAlertLlmLongWindowRuns"),
+    cfgAlertLlmLongThreshold: document.getElementById("cfgAlertLlmLongThreshold"),
+    cfgAlertLlmLongMinSamples: document.getElementById("cfgAlertLlmLongMinSamples"),
+    cfgAlertDetailShortWindowRuns: document.getElementById("cfgAlertDetailShortWindowRuns"),
     cfgAlertDetailMissingRate: document.getElementById("cfgAlertDetailMissingRate"),
     cfgAlertDetailMissingMinSamples: document.getElementById("cfgAlertDetailMissingMinSamples"),
+    cfgAlertDetailLongWindowRuns: document.getElementById("cfgAlertDetailLongWindowRuns"),
+    cfgAlertDetailLongThreshold: document.getElementById("cfgAlertDetailLongThreshold"),
+    cfgAlertDetailLongMinSamples: document.getElementById("cfgAlertDetailLongMinSamples"),
     cfgAlertChannels: document.getElementById("cfgAlertChannels"),
     wizardGuideBadge: document.getElementById("wizardGuideBadge"),
     wizardGuideSteps: document.getElementById("wizardGuideSteps"),
@@ -209,6 +222,14 @@
       return fallback;
     }
     return Math.trunc(n);
+  }
+
+  function toFloat(value, fallback = 0) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) {
+      return fallback;
+    }
+    return n;
   }
 
   function showToast(message, type = "info") {
@@ -397,11 +418,24 @@
     dom.cfgProcessWorkers = document.getElementById("cfgProcessWorkers");
     dom.cfgAlertEnabled = document.getElementById("cfgAlertEnabled");
     dom.cfgAlertCooldown = document.getElementById("cfgAlertCooldown");
+    dom.cfgAlertFetchShortWindowRuns = document.getElementById("cfgAlertFetchShortWindowRuns");
     dom.cfgAlertFetchStreak = document.getElementById("cfgAlertFetchStreak");
+    dom.cfgAlertFetchShortMinRuns = document.getElementById("cfgAlertFetchShortMinRuns");
+    dom.cfgAlertFetchLongWindowRuns = document.getElementById("cfgAlertFetchLongWindowRuns");
+    dom.cfgAlertFetchLongThreshold = document.getElementById("cfgAlertFetchLongThreshold");
+    dom.cfgAlertFetchLongMinRuns = document.getElementById("cfgAlertFetchLongMinRuns");
+    dom.cfgAlertLlmShortWindowRuns = document.getElementById("cfgAlertLlmShortWindowRuns");
     dom.cfgAlertLlmTimeoutRate = document.getElementById("cfgAlertLlmTimeoutRate");
     dom.cfgAlertLlmTimeoutMinCalls = document.getElementById("cfgAlertLlmTimeoutMinCalls");
+    dom.cfgAlertLlmLongWindowRuns = document.getElementById("cfgAlertLlmLongWindowRuns");
+    dom.cfgAlertLlmLongThreshold = document.getElementById("cfgAlertLlmLongThreshold");
+    dom.cfgAlertLlmLongMinSamples = document.getElementById("cfgAlertLlmLongMinSamples");
+    dom.cfgAlertDetailShortWindowRuns = document.getElementById("cfgAlertDetailShortWindowRuns");
     dom.cfgAlertDetailMissingRate = document.getElementById("cfgAlertDetailMissingRate");
     dom.cfgAlertDetailMissingMinSamples = document.getElementById("cfgAlertDetailMissingMinSamples");
+    dom.cfgAlertDetailLongWindowRuns = document.getElementById("cfgAlertDetailLongWindowRuns");
+    dom.cfgAlertDetailLongThreshold = document.getElementById("cfgAlertDetailLongThreshold");
+    dom.cfgAlertDetailLongMinSamples = document.getElementById("cfgAlertDetailLongMinSamples");
     dom.cfgAlertChannels = document.getElementById("cfgAlertChannels");
     dom.leadStatusFilter = document.getElementById("leadStatusFilter");
     dom.leadDedupeFilter = document.getElementById("leadDedupeFilter");
@@ -616,35 +650,113 @@
         <span>告警冷却(分钟)</span>
         <input id="cfgAlertCooldown" type="number" min="1" max="1440" />
       `;
+      const alertFetchShortWindowField = document.createElement("label");
+      alertFetchShortWindowField.className = "field";
+      alertFetchShortWindowField.innerHTML = `
+        <span>抓取短窗轮数</span>
+        <input id="cfgAlertFetchShortWindowRuns" type="number" min="1" max="30" />
+      `;
       const alertFetchField = document.createElement("label");
       alertFetchField.className = "field";
       alertFetchField.innerHTML = `
-        <span>抓取连续失败阈值</span>
+        <span>抓取短窗阈值</span>
         <input id="cfgAlertFetchStreak" type="number" min="1" max="20" />
+      `;
+      const alertFetchShortMinField = document.createElement("label");
+      alertFetchShortMinField.className = "field";
+      alertFetchShortMinField.innerHTML = `
+        <span>抓取短窗最小轮数</span>
+        <input id="cfgAlertFetchShortMinRuns" type="number" min="1" max="30" />
+      `;
+      const alertFetchLongWindowField = document.createElement("label");
+      alertFetchLongWindowField.className = "field";
+      alertFetchLongWindowField.innerHTML = `
+        <span>抓取长窗轮数</span>
+        <input id="cfgAlertFetchLongWindowRuns" type="number" min="1" max="60" />
+      `;
+      const alertFetchLongThresholdField = document.createElement("label");
+      alertFetchLongThresholdField.className = "field";
+      alertFetchLongThresholdField.innerHTML = `
+        <span>抓取长窗阈值(平均)</span>
+        <input id="cfgAlertFetchLongThreshold" type="number" min="1" max="20" step="0.1" />
+      `;
+      const alertFetchLongMinField = document.createElement("label");
+      alertFetchLongMinField.className = "field";
+      alertFetchLongMinField.innerHTML = `
+        <span>抓取长窗最小轮数</span>
+        <input id="cfgAlertFetchLongMinRuns" type="number" min="1" max="60" />
+      `;
+      const alertLlmShortWindowField = document.createElement("label");
+      alertLlmShortWindowField.className = "field";
+      alertLlmShortWindowField.innerHTML = `
+        <span>LLM短窗轮数</span>
+        <input id="cfgAlertLlmShortWindowRuns" type="number" min="1" max="30" />
       `;
       const alertLlmRateField = document.createElement("label");
       alertLlmRateField.className = "field";
       alertLlmRateField.innerHTML = `
-        <span>LLM超时率阈值(%)</span>
+        <span>LLM短窗阈值(%)</span>
         <input id="cfgAlertLlmTimeoutRate" type="number" min="1" max="100" />
       `;
       const alertLlmCallsField = document.createElement("label");
       alertLlmCallsField.className = "field";
       alertLlmCallsField.innerHTML = `
-        <span>LLM最小样本</span>
+        <span>LLM短窗最小样本</span>
         <input id="cfgAlertLlmTimeoutMinCalls" type="number" min="1" max="500" />
+      `;
+      const alertLlmLongWindowField = document.createElement("label");
+      alertLlmLongWindowField.className = "field";
+      alertLlmLongWindowField.innerHTML = `
+        <span>LLM长窗轮数</span>
+        <input id="cfgAlertLlmLongWindowRuns" type="number" min="1" max="60" />
+      `;
+      const alertLlmLongThresholdField = document.createElement("label");
+      alertLlmLongThresholdField.className = "field";
+      alertLlmLongThresholdField.innerHTML = `
+        <span>LLM长窗阈值(%)</span>
+        <input id="cfgAlertLlmLongThreshold" type="number" min="1" max="100" />
+      `;
+      const alertLlmLongMinSamplesField = document.createElement("label");
+      alertLlmLongMinSamplesField.className = "field";
+      alertLlmLongMinSamplesField.innerHTML = `
+        <span>LLM长窗最小样本</span>
+        <input id="cfgAlertLlmLongMinSamples" type="number" min="1" max="1000" />
+      `;
+      const alertDetailShortWindowField = document.createElement("label");
+      alertDetailShortWindowField.className = "field";
+      alertDetailShortWindowField.innerHTML = `
+        <span>详情短窗轮数</span>
+        <input id="cfgAlertDetailShortWindowRuns" type="number" min="1" max="30" />
       `;
       const alertDetailRateField = document.createElement("label");
       alertDetailRateField.className = "field";
       alertDetailRateField.innerHTML = `
-        <span>详情缺失率阈值(%)</span>
+        <span>详情短窗阈值(%)</span>
         <input id="cfgAlertDetailMissingRate" type="number" min="1" max="100" />
       `;
       const alertDetailSamplesField = document.createElement("label");
       alertDetailSamplesField.className = "field";
       alertDetailSamplesField.innerHTML = `
-        <span>详情最小样本</span>
+        <span>详情短窗最小样本</span>
         <input id="cfgAlertDetailMissingMinSamples" type="number" min="1" max="500" />
+      `;
+      const alertDetailLongWindowField = document.createElement("label");
+      alertDetailLongWindowField.className = "field";
+      alertDetailLongWindowField.innerHTML = `
+        <span>详情长窗轮数</span>
+        <input id="cfgAlertDetailLongWindowRuns" type="number" min="1" max="60" />
+      `;
+      const alertDetailLongThresholdField = document.createElement("label");
+      alertDetailLongThresholdField.className = "field";
+      alertDetailLongThresholdField.innerHTML = `
+        <span>详情长窗阈值(%)</span>
+        <input id="cfgAlertDetailLongThreshold" type="number" min="1" max="100" />
+      `;
+      const alertDetailLongMinSamplesField = document.createElement("label");
+      alertDetailLongMinSamplesField.className = "field";
+      alertDetailLongMinSamplesField.innerHTML = `
+        <span>详情长窗最小样本</span>
+        <input id="cfgAlertDetailLongMinSamples" type="number" min="1" max="1000" />
       `;
       const alertChannelsField = document.createElement("label");
       alertChannelsField.className = "field span-2";
@@ -654,11 +766,24 @@
       `;
       configForm.appendChild(alertEnabledField);
       configForm.appendChild(alertCooldownField);
+      configForm.appendChild(alertFetchShortWindowField);
       configForm.appendChild(alertFetchField);
+      configForm.appendChild(alertFetchShortMinField);
+      configForm.appendChild(alertFetchLongWindowField);
+      configForm.appendChild(alertFetchLongThresholdField);
+      configForm.appendChild(alertFetchLongMinField);
+      configForm.appendChild(alertLlmShortWindowField);
       configForm.appendChild(alertLlmRateField);
       configForm.appendChild(alertLlmCallsField);
+      configForm.appendChild(alertLlmLongWindowField);
+      configForm.appendChild(alertLlmLongThresholdField);
+      configForm.appendChild(alertLlmLongMinSamplesField);
+      configForm.appendChild(alertDetailShortWindowField);
       configForm.appendChild(alertDetailRateField);
       configForm.appendChild(alertDetailSamplesField);
+      configForm.appendChild(alertDetailLongWindowField);
+      configForm.appendChild(alertDetailLongThresholdField);
+      configForm.appendChild(alertDetailLongMinSamplesField);
       configForm.appendChild(alertChannelsField);
     }
 
@@ -1950,6 +2075,9 @@
     const llm = state.config.llm || {};
     const observability = state.config.observability || {};
     const alerts = observability.alerts || {};
+    const fetchAlert = alerts.fetch_fail_streak && typeof alerts.fetch_fail_streak === "object" ? alerts.fetch_fail_streak : {};
+    const llmAlert = alerts.llm_timeout_rate && typeof alerts.llm_timeout_rate === "object" ? alerts.llm_timeout_rate : {};
+    const detailAlert = alerts.detail_missing_rate && typeof alerts.detail_missing_rate === "object" ? alerts.detail_missing_rate : {};
     renderXhsAccountOptions(xhs.account_options || [], xhs.account || "default");
 
     if (dom.cfgKeyword) dom.cfgKeyword.value = String(xhs.keyword || "");
@@ -1972,17 +2100,94 @@
     if (dom.cfgLlmBaseUrl) dom.cfgLlmBaseUrl.value = String(llm.base_url || "");
     if (dom.cfgAlertEnabled) dom.cfgAlertEnabled.checked = alerts.enabled !== false;
     if (dom.cfgAlertCooldown) dom.cfgAlertCooldown.value = String(toInt(alerts.cooldown_minutes, 60));
-    if (dom.cfgAlertFetchStreak) dom.cfgAlertFetchStreak.value = String(toInt(alerts.fetch_fail_streak_threshold, 2));
+    const fetchShortThreshold = toInt(fetchAlert.short_threshold, toInt(alerts.fetch_fail_streak_threshold, 2));
+    if (dom.cfgAlertFetchShortWindowRuns) dom.cfgAlertFetchShortWindowRuns.value = String(toInt(fetchAlert.short_window_runs, 1));
+    if (dom.cfgAlertFetchStreak) dom.cfgAlertFetchStreak.value = String(fetchShortThreshold);
+    if (dom.cfgAlertFetchShortMinRuns) dom.cfgAlertFetchShortMinRuns.value = String(toInt(fetchAlert.short_min_runs, 1));
+    if (dom.cfgAlertFetchLongWindowRuns) dom.cfgAlertFetchLongWindowRuns.value = String(toInt(fetchAlert.long_window_runs, 6));
+    if (dom.cfgAlertFetchLongThreshold) {
+      const defaultLongThreshold = Math.max(1, Number(fetchShortThreshold || 2) * 0.6);
+      dom.cfgAlertFetchLongThreshold.value = String(toFloat(fetchAlert.long_threshold, defaultLongThreshold));
+    }
+    if (dom.cfgAlertFetchLongMinRuns) dom.cfgAlertFetchLongMinRuns.value = String(toInt(fetchAlert.long_min_runs, 3));
+    if (dom.cfgAlertLlmShortWindowRuns) dom.cfgAlertLlmShortWindowRuns.value = String(toInt(llmAlert.short_window_runs, 1));
     if (dom.cfgAlertLlmTimeoutRate) {
-      const llmRatePct = Math.max(0, Math.min(100, Math.round(Number(alerts.llm_timeout_rate_threshold || 0.35) * 100)));
+      const llmRatePct = Math.max(
+        0,
+        Math.min(
+          100,
+          Math.round(
+            Number(
+              llmAlert.short_threshold !== undefined
+                ? llmAlert.short_threshold
+                : (alerts.llm_timeout_rate_threshold || 0.35)
+            ) * 100
+          )
+        )
+      );
       dom.cfgAlertLlmTimeoutRate.value = String(llmRatePct);
     }
-    if (dom.cfgAlertLlmTimeoutMinCalls) dom.cfgAlertLlmTimeoutMinCalls.value = String(toInt(alerts.llm_timeout_min_calls, 6));
+    const llmShortMinSamples = toInt(
+      llmAlert.short_min_samples,
+      toInt(alerts.llm_timeout_min_calls, 6)
+    );
+    if (dom.cfgAlertLlmTimeoutMinCalls) dom.cfgAlertLlmTimeoutMinCalls.value = String(llmShortMinSamples);
+    if (dom.cfgAlertLlmLongWindowRuns) dom.cfgAlertLlmLongWindowRuns.value = String(toInt(llmAlert.long_window_runs, 8));
+    if (dom.cfgAlertLlmLongThreshold) {
+      const llmShortThreshold = toFloat(
+        llmAlert.short_threshold,
+        Number(alerts.llm_timeout_rate_threshold || 0.35)
+      );
+      const llmLongRatePct = Math.max(
+        0,
+        Math.min(100, Math.round(toFloat(llmAlert.long_threshold, llmShortThreshold * 0.7) * 100))
+      );
+      dom.cfgAlertLlmLongThreshold.value = String(llmLongRatePct);
+    }
+    if (dom.cfgAlertLlmLongMinSamples) {
+      dom.cfgAlertLlmLongMinSamples.value = String(
+        toInt(llmAlert.long_min_samples, Math.max(12, llmShortMinSamples * 3))
+      );
+    }
+    if (dom.cfgAlertDetailShortWindowRuns) dom.cfgAlertDetailShortWindowRuns.value = String(toInt(detailAlert.short_window_runs, 1));
     if (dom.cfgAlertDetailMissingRate) {
-      const detailRatePct = Math.max(0, Math.min(100, Math.round(Number(alerts.detail_missing_rate_threshold || 0.45) * 100)));
+      const detailRatePct = Math.max(
+        0,
+        Math.min(
+          100,
+          Math.round(
+            Number(
+              detailAlert.short_threshold !== undefined
+                ? detailAlert.short_threshold
+                : (alerts.detail_missing_rate_threshold || 0.45)
+            ) * 100
+          )
+        )
+      );
       dom.cfgAlertDetailMissingRate.value = String(detailRatePct);
     }
-    if (dom.cfgAlertDetailMissingMinSamples) dom.cfgAlertDetailMissingMinSamples.value = String(toInt(alerts.detail_missing_min_samples, 6));
+    const detailShortMinSamples = toInt(
+      detailAlert.short_min_samples,
+      toInt(alerts.detail_missing_min_samples, 6)
+    );
+    if (dom.cfgAlertDetailMissingMinSamples) dom.cfgAlertDetailMissingMinSamples.value = String(detailShortMinSamples);
+    if (dom.cfgAlertDetailLongWindowRuns) dom.cfgAlertDetailLongWindowRuns.value = String(toInt(detailAlert.long_window_runs, 8));
+    if (dom.cfgAlertDetailLongThreshold) {
+      const detailShortThreshold = toFloat(
+        detailAlert.short_threshold,
+        Number(alerts.detail_missing_rate_threshold || 0.45)
+      );
+      const detailLongRatePct = Math.max(
+        0,
+        Math.min(100, Math.round(toFloat(detailAlert.long_threshold, detailShortThreshold * 0.7) * 100))
+      );
+      dom.cfgAlertDetailLongThreshold.value = String(detailLongRatePct);
+    }
+    if (dom.cfgAlertDetailLongMinSamples) {
+      dom.cfgAlertDetailLongMinSamples.value = String(
+        toInt(detailAlert.long_min_samples, Math.max(12, detailShortMinSamples * 3))
+      );
+    }
     if (dom.cfgAlertChannels) {
       const channels = Array.isArray(alerts.channels) ? alerts.channels.map((x) => String(x || "").trim()).filter(Boolean) : [];
       dom.cfgAlertChannels.value = channels.join(", ");
@@ -2123,11 +2328,34 @@
     if (dom.cfgAgentMode) dom.cfgAgentMode.value = "auto";
     if (dom.cfgAlertEnabled) dom.cfgAlertEnabled.checked = true;
     if (dom.cfgAlertCooldown) dom.cfgAlertCooldown.value = String(Math.max(30, toInt(dom.cfgAlertCooldown.value, 60)));
+    if (dom.cfgAlertFetchShortWindowRuns) dom.cfgAlertFetchShortWindowRuns.value = String(Math.max(1, toInt(dom.cfgAlertFetchShortWindowRuns.value, 1)));
     if (dom.cfgAlertFetchStreak) dom.cfgAlertFetchStreak.value = String(Math.max(2, toInt(dom.cfgAlertFetchStreak.value, 2)));
+    if (dom.cfgAlertFetchShortMinRuns) dom.cfgAlertFetchShortMinRuns.value = String(Math.max(1, toInt(dom.cfgAlertFetchShortMinRuns.value, 1)));
+    if (dom.cfgAlertFetchLongWindowRuns) dom.cfgAlertFetchLongWindowRuns.value = String(Math.max(3, toInt(dom.cfgAlertFetchLongWindowRuns.value, 6)));
+    if (dom.cfgAlertFetchLongThreshold) {
+      const fetchShortThreshold = Math.max(2, toInt(dom.cfgAlertFetchStreak ? dom.cfgAlertFetchStreak.value : 2, 2));
+      const fetchLongThreshold = Math.max(1, toFloat(dom.cfgAlertFetchLongThreshold.value, fetchShortThreshold * 0.6));
+      dom.cfgAlertFetchLongThreshold.value = String(fetchLongThreshold);
+    }
+    if (dom.cfgAlertFetchLongMinRuns) dom.cfgAlertFetchLongMinRuns.value = String(Math.max(3, toInt(dom.cfgAlertFetchLongMinRuns.value, 3)));
+    if (dom.cfgAlertLlmShortWindowRuns) dom.cfgAlertLlmShortWindowRuns.value = String(Math.max(1, toInt(dom.cfgAlertLlmShortWindowRuns.value, 1)));
     if (dom.cfgAlertLlmTimeoutRate) dom.cfgAlertLlmTimeoutRate.value = String(Math.max(20, toInt(dom.cfgAlertLlmTimeoutRate.value, 35)));
     if (dom.cfgAlertLlmTimeoutMinCalls) dom.cfgAlertLlmTimeoutMinCalls.value = String(Math.max(4, toInt(dom.cfgAlertLlmTimeoutMinCalls.value, 6)));
+    if (dom.cfgAlertLlmLongWindowRuns) dom.cfgAlertLlmLongWindowRuns.value = String(Math.max(3, toInt(dom.cfgAlertLlmLongWindowRuns.value, 8)));
+    if (dom.cfgAlertLlmLongThreshold) {
+      const llmShortThreshold = Math.max(20, toInt(dom.cfgAlertLlmTimeoutRate ? dom.cfgAlertLlmTimeoutRate.value : 35, 35));
+      dom.cfgAlertLlmLongThreshold.value = String(Math.max(10, toInt(dom.cfgAlertLlmLongThreshold.value, Math.round(llmShortThreshold * 0.7))));
+    }
+    if (dom.cfgAlertLlmLongMinSamples) dom.cfgAlertLlmLongMinSamples.value = String(Math.max(12, toInt(dom.cfgAlertLlmLongMinSamples.value, 18)));
+    if (dom.cfgAlertDetailShortWindowRuns) dom.cfgAlertDetailShortWindowRuns.value = String(Math.max(1, toInt(dom.cfgAlertDetailShortWindowRuns.value, 1)));
     if (dom.cfgAlertDetailMissingRate) dom.cfgAlertDetailMissingRate.value = String(Math.max(30, toInt(dom.cfgAlertDetailMissingRate.value, 45)));
     if (dom.cfgAlertDetailMissingMinSamples) dom.cfgAlertDetailMissingMinSamples.value = String(Math.max(4, toInt(dom.cfgAlertDetailMissingMinSamples.value, 6)));
+    if (dom.cfgAlertDetailLongWindowRuns) dom.cfgAlertDetailLongWindowRuns.value = String(Math.max(3, toInt(dom.cfgAlertDetailLongWindowRuns.value, 8)));
+    if (dom.cfgAlertDetailLongThreshold) {
+      const detailShortThreshold = Math.max(30, toInt(dom.cfgAlertDetailMissingRate ? dom.cfgAlertDetailMissingRate.value : 45, 45));
+      dom.cfgAlertDetailLongThreshold.value = String(Math.max(15, toInt(dom.cfgAlertDetailLongThreshold.value, Math.round(detailShortThreshold * 0.7))));
+    }
+    if (dom.cfgAlertDetailLongMinSamples) dom.cfgAlertDetailLongMinSamples.value = String(Math.max(12, toInt(dom.cfgAlertDetailLongMinSamples.value, 18)));
   }
 
   async function runSetupCheck() {
@@ -2151,6 +2379,39 @@
       .split(",")
       .map((item) => item.trim())
       .filter((item) => item);
+    const fetchShortWindowRuns = Math.max(1, toInt(dom.cfgAlertFetchShortWindowRuns ? dom.cfgAlertFetchShortWindowRuns.value : 1, 1));
+    const fetchShortThreshold = Math.max(1, toInt(dom.cfgAlertFetchStreak ? dom.cfgAlertFetchStreak.value : 2, 2));
+    const fetchShortMinRuns = Math.max(1, toInt(dom.cfgAlertFetchShortMinRuns ? dom.cfgAlertFetchShortMinRuns.value : 1, 1));
+    const fetchLongWindowRuns = Math.max(1, toInt(dom.cfgAlertFetchLongWindowRuns ? dom.cfgAlertFetchLongWindowRuns.value : 6, 6));
+    const fetchLongThreshold = Math.max(
+      1,
+      toFloat(dom.cfgAlertFetchLongThreshold ? dom.cfgAlertFetchLongThreshold.value : fetchShortThreshold * 0.6, fetchShortThreshold * 0.6)
+    );
+    const fetchLongMinRuns = Math.max(1, toInt(dom.cfgAlertFetchLongMinRuns ? dom.cfgAlertFetchLongMinRuns.value : 3, 3));
+    const llmShortWindowRuns = Math.max(1, toInt(dom.cfgAlertLlmShortWindowRuns ? dom.cfgAlertLlmShortWindowRuns.value : 1, 1));
+    const llmShortThresholdRate = Math.max(
+      0,
+      Math.min(1, toInt(dom.cfgAlertLlmTimeoutRate ? dom.cfgAlertLlmTimeoutRate.value : 35, 35) / 100)
+    );
+    const llmShortMinSamples = Math.max(1, toInt(dom.cfgAlertLlmTimeoutMinCalls ? dom.cfgAlertLlmTimeoutMinCalls.value : 6, 6));
+    const llmLongWindowRuns = Math.max(1, toInt(dom.cfgAlertLlmLongWindowRuns ? dom.cfgAlertLlmLongWindowRuns.value : 8, 8));
+    const llmLongThresholdRate = Math.max(
+      0,
+      Math.min(1, toInt(dom.cfgAlertLlmLongThreshold ? dom.cfgAlertLlmLongThreshold.value : Math.round(llmShortThresholdRate * 70), Math.round(llmShortThresholdRate * 70)) / 100)
+    );
+    const llmLongMinSamples = Math.max(1, toInt(dom.cfgAlertLlmLongMinSamples ? dom.cfgAlertLlmLongMinSamples.value : Math.max(12, llmShortMinSamples * 3), Math.max(12, llmShortMinSamples * 3)));
+    const detailShortWindowRuns = Math.max(1, toInt(dom.cfgAlertDetailShortWindowRuns ? dom.cfgAlertDetailShortWindowRuns.value : 1, 1));
+    const detailShortThresholdRate = Math.max(
+      0,
+      Math.min(1, toInt(dom.cfgAlertDetailMissingRate ? dom.cfgAlertDetailMissingRate.value : 45, 45) / 100)
+    );
+    const detailShortMinSamples = Math.max(1, toInt(dom.cfgAlertDetailMissingMinSamples ? dom.cfgAlertDetailMissingMinSamples.value : 6, 6));
+    const detailLongWindowRuns = Math.max(1, toInt(dom.cfgAlertDetailLongWindowRuns ? dom.cfgAlertDetailLongWindowRuns.value : 8, 8));
+    const detailLongThresholdRate = Math.max(
+      0,
+      Math.min(1, toInt(dom.cfgAlertDetailLongThreshold ? dom.cfgAlertDetailLongThreshold.value : Math.round(detailShortThresholdRate * 70), Math.round(detailShortThresholdRate * 70)) / 100)
+    );
+    const detailLongMinSamples = Math.max(1, toInt(dom.cfgAlertDetailLongMinSamples ? dom.cfgAlertDetailLongMinSamples.value : Math.max(12, detailShortMinSamples * 3), Math.max(12, detailShortMinSamples * 3)));
     return {
       app: {
         interval_minutes: toInt(dom.cfgAppInterval ? dom.cfgAppInterval.value : 15, 15),
@@ -2191,11 +2452,35 @@
         alerts: {
           enabled: Boolean(dom.cfgAlertEnabled && dom.cfgAlertEnabled.checked),
           cooldown_minutes: toInt(dom.cfgAlertCooldown ? dom.cfgAlertCooldown.value : 60, 60),
-          fetch_fail_streak_threshold: toInt(dom.cfgAlertFetchStreak ? dom.cfgAlertFetchStreak.value : 2, 2),
-          llm_timeout_rate_threshold: toInt(dom.cfgAlertLlmTimeoutRate ? dom.cfgAlertLlmTimeoutRate.value : 35, 35) / 100,
-          llm_timeout_min_calls: toInt(dom.cfgAlertLlmTimeoutMinCalls ? dom.cfgAlertLlmTimeoutMinCalls.value : 6, 6),
-          detail_missing_rate_threshold: toInt(dom.cfgAlertDetailMissingRate ? dom.cfgAlertDetailMissingRate.value : 45, 45) / 100,
-          detail_missing_min_samples: toInt(dom.cfgAlertDetailMissingMinSamples ? dom.cfgAlertDetailMissingMinSamples.value : 6, 6),
+          fetch_fail_streak_threshold: fetchShortThreshold,
+          llm_timeout_rate_threshold: llmShortThresholdRate,
+          llm_timeout_min_calls: llmShortMinSamples,
+          detail_missing_rate_threshold: detailShortThresholdRate,
+          detail_missing_min_samples: detailShortMinSamples,
+          fetch_fail_streak: {
+            short_window_runs: fetchShortWindowRuns,
+            short_threshold: fetchShortThreshold,
+            short_min_runs: fetchShortMinRuns,
+            long_window_runs: fetchLongWindowRuns,
+            long_threshold: fetchLongThreshold,
+            long_min_runs: fetchLongMinRuns,
+          },
+          llm_timeout_rate: {
+            short_window_runs: llmShortWindowRuns,
+            short_threshold: llmShortThresholdRate,
+            short_min_samples: llmShortMinSamples,
+            long_window_runs: llmLongWindowRuns,
+            long_threshold: llmLongThresholdRate,
+            long_min_samples: llmLongMinSamples,
+          },
+          detail_missing_rate: {
+            short_window_runs: detailShortWindowRuns,
+            short_threshold: detailShortThresholdRate,
+            short_min_samples: detailShortMinSamples,
+            long_window_runs: detailLongWindowRuns,
+            long_threshold: detailLongThresholdRate,
+            long_min_samples: detailLongMinSamples,
+          },
           channels: alertChannels,
         },
       },

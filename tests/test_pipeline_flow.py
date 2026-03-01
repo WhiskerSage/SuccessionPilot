@@ -515,6 +515,14 @@ class TestPipelineFlow(unittest.TestCase):
         settings.notification.mode = "off"
         settings.observability.alerts.enabled = True
         settings.observability.alerts.fetch_fail_streak_threshold = 1
+        settings.observability.alerts.fetch_fail_streak = {
+            "short_window_runs": 1,
+            "short_threshold": 1,
+            "short_min_runs": 1,
+            "long_window_runs": 1,
+            "long_threshold": 1,
+            "long_min_runs": 1,
+        }
         settings.observability.alerts.channels = ["email"]
         settings.observability.alerts.cooldown_minutes = 60
 
@@ -537,6 +545,79 @@ class TestPipelineFlow(unittest.TestCase):
         self.assertEqual(stats["alerts_notified"], ["fetch_fail_streak"])
         self.assertEqual(len(pipeline.router.calls), 1)
         self.assertIn("阈值告警", pipeline.router.calls[0]["subject"])
+
+    def test_dual_window_llm_timeout_requires_long_window_trend(self):
+        settings = _build_settings()
+        settings.observability.alerts.enabled = True
+        settings.observability.alerts.llm_timeout_rate = {
+            "short_window_runs": 1,
+            "short_threshold": 0.5,
+            "short_min_samples": 4,
+            "long_window_runs": 3,
+            "long_threshold": 0.3,
+            "long_min_samples": 12,
+        }
+
+        logger = _NullLogger()
+        pipeline = AutoSuccessorPipeline(settings, logger)
+        stats = {
+            "fetch_fail_streak": 0,
+            "llm_calls": 4,
+            "llm_timeout_count": 3,
+            "llm_timeout_rate": 0.75,
+            "detail_target_notes": 0,
+            "detail_missing": 0,
+            "detail_missing_rate": 0.0,
+        }
+
+        pipeline._load_recent_alert_stats = lambda limit, exclude_run_id: [
+            {"llm_calls": 10, "llm_timeout_count": 0},
+            {"llm_calls": 10, "llm_timeout_count": 0},
+        ]
+        eval_low_long = pipeline._evaluate_threshold_alerts(run_id="r-low-long", stats=stats)
+        self.assertNotIn("llm_timeout_rate", [item.get("code") for item in eval_low_long["triggered"]])
+
+        pipeline._load_recent_alert_stats = lambda limit, exclude_run_id: [
+            {"llm_calls": 10, "llm_timeout_count": 4},
+            {"llm_calls": 10, "llm_timeout_count": 4},
+        ]
+        eval_high_long = pipeline._evaluate_threshold_alerts(run_id="r-high-long", stats=stats)
+        self.assertIn("llm_timeout_rate", [item.get("code") for item in eval_high_long["triggered"]])
+
+    def test_dual_window_fetch_fail_requires_long_window_min_runs(self):
+        settings = _build_settings()
+        settings.observability.alerts.enabled = True
+        settings.observability.alerts.fetch_fail_streak = {
+            "short_window_runs": 1,
+            "short_threshold": 2,
+            "short_min_runs": 1,
+            "long_window_runs": 4,
+            "long_threshold": 1.0,
+            "long_min_runs": 3,
+        }
+
+        logger = _NullLogger()
+        pipeline = AutoSuccessorPipeline(settings, logger)
+        stats = {
+            "fetch_fail_streak": 2,
+            "llm_calls": 0,
+            "llm_timeout_count": 0,
+            "llm_timeout_rate": 0.0,
+            "detail_target_notes": 0,
+            "detail_missing": 0,
+            "detail_missing_rate": 0.0,
+        }
+
+        pipeline._load_recent_alert_stats = lambda limit, exclude_run_id: []
+        eval_insufficient_runs = pipeline._evaluate_threshold_alerts(run_id="r-no-history", stats=stats)
+        self.assertNotIn("fetch_fail_streak", [item.get("code") for item in eval_insufficient_runs["triggered"]])
+
+        pipeline._load_recent_alert_stats = lambda limit, exclude_run_id: [
+            {"fetch_fail_streak": 1},
+            {"fetch_fail_streak": 1},
+        ]
+        eval_triggered = pipeline._evaluate_threshold_alerts(run_id="r-with-history", stats=stats)
+        self.assertIn("fetch_fail_streak", [item.get("code") for item in eval_triggered["triggered"]])
 
     def test_jobs_to_summary_records_avoid_duplicate_original_text(self):
         settings = _build_settings()

@@ -1,10 +1,19 @@
 ﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.4.7`
+- 项目版本：`0.4.9`
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
+
+### v0.4.9 更新要点
+- 控制中心告警配置升级为“双窗口可视化配置”：可直接配置短窗/长窗的窗口轮数、阈值、最小样本（或最小轮数）。
+- 前端保存配置时同时写入双窗口字段与兼容旧字段，避免覆盖已有告警策略。
+
+### v0.4.8 更新要点
+- 告警从单阈值升级为双窗口：短窗口用于识别突发，长窗口用于识别趋势，减少误报与告警疲劳。
+- 三类指标全部支持双窗口判定：`fetch_fail_streak`、`llm_timeout_rate`、`detail_missing_rate`。
+- 保留旧配置兼容：`fetch_fail_streak_threshold` / `llm_timeout_rate_threshold` / `detail_missing_rate_threshold` 仍可使用，并自动映射到短窗口配置。
 
 ### v0.4.7 更新要点
 - 新增前端“质量面板”：展示字段完整率（公司/岗位/地点/要求）、结构化完整率、正文覆盖率。
@@ -268,12 +277,35 @@ observability:
   alerts:
     enabled: true
     cooldown_minutes: 60
+    channels: [] # 留空则复用 digest_channels
+    # 兼容旧字段（短窗口别名）
     fetch_fail_streak_threshold: 2
     llm_timeout_rate_threshold: 0.35
     llm_timeout_min_calls: 6
     detail_missing_rate_threshold: 0.45
     detail_missing_min_samples: 6
-    channels: [] # 留空则复用 digest_channels
+    # 双窗口（运行时以这里为准）
+    fetch_fail_streak:
+      short_window_runs: 1
+      short_threshold: 2
+      short_min_runs: 1
+      long_window_runs: 6
+      long_threshold: 1.2
+      long_min_runs: 3
+    llm_timeout_rate:
+      short_window_runs: 1
+      short_threshold: 0.35
+      short_min_samples: 6
+      long_window_runs: 8
+      long_threshold: 0.25
+      long_min_samples: 18
+    detail_missing_rate:
+      short_window_runs: 1
+      short_threshold: 0.45
+      short_min_samples: 6
+      long_window_runs: 8
+      long_threshold: 0.32
+      long_min_samples: 18
 
 resume:
   source_txt_path: "config/resume.txt"
@@ -543,14 +575,18 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 ### observability.alerts
 - `enabled`：是否启用阈值告警
 - `cooldown_minutes`：同类告警冷却时间（分钟）
-- `fetch_fail_streak_threshold`：连续抓取失败阈值（命中即告警）
-- `llm_timeout_rate_threshold`：LLM 超时率阈值（支持 `0~1`；也支持写 `35` 表示 `35%`）
-- `llm_timeout_min_calls`：LLM 超时率评估最小样本量
-- `detail_missing_rate_threshold`：详情缺失率阈值（支持 `0~1`；也支持写 `45` 表示 `45%`）
-- `detail_missing_min_samples`：详情缺失率评估最小样本量
+- `fetch_fail_streak_threshold`：兼容旧字段，映射到 `fetch_fail_streak.short_threshold`
+- `llm_timeout_rate_threshold`：兼容旧字段，映射到 `llm_timeout_rate.short_threshold`
+- `llm_timeout_min_calls`：兼容旧字段，映射到 `llm_timeout_rate.short_min_samples`
+- `detail_missing_rate_threshold`：兼容旧字段，映射到 `detail_missing_rate.short_threshold`
+- `detail_missing_min_samples`：兼容旧字段，映射到 `detail_missing_rate.short_min_samples`
+- `fetch_fail_streak.*`：双窗口配置（短窗 `max(fetch_fail_streak)` + 长窗 `avg(fetch_fail_streak)`）
+- `llm_timeout_rate.*`：双窗口配置（短窗/长窗按样本加权超时率）
+- `detail_missing_rate.*`：双窗口配置（短窗/长窗按样本加权缺失率）
 - `channels`：告警通道，留空则复用 `notification.digest_channels`
 
 行为说明。
+- 告警按“双窗口”评估：短窗口识别突发、长窗口识别趋势，必须同时满足才触发通知。
 - 抓取失败（登录/搜索/详情）、LLM 超时、邮件失败会分别入队。
 - 队列持久化文件默认：`data/retry_queue.json`。
 - 重放在后台线程执行，不阻塞主流程抓取、入库和当前轮通知。
@@ -571,6 +607,9 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - `observability.alerts.fetch_fail_streak_threshold: 2`
 - `observability.alerts.llm_timeout_rate_threshold: 0.35`
 - `observability.alerts.detail_missing_rate_threshold: 0.45`
+- `observability.alerts.fetch_fail_streak.long_window_runs: 6`
+- `observability.alerts.llm_timeout_rate.long_window_runs: 8`
+- `observability.alerts.detail_missing_rate.long_window_runs: 8`
 
 ### agent
 - `runtime_name`：运行时名称
@@ -925,6 +964,8 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
+| v0.4.9 | 2026-03-01 | 控制中心告警配置支持双窗口可视化编辑（短窗/长窗窗口轮数、阈值、最小样本）；前端保存时同步写入双窗口与兼容旧字段，避免配置回退。 |
+| v0.4.8 | 2026-03-01 | 告警升级为双窗口（短窗突发+长窗趋势）并覆盖 `fetch_fail_streak`、`llm_timeout_rate`、`detail_missing_rate`；保留旧阈值字段兼容并自动映射到短窗口；控制中心配置读写同步兼容双窗口字段。 |
 | v0.4.7 | 2026-03-01 | 新增前端质量面板（字段完整率、结构化完整率、正文覆盖率）；`/api/performance` 新增 `quality` 聚合字段；新增最近运行质量趋势（提取命中率/详情覆盖率/LLM 成功率）与缺失字段 Top。 |
 | v0.4.6 | 2026-02-28 | 新增阈值告警（连续抓取失败、LLM 超时率、详情缺失率）与冷却控制；run stats 增加 `llm_timeout_rate/detail_missing_rate/alerts_*`；性能看板新增告警聚合与告警码分布；控制中心可配置告警参数与通道。 |
 | v0.4.5 | 2026-02-27 | 控制中心“配置向导”整块支持折叠/展开；自检结果支持折叠/展开与“展开全部/收起通过项”；结果按失败/警告/通过排序；前端缓存版本升级为 `app.js?v=20260227-8`。 |

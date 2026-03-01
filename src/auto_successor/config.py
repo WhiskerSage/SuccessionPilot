@@ -139,11 +139,16 @@ class AlertThresholdConfig:
     enabled: bool = True
     channels: list[str] = field(default_factory=list)
     cooldown_minutes: int = 60
+    # Legacy single-threshold fields (kept for backward compatibility)
     fetch_fail_streak_threshold: int = 2
     llm_timeout_rate_threshold: float = 0.35
     llm_timeout_min_calls: int = 6
     detail_missing_rate_threshold: float = 0.45
     detail_missing_min_samples: int = 6
+    # Dual-window fields (short window + long window)
+    fetch_fail_streak: dict[str, Any] = field(default_factory=dict)
+    llm_timeout_rate: dict[str, Any] = field(default_factory=dict)
+    detail_missing_rate: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -287,6 +292,74 @@ def _autofix_browser_path(path_text: str) -> str:
     return configured or "C:/Program Files/Google/Chrome/Application/chrome.exe"
 
 
+def _as_int(value: Any, default: int, *, minimum: int | None = None) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = int(default)
+    if minimum is not None:
+        parsed = max(int(minimum), parsed)
+    return parsed
+
+
+def _as_rate(value: Any, default: float) -> float:
+    try:
+        parsed = float(value)
+    except Exception:
+        parsed = float(default)
+    if parsed > 1.0 and parsed <= 100.0:
+        parsed = parsed / 100.0
+    if parsed < 0.0:
+        return 0.0
+    if parsed > 1.0:
+        return 1.0
+    return parsed
+
+
+def _as_float(value: Any, default: float, *, minimum: float | None = None) -> float:
+    try:
+        parsed = float(value)
+    except Exception:
+        parsed = float(default)
+    if minimum is not None:
+        parsed = max(float(minimum), parsed)
+    return parsed
+
+
+def _load_fetch_dual_window(raw: dict[str, Any], *, legacy_threshold: int) -> dict[str, Any]:
+    short_threshold_default = max(1, int(legacy_threshold))
+    long_threshold_default = max(1.0, float(short_threshold_default) * 0.6)
+    return {
+        "short_window_runs": _as_int(raw.get("short_window_runs"), 1, minimum=1),
+        "short_threshold": _as_int(raw.get("short_threshold"), short_threshold_default, minimum=1),
+        "short_min_runs": _as_int(raw.get("short_min_runs"), 1, minimum=1),
+        "long_window_runs": _as_int(raw.get("long_window_runs"), 6, minimum=1),
+        "long_threshold": _as_float(raw.get("long_threshold"), long_threshold_default, minimum=1.0),
+        "long_min_runs": _as_int(raw.get("long_min_runs"), 3, minimum=1),
+    }
+
+
+def _load_rate_dual_window(
+    raw: dict[str, Any],
+    *,
+    legacy_threshold: float,
+    legacy_min_samples: int,
+    default_long_window_runs: int,
+) -> dict[str, Any]:
+    short_threshold_default = _as_rate(legacy_threshold, legacy_threshold)
+    long_threshold_default = _as_rate(short_threshold_default * 0.7, short_threshold_default)
+    short_min_samples_default = max(1, int(legacy_min_samples))
+    long_min_samples_default = max(12, short_min_samples_default * 3)
+    return {
+        "short_window_runs": _as_int(raw.get("short_window_runs"), 1, minimum=1),
+        "short_threshold": _as_rate(raw.get("short_threshold"), short_threshold_default),
+        "short_min_samples": _as_int(raw.get("short_min_samples"), short_min_samples_default, minimum=1),
+        "long_window_runs": _as_int(raw.get("long_window_runs"), default_long_window_runs, minimum=1),
+        "long_threshold": _as_rate(raw.get("long_threshold"), long_threshold_default),
+        "long_min_samples": _as_int(raw.get("long_min_samples"), long_min_samples_default, minimum=1),
+    }
+
+
 def load_settings(config_path: str) -> Settings:
     path = Path(config_path)
     if not path.exists():
@@ -315,8 +388,39 @@ def load_settings(config_path: str) -> Settings:
     notification = NotificationConfig(**_section(data, "notification"))
     retry = RetryConfig(**_section(data, "retry"))
     observability_raw = _section(data, "observability")
+    alerts_raw = _section(observability_raw, "alerts")
+    fetch_fail_streak_threshold = _as_int(alerts_raw.get("fetch_fail_streak_threshold"), 2, minimum=1)
+    llm_timeout_rate_threshold = _as_rate(alerts_raw.get("llm_timeout_rate_threshold"), 0.35)
+    llm_timeout_min_calls = _as_int(alerts_raw.get("llm_timeout_min_calls"), 6, minimum=1)
+    detail_missing_rate_threshold = _as_rate(alerts_raw.get("detail_missing_rate_threshold"), 0.45)
+    detail_missing_min_samples = _as_int(alerts_raw.get("detail_missing_min_samples"), 6, minimum=1)
     observability = ObservabilityConfig(
-        alerts=AlertThresholdConfig(**_section(observability_raw, "alerts"))
+        alerts=AlertThresholdConfig(
+            enabled=bool(alerts_raw.get("enabled", True)),
+            channels=_as_name_list(alerts_raw.get("channels"), default=[]),
+            cooldown_minutes=_as_int(alerts_raw.get("cooldown_minutes"), 60, minimum=1),
+            fetch_fail_streak_threshold=fetch_fail_streak_threshold,
+            llm_timeout_rate_threshold=llm_timeout_rate_threshold,
+            llm_timeout_min_calls=llm_timeout_min_calls,
+            detail_missing_rate_threshold=detail_missing_rate_threshold,
+            detail_missing_min_samples=detail_missing_min_samples,
+            fetch_fail_streak=_load_fetch_dual_window(
+                _section(alerts_raw, "fetch_fail_streak"),
+                legacy_threshold=fetch_fail_streak_threshold,
+            ),
+            llm_timeout_rate=_load_rate_dual_window(
+                _section(alerts_raw, "llm_timeout_rate"),
+                legacy_threshold=llm_timeout_rate_threshold,
+                legacy_min_samples=llm_timeout_min_calls,
+                default_long_window_runs=8,
+            ),
+            detail_missing_rate=_load_rate_dual_window(
+                _section(alerts_raw, "detail_missing_rate"),
+                legacy_threshold=detail_missing_rate_threshold,
+                legacy_min_samples=detail_missing_min_samples,
+                default_long_window_runs=8,
+            ),
+        )
     )
     notification.digest_channels = _as_name_list(notification.digest_channels, default=["email"])
     notification.realtime_channels = _as_name_list(notification.realtime_channels, default=["wechat_service", "email"])

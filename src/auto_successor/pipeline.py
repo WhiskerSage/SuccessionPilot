@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import time
 from datetime import datetime, timezone
@@ -889,80 +890,359 @@ class AutoSuccessorPipeline:
             return 1.0
         return parsed
 
+    @staticmethod
+    def _normalize_numeric_threshold(value: Any, *, default: float, minimum: float = 0.0) -> float:
+        try:
+            parsed = float(value)
+        except Exception:
+            parsed = float(default)
+        if parsed < float(minimum):
+            parsed = float(minimum)
+        return parsed
+
+    @staticmethod
+    def _normalize_window_runs(value: Any, *, default: int) -> int:
+        try:
+            parsed = int(value)
+        except Exception:
+            parsed = int(default)
+        return max(1, parsed)
+
+    @staticmethod
+    def _normalize_min_samples(value: Any, *, default: int) -> int:
+        try:
+            parsed = int(value)
+        except Exception:
+            parsed = int(default)
+        return max(1, parsed)
+
+    def _load_recent_alert_stats(self, *, limit: int, exclude_run_id: str) -> list[dict[str, Any]]:
+        max_items = max(0, int(limit))
+        if max_items <= 0:
+            return []
+        runs_dir = getattr(self.journal, "base_dir", None)
+        if runs_dir is None:
+            return []
+        if not isinstance(runs_dir, Path):
+            runs_dir = Path(str(runs_dir))
+        if not runs_dir.exists():
+            return []
+
+        history: list[dict[str, Any]] = []
+        files = sorted(runs_dir.glob("*.json"), key=lambda item: item.name, reverse=True)
+        for file in files:
+            if str(file.stem) == str(exclude_run_id):
+                continue
+            try:
+                payload = json.loads(file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            stats = payload.get("stats")
+            if not isinstance(stats, dict):
+                continue
+            history.append(stats)
+            if len(history) >= max_items:
+                break
+        return history
+
+    @staticmethod
+    def _aggregate_window_fetch(window_stats: list[dict[str, Any]]) -> dict[str, Any]:
+        values: list[float] = []
+        for item in window_stats:
+            try:
+                values.append(max(0.0, float(item.get("fetch_fail_streak", 0) or 0)))
+            except Exception:
+                values.append(0.0)
+        if not values:
+            return {"runs": 0, "max": 0.0, "avg": 0.0}
+        return {
+            "runs": len(values),
+            "max": max(values),
+            "avg": float(sum(values)) / float(len(values)),
+        }
+
+    @staticmethod
+    def _aggregate_window_rate(
+        window_stats: list[dict[str, Any]],
+        *,
+        numerator_key: str,
+        denominator_key: str,
+    ) -> dict[str, Any]:
+        numerator = 0
+        denominator = 0
+        for item in window_stats:
+            numerator += max(0, int(item.get(numerator_key, 0) or 0))
+            denominator += max(0, int(item.get(denominator_key, 0) or 0))
+        rate = float(numerator) / float(denominator) if denominator > 0 else 0.0
+        return {
+            "runs": len(window_stats),
+            "numerator": numerator,
+            "denominator": denominator,
+            "rate": rate,
+        }
+
     def _evaluate_threshold_alerts(self, *, run_id: str, stats: dict[str, Any]) -> dict[str, Any]:
         cfg = getattr(getattr(self.settings, "observability", None), "alerts", None)
         if cfg is None or not bool(getattr(cfg, "enabled", True)):
             return {"enabled": False, "thresholds": {}, "triggered": []}
 
-        fetch_fail_streak_threshold = max(1, int(getattr(cfg, "fetch_fail_streak_threshold", 2) or 2))
-        llm_timeout_rate_threshold = self._normalize_rate_threshold(
+        # Legacy single-threshold values are kept as fallback defaults.
+        legacy_fetch_threshold = max(1, int(getattr(cfg, "fetch_fail_streak_threshold", 2) or 2))
+        legacy_llm_rate_threshold = self._normalize_rate_threshold(
             getattr(cfg, "llm_timeout_rate_threshold", 0.35),
             default=0.35,
         )
-        llm_timeout_min_calls = max(1, int(getattr(cfg, "llm_timeout_min_calls", 6) or 6))
-        detail_missing_rate_threshold = self._normalize_rate_threshold(
+        legacy_llm_min_calls = max(1, int(getattr(cfg, "llm_timeout_min_calls", 6) or 6))
+        legacy_detail_rate_threshold = self._normalize_rate_threshold(
             getattr(cfg, "detail_missing_rate_threshold", 0.45),
             default=0.45,
         )
-        detail_missing_min_samples = max(1, int(getattr(cfg, "detail_missing_min_samples", 6) or 6))
+        legacy_detail_min_samples = max(1, int(getattr(cfg, "detail_missing_min_samples", 6) or 6))
+
+        fetch_cfg = getattr(cfg, "fetch_fail_streak", {}) or {}
+        llm_cfg = getattr(cfg, "llm_timeout_rate", {}) or {}
+        detail_cfg = getattr(cfg, "detail_missing_rate", {}) or {}
+        if not isinstance(fetch_cfg, dict):
+            fetch_cfg = {}
+        if not isinstance(llm_cfg, dict):
+            llm_cfg = {}
+        if not isinstance(detail_cfg, dict):
+            detail_cfg = {}
+
+        fetch_short_window_runs = self._normalize_window_runs(fetch_cfg.get("short_window_runs"), default=1)
+        fetch_short_threshold = self._normalize_numeric_threshold(
+            fetch_cfg.get("short_threshold"),
+            default=float(legacy_fetch_threshold),
+            minimum=1.0,
+        )
+        fetch_short_min_runs = self._normalize_min_samples(fetch_cfg.get("short_min_runs"), default=1)
+        fetch_long_window_runs = self._normalize_window_runs(fetch_cfg.get("long_window_runs"), default=6)
+        fetch_long_threshold = self._normalize_numeric_threshold(
+            fetch_cfg.get("long_threshold"),
+            default=max(1.0, float(legacy_fetch_threshold) * 0.6),
+            minimum=1.0,
+        )
+        fetch_long_min_runs = self._normalize_min_samples(fetch_cfg.get("long_min_runs"), default=3)
+
+        llm_short_window_runs = self._normalize_window_runs(llm_cfg.get("short_window_runs"), default=1)
+        llm_short_threshold = self._normalize_rate_threshold(
+            llm_cfg.get("short_threshold"),
+            default=legacy_llm_rate_threshold,
+        )
+        llm_short_min_calls = self._normalize_min_samples(
+            llm_cfg.get("short_min_samples"),
+            default=legacy_llm_min_calls,
+        )
+        llm_long_window_runs = self._normalize_window_runs(llm_cfg.get("long_window_runs"), default=8)
+        llm_long_threshold = self._normalize_rate_threshold(
+            llm_cfg.get("long_threshold"),
+            default=min(1.0, max(0.0, legacy_llm_rate_threshold * 0.7)),
+        )
+        llm_long_min_calls = self._normalize_min_samples(
+            llm_cfg.get("long_min_samples"),
+            default=max(12, legacy_llm_min_calls * 3),
+        )
+
+        detail_short_window_runs = self._normalize_window_runs(detail_cfg.get("short_window_runs"), default=1)
+        detail_short_threshold = self._normalize_rate_threshold(
+            detail_cfg.get("short_threshold"),
+            default=legacy_detail_rate_threshold,
+        )
+        detail_short_min_samples = self._normalize_min_samples(
+            detail_cfg.get("short_min_samples"),
+            default=legacy_detail_min_samples,
+        )
+        detail_long_window_runs = self._normalize_window_runs(detail_cfg.get("long_window_runs"), default=8)
+        detail_long_threshold = self._normalize_rate_threshold(
+            detail_cfg.get("long_threshold"),
+            default=min(1.0, max(0.0, legacy_detail_rate_threshold * 0.7)),
+        )
+        detail_long_min_samples = self._normalize_min_samples(
+            detail_cfg.get("long_min_samples"),
+            default=max(12, legacy_detail_min_samples * 3),
+        )
+
+        max_window_runs = max(
+            fetch_short_window_runs,
+            fetch_long_window_runs,
+            llm_short_window_runs,
+            llm_long_window_runs,
+            detail_short_window_runs,
+            detail_long_window_runs,
+        )
+        historical_stats = self._load_recent_alert_stats(
+            limit=max(0, max_window_runs - 1),
+            exclude_run_id=run_id,
+        )
+        run_stats_window = [stats] + historical_stats
 
         thresholds = {
-            "fetch_fail_streak_threshold": fetch_fail_streak_threshold,
-            "llm_timeout_rate_threshold": llm_timeout_rate_threshold,
-            "llm_timeout_min_calls": llm_timeout_min_calls,
-            "detail_missing_rate_threshold": detail_missing_rate_threshold,
-            "detail_missing_min_samples": detail_missing_min_samples,
+            "fetch_fail_streak": {
+                "short_window_runs": fetch_short_window_runs,
+                "short_threshold": fetch_short_threshold,
+                "short_min_runs": fetch_short_min_runs,
+                "long_window_runs": fetch_long_window_runs,
+                "long_threshold": fetch_long_threshold,
+                "long_min_runs": fetch_long_min_runs,
+            },
+            "llm_timeout_rate": {
+                "short_window_runs": llm_short_window_runs,
+                "short_threshold": llm_short_threshold,
+                "short_min_samples": llm_short_min_calls,
+                "long_window_runs": llm_long_window_runs,
+                "long_threshold": llm_long_threshold,
+                "long_min_samples": llm_long_min_calls,
+            },
+            "detail_missing_rate": {
+                "short_window_runs": detail_short_window_runs,
+                "short_threshold": detail_short_threshold,
+                "short_min_samples": detail_short_min_samples,
+                "long_window_runs": detail_long_window_runs,
+                "long_threshold": detail_long_threshold,
+                "long_min_samples": detail_long_min_samples,
+            },
+            "history_sample_runs": len(run_stats_window),
         }
         triggered: list[dict[str, Any]] = []
 
-        fetch_fail_streak = max(0, int(stats.get("fetch_fail_streak", 0)))
-        if fetch_fail_streak >= fetch_fail_streak_threshold:
+        fetch_short = self._aggregate_window_fetch(run_stats_window[:fetch_short_window_runs])
+        fetch_long = self._aggregate_window_fetch(run_stats_window[:fetch_long_window_runs])
+        fetch_ready = (
+            int(fetch_short.get("runs", 0)) >= fetch_short_min_runs
+            and int(fetch_long.get("runs", 0)) >= fetch_long_min_runs
+        )
+        fetch_short_value = float(fetch_short.get("max", 0.0))
+        fetch_long_value = float(fetch_long.get("avg", 0.0))
+        if fetch_ready and fetch_short_value >= fetch_short_threshold and fetch_long_value >= fetch_long_threshold:
             triggered.append(
                 {
                     "code": "fetch_fail_streak",
                     "level": "critical",
                     "metric": "fetch_fail_streak",
-                    "value": fetch_fail_streak,
-                    "threshold": fetch_fail_streak_threshold,
-                    "sample_size": 1,
-                    "reason": f"抓取链路连续失败 {fetch_fail_streak} 次（阈值 {fetch_fail_streak_threshold}）",
+                    "value": fetch_short_value,
+                    "threshold": fetch_short_threshold,
+                    "sample_size": int(fetch_short.get("runs", 0)),
+                    "window_short": {
+                        "runs": int(fetch_short.get("runs", 0)),
+                        "value": fetch_short_value,
+                        "threshold": fetch_short_threshold,
+                        "mode": "max",
+                    },
+                    "window_long": {
+                        "runs": int(fetch_long.get("runs", 0)),
+                        "value": fetch_long_value,
+                        "threshold": fetch_long_threshold,
+                        "mode": "avg",
+                    },
+                    "reason": (
+                        f"fetch_fail_streak 短窗max={fetch_short_value:.2f}/{fetch_short_threshold:.2f}，"
+                        f"长窗avg={fetch_long_value:.2f}/{fetch_long_threshold:.2f}"
+                    ),
                 }
             )
 
-        llm_calls = max(0, int(stats.get("llm_calls", 0)))
-        llm_timeout_count = max(0, int(stats.get("llm_timeout_count", 0)))
-        llm_timeout_rate = float(stats.get("llm_timeout_rate", 0.0) or 0.0)
-        if llm_calls >= llm_timeout_min_calls and llm_timeout_rate >= llm_timeout_rate_threshold:
+        llm_short = self._aggregate_window_rate(
+            run_stats_window[:llm_short_window_runs],
+            numerator_key="llm_timeout_count",
+            denominator_key="llm_calls",
+        )
+        llm_long = self._aggregate_window_rate(
+            run_stats_window[:llm_long_window_runs],
+            numerator_key="llm_timeout_count",
+            denominator_key="llm_calls",
+        )
+        llm_short_calls = int(llm_short.get("denominator", 0))
+        llm_short_timeout_count = int(llm_short.get("numerator", 0))
+        llm_short_rate = float(llm_short.get("rate", 0.0))
+        llm_long_calls = int(llm_long.get("denominator", 0))
+        llm_long_timeout_count = int(llm_long.get("numerator", 0))
+        llm_long_rate = float(llm_long.get("rate", 0.0))
+        if (
+            llm_short_calls >= llm_short_min_calls
+            and llm_long_calls >= llm_long_min_calls
+            and llm_short_rate >= llm_short_threshold
+            and llm_long_rate >= llm_long_threshold
+        ):
             triggered.append(
                 {
                     "code": "llm_timeout_rate",
                     "level": "warning",
                     "metric": "llm_timeout_rate",
-                    "value": llm_timeout_rate,
-                    "threshold": llm_timeout_rate_threshold,
-                    "sample_size": llm_calls,
+                    "value": llm_short_rate,
+                    "threshold": llm_short_threshold,
+                    "sample_size": llm_short_calls,
+                    "window_short": {
+                        "runs": int(llm_short.get("runs", 0)),
+                        "value": llm_short_rate,
+                        "threshold": llm_short_threshold,
+                        "numerator": llm_short_timeout_count,
+                        "denominator": llm_short_calls,
+                    },
+                    "window_long": {
+                        "runs": int(llm_long.get("runs", 0)),
+                        "value": llm_long_rate,
+                        "threshold": llm_long_threshold,
+                        "numerator": llm_long_timeout_count,
+                        "denominator": llm_long_calls,
+                    },
                     "reason": (
-                        f"LLM 超时率 {llm_timeout_rate:.1%}（{llm_timeout_count}/{llm_calls}）"
-                        f"达到阈值 {llm_timeout_rate_threshold:.1%}"
+                        f"LLM 超时率短窗 {llm_short_rate:.1%}（{llm_short_timeout_count}/{llm_short_calls}）/"
+                        f"{llm_short_threshold:.1%}，长窗 {llm_long_rate:.1%}（{llm_long_timeout_count}/{llm_long_calls}）/"
+                        f"{llm_long_threshold:.1%}"
                     ),
                 }
             )
 
-        detail_target_notes = max(0, int(stats.get("detail_target_notes", 0)))
-        detail_missing = max(0, int(stats.get("detail_missing", 0)))
-        detail_missing_rate = float(stats.get("detail_missing_rate", 0.0) or 0.0)
-        if detail_target_notes >= detail_missing_min_samples and detail_missing_rate >= detail_missing_rate_threshold:
+        detail_short = self._aggregate_window_rate(
+            run_stats_window[:detail_short_window_runs],
+            numerator_key="detail_missing",
+            denominator_key="detail_target_notes",
+        )
+        detail_long = self._aggregate_window_rate(
+            run_stats_window[:detail_long_window_runs],
+            numerator_key="detail_missing",
+            denominator_key="detail_target_notes",
+        )
+        detail_short_target = int(detail_short.get("denominator", 0))
+        detail_short_missing = int(detail_short.get("numerator", 0))
+        detail_short_rate = float(detail_short.get("rate", 0.0))
+        detail_long_target = int(detail_long.get("denominator", 0))
+        detail_long_missing = int(detail_long.get("numerator", 0))
+        detail_long_rate = float(detail_long.get("rate", 0.0))
+        if (
+            detail_short_target >= detail_short_min_samples
+            and detail_long_target >= detail_long_min_samples
+            and detail_short_rate >= detail_short_threshold
+            and detail_long_rate >= detail_long_threshold
+        ):
             triggered.append(
                 {
                     "code": "detail_missing_rate",
                     "level": "warning",
                     "metric": "detail_missing_rate",
-                    "value": detail_missing_rate,
-                    "threshold": detail_missing_rate_threshold,
-                    "sample_size": detail_target_notes,
+                    "value": detail_short_rate,
+                    "threshold": detail_short_threshold,
+                    "sample_size": detail_short_target,
+                    "window_short": {
+                        "runs": int(detail_short.get("runs", 0)),
+                        "value": detail_short_rate,
+                        "threshold": detail_short_threshold,
+                        "numerator": detail_short_missing,
+                        "denominator": detail_short_target,
+                    },
+                    "window_long": {
+                        "runs": int(detail_long.get("runs", 0)),
+                        "value": detail_long_rate,
+                        "threshold": detail_long_threshold,
+                        "numerator": detail_long_missing,
+                        "denominator": detail_long_target,
+                    },
                     "reason": (
-                        f"详情缺失率 {detail_missing_rate:.1%}（{detail_missing}/{detail_target_notes}）"
-                        f"达到阈值 {detail_missing_rate_threshold:.1%}"
+                        f"详情缺失率短窗 {detail_short_rate:.1%}（{detail_short_missing}/{detail_short_target}）/"
+                        f"{detail_short_threshold:.1%}，长窗 {detail_long_rate:.1%}（{detail_long_missing}/{detail_long_target}）/"
+                        f"{detail_long_threshold:.1%}"
                     ),
                 }
             )
@@ -1023,12 +1303,26 @@ class AutoSuccessorPipeline:
                 threshold_text = f"{threshold:.1%}" if "rate" in code else f"{threshold:.4f}"
             else:
                 threshold_text = str(threshold)
+            short_window = item.get("window_short") if isinstance(item.get("window_short"), dict) else {}
+            long_window = item.get("window_long") if isinstance(item.get("window_long"), dict) else {}
             lines.extend(
                 [
                     f"{index}. {code}",
                     f"   - value: {value_text}",
                     f"   - threshold: {threshold_text}",
                     f"   - sample_size: {sample}",
+                    (
+                        f"   - short_window: runs={int(short_window.get('runs', 0))} "
+                        f"value={short_window.get('value')} threshold={short_window.get('threshold')}"
+                    )
+                    if short_window
+                    else "   - short_window: -",
+                    (
+                        f"   - long_window: runs={int(long_window.get('runs', 0))} "
+                        f"value={long_window.get('value')} threshold={long_window.get('threshold')}"
+                    )
+                    if long_window
+                    else "   - long_window: -",
                     f"   - reason: {reason or '-'}",
                 ]
             )
