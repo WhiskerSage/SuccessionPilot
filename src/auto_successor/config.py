@@ -135,6 +135,23 @@ class RetryConfig:
 
 
 @dataclass
+class AlertThresholdConfig:
+    enabled: bool = True
+    channels: list[str] = field(default_factory=list)
+    cooldown_minutes: int = 60
+    fetch_fail_streak_threshold: int = 2
+    llm_timeout_rate_threshold: float = 0.35
+    llm_timeout_min_calls: int = 6
+    detail_missing_rate_threshold: float = 0.45
+    detail_missing_min_samples: int = 6
+
+
+@dataclass
+class ObservabilityConfig:
+    alerts: AlertThresholdConfig = field(default_factory=AlertThresholdConfig)
+
+
+@dataclass
 class EmailConfig:
     enabled: bool = False
     smtp_host: str = "smtp.126.com"
@@ -159,6 +176,7 @@ class Settings:
     agent: AgentConfig = field(default_factory=AgentConfig)
     notification: NotificationConfig = field(default_factory=NotificationConfig)
     retry: RetryConfig = field(default_factory=RetryConfig)
+    observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
 
     @property
     def wechat_app_id(self) -> str:
@@ -296,8 +314,13 @@ def load_settings(config_path: str) -> Settings:
     agent = AgentConfig(**_section(data, "agent"))
     notification = NotificationConfig(**_section(data, "notification"))
     retry = RetryConfig(**_section(data, "retry"))
+    observability_raw = _section(data, "observability")
+    observability = ObservabilityConfig(
+        alerts=AlertThresholdConfig(**_section(observability_raw, "alerts"))
+    )
     notification.digest_channels = _as_name_list(notification.digest_channels, default=["email"])
     notification.realtime_channels = _as_name_list(notification.realtime_channels, default=["wechat_service", "email"])
+    observability.alerts.channels = _as_name_list(observability.alerts.channels, default=[])
 
     # Backward-compatible mode aliases.
     agent.mode = (agent.mode or "auto").strip().lower()
@@ -326,6 +349,7 @@ def load_settings(config_path: str) -> Settings:
         agent=agent,
         notification=notification,
         retry=retry,
+        observability=observability,
     )
 
 

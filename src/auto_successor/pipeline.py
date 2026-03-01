@@ -527,7 +527,19 @@ class AutoSuccessorPipeline:
             llm_stage_fallbacks = self.llm_enricher.stage_fallback_counts()
             llm_fallback_total = sum(int(v) for v in llm_stage_fallbacks.values())
             self._enqueue_llm_timeout_retries(run_id=run_id, llm_error_codes=llm_error_codes)
-            retry_snapshot = self.retry_queue.snapshot()
+            llm_timeout_count = self._sum_timeout_error_counts(llm_error_codes)
+            llm_timeout_rate = (
+                float(llm_timeout_count) / float(self.llm_enricher.calls)
+                if int(self.llm_enricher.calls) > 0
+                else 0.0
+            )
+            detail_target_notes = int(detail_enrich_stats.get("target_notes", 0))
+            detail_missing = int(detail_enrich_stats.get("detail_missing", 0))
+            detail_missing_rate = (
+                float(detail_missing) / float(detail_target_notes)
+                if detail_target_notes > 0
+                else 0.0
+            )
 
             stats = {
                 "runtime_name": self.settings.agent.runtime_name,
@@ -556,6 +568,8 @@ class AutoSuccessorPipeline:
                 "llm_success": self.llm_enricher.success,
                 "llm_fail": self.llm_enricher.fail,
                 "llm_error_codes": llm_error_codes,
+                "llm_timeout_count": int(llm_timeout_count),
+                "llm_timeout_rate": llm_timeout_rate,
                 "llm_stage_calls": llm_stage_calls,
                 "llm_stage_fallbacks": llm_stage_fallbacks,
                 "llm_fallback_total": llm_fallback_total,
@@ -569,13 +583,14 @@ class AutoSuccessorPipeline:
                 "fetch_fail_count_run": len(fetch_fail_events),
                 "fetch_fail_streak": int(self._fetch_fail_streak),
                 "xhs_data_empty": bool(xhs_data_empty),
-                "detail_target_notes": int(detail_enrich_stats.get("target_notes", 0)),
+                "detail_target_notes": detail_target_notes,
                 "detail_attempted": int(detail_enrich_stats.get("attempted", 0)),
                 "detail_success": int(detail_enrich_stats.get("success", 0)),
                 "detail_failed": int(detail_enrich_stats.get("failed", 0)),
                 "detail_skipped_no_token": int(detail_enrich_stats.get("skipped_no_token", 0)),
                 "detail_filled": int(detail_enrich_stats.get("detail_filled", 0)),
-                "detail_missing": int(detail_enrich_stats.get("detail_missing", 0)),
+                "detail_missing": detail_missing,
+                "detail_missing_rate": detail_missing_rate,
                 "detail_blocked": int(detail_enrich_stats.get("blocked", 0)),
                 "detail_workers": int(getattr(self.settings.xhs, "detail_workers", 1)),
                 "xhs_diagnosis": xhs_failure_diagnosis,
@@ -584,13 +599,32 @@ class AutoSuccessorPipeline:
                 "note_agent_rule_budgeted": int(note_agent_stats.get("rule_budgeted", 0)),
                 "note_agent_worker_fallback": int(note_agent_stats.get("worker_fallback", 0)),
                 "note_agent_errors": int(note_agent_stats.get("errors", 0)),
-                "retry_pending": retry_snapshot.get("pending", {}),
-                "retry_running": retry_snapshot.get("running", {}),
-                "retry_enqueued": int(retry_snapshot.get("stats", {}).get("enqueued", 0)),
-                "retry_retried": int(retry_snapshot.get("stats", {}).get("retried", 0)),
-                "retry_succeeded": int(retry_snapshot.get("stats", {}).get("succeeded", 0)),
-                "retry_dropped": int(retry_snapshot.get("stats", {}).get("dropped", 0)),
             }
+            alert_eval = self._evaluate_threshold_alerts(run_id=run_id, stats=stats)
+            stats["alerts_enabled"] = bool(alert_eval.get("enabled"))
+            stats["alerts_triggered"] = list(alert_eval.get("triggered", []))
+            stats["alerts_triggered_count"] = int(len(stats["alerts_triggered"]))
+            stats["alerts_thresholds"] = dict(alert_eval.get("thresholds", {}))
+            alert_dispatch = self._dispatch_threshold_alerts(
+                run_id=run_id,
+                mode=mode,
+                stats=stats,
+                triggered_alerts=list(stats["alerts_triggered"]),
+            )
+            stats["alerts_notified"] = list(alert_dispatch.get("notified_codes", []))
+            stats["alerts_notified_count"] = int(len(stats["alerts_notified"]))
+            stats["alerts_suppressed"] = list(alert_dispatch.get("suppressed_codes", []))
+            stats["alerts_failed"] = list(alert_dispatch.get("failed_codes", []))
+            stats["alerts_notification_channels"] = list(alert_dispatch.get("channels", []))
+            stats["alerts_notification_logs"] = int(alert_dispatch.get("send_logs_count", 0))
+
+            retry_snapshot = self.retry_queue.snapshot()
+            stats["retry_pending"] = retry_snapshot.get("pending", {})
+            stats["retry_running"] = retry_snapshot.get("running", {})
+            stats["retry_enqueued"] = int(retry_snapshot.get("stats", {}).get("enqueued", 0))
+            stats["retry_retried"] = int(retry_snapshot.get("stats", {}).get("retried", 0))
+            stats["retry_succeeded"] = int(retry_snapshot.get("stats", {}).get("succeeded", 0))
+            stats["retry_dropped"] = int(retry_snapshot.get("stats", {}).get("dropped", 0))
             self.journal.write(
                 run_id,
                 {
@@ -628,6 +662,16 @@ class AutoSuccessorPipeline:
                         "stats": note_agent_stats,
                         "details_count": len(note_agent_details),
                         "details": note_agent_details[:200],
+                    },
+                    "alerts": {
+                        "enabled": bool(stats.get("alerts_enabled")),
+                        "triggered_count": int(stats.get("alerts_triggered_count", 0)),
+                        "triggered": list(stats.get("alerts_triggered") or []),
+                        "notified_count": int(stats.get("alerts_notified_count", 0)),
+                        "notified_codes": list(stats.get("alerts_notified") or []),
+                        "suppressed_codes": list(stats.get("alerts_suppressed") or []),
+                        "failed_codes": list(stats.get("alerts_failed") or []),
+                        "channels": list(stats.get("alerts_notification_channels") or []),
                     },
                     "retry": retry_snapshot,
                     "stage_records": stage_records,
@@ -817,6 +861,306 @@ class AutoSuccessorPipeline:
     def _mark_digest_sent(self, now: datetime, run_id: str) -> None:
         if hasattr(self.state, "mark_digest_sent"):
             self.state.mark_digest_sent(now, run_id)
+
+    @staticmethod
+    def _sum_timeout_error_counts(llm_error_codes: dict[str, int] | None) -> int:
+        timeout_keys = {"connect_timeout", "read_timeout", "timeout"}
+        total = 0
+        if not isinstance(llm_error_codes, dict):
+            return 0
+        for code, count in llm_error_codes.items():
+            key = str(code or "").strip().lower()
+            if key not in timeout_keys:
+                continue
+            total += max(0, int(count or 0))
+        return total
+
+    @staticmethod
+    def _normalize_rate_threshold(value: Any, *, default: float) -> float:
+        try:
+            parsed = float(value)
+        except Exception:
+            return float(default)
+        if parsed > 1.0 and parsed <= 100.0:
+            parsed = parsed / 100.0
+        if parsed < 0:
+            return 0.0
+        if parsed > 1.0:
+            return 1.0
+        return parsed
+
+    def _evaluate_threshold_alerts(self, *, run_id: str, stats: dict[str, Any]) -> dict[str, Any]:
+        cfg = getattr(getattr(self.settings, "observability", None), "alerts", None)
+        if cfg is None or not bool(getattr(cfg, "enabled", True)):
+            return {"enabled": False, "thresholds": {}, "triggered": []}
+
+        fetch_fail_streak_threshold = max(1, int(getattr(cfg, "fetch_fail_streak_threshold", 2) or 2))
+        llm_timeout_rate_threshold = self._normalize_rate_threshold(
+            getattr(cfg, "llm_timeout_rate_threshold", 0.35),
+            default=0.35,
+        )
+        llm_timeout_min_calls = max(1, int(getattr(cfg, "llm_timeout_min_calls", 6) or 6))
+        detail_missing_rate_threshold = self._normalize_rate_threshold(
+            getattr(cfg, "detail_missing_rate_threshold", 0.45),
+            default=0.45,
+        )
+        detail_missing_min_samples = max(1, int(getattr(cfg, "detail_missing_min_samples", 6) or 6))
+
+        thresholds = {
+            "fetch_fail_streak_threshold": fetch_fail_streak_threshold,
+            "llm_timeout_rate_threshold": llm_timeout_rate_threshold,
+            "llm_timeout_min_calls": llm_timeout_min_calls,
+            "detail_missing_rate_threshold": detail_missing_rate_threshold,
+            "detail_missing_min_samples": detail_missing_min_samples,
+        }
+        triggered: list[dict[str, Any]] = []
+
+        fetch_fail_streak = max(0, int(stats.get("fetch_fail_streak", 0)))
+        if fetch_fail_streak >= fetch_fail_streak_threshold:
+            triggered.append(
+                {
+                    "code": "fetch_fail_streak",
+                    "level": "critical",
+                    "metric": "fetch_fail_streak",
+                    "value": fetch_fail_streak,
+                    "threshold": fetch_fail_streak_threshold,
+                    "sample_size": 1,
+                    "reason": f"抓取链路连续失败 {fetch_fail_streak} 次（阈值 {fetch_fail_streak_threshold}）",
+                }
+            )
+
+        llm_calls = max(0, int(stats.get("llm_calls", 0)))
+        llm_timeout_count = max(0, int(stats.get("llm_timeout_count", 0)))
+        llm_timeout_rate = float(stats.get("llm_timeout_rate", 0.0) or 0.0)
+        if llm_calls >= llm_timeout_min_calls and llm_timeout_rate >= llm_timeout_rate_threshold:
+            triggered.append(
+                {
+                    "code": "llm_timeout_rate",
+                    "level": "warning",
+                    "metric": "llm_timeout_rate",
+                    "value": llm_timeout_rate,
+                    "threshold": llm_timeout_rate_threshold,
+                    "sample_size": llm_calls,
+                    "reason": (
+                        f"LLM 超时率 {llm_timeout_rate:.1%}（{llm_timeout_count}/{llm_calls}）"
+                        f"达到阈值 {llm_timeout_rate_threshold:.1%}"
+                    ),
+                }
+            )
+
+        detail_target_notes = max(0, int(stats.get("detail_target_notes", 0)))
+        detail_missing = max(0, int(stats.get("detail_missing", 0)))
+        detail_missing_rate = float(stats.get("detail_missing_rate", 0.0) or 0.0)
+        if detail_target_notes >= detail_missing_min_samples and detail_missing_rate >= detail_missing_rate_threshold:
+            triggered.append(
+                {
+                    "code": "detail_missing_rate",
+                    "level": "warning",
+                    "metric": "detail_missing_rate",
+                    "value": detail_missing_rate,
+                    "threshold": detail_missing_rate_threshold,
+                    "sample_size": detail_target_notes,
+                    "reason": (
+                        f"详情缺失率 {detail_missing_rate:.1%}（{detail_missing}/{detail_target_notes}）"
+                        f"达到阈值 {detail_missing_rate_threshold:.1%}"
+                    ),
+                }
+            )
+
+        if triggered:
+            codes = ",".join(str(item.get("code") or "") for item in triggered)
+            self.logger.warning("阈值告警命中 | run=%s | count=%s | codes=%s", run_id, len(triggered), codes)
+        return {"enabled": True, "thresholds": thresholds, "triggered": triggered}
+
+    def _resolve_alert_channels(self) -> list[str]:
+        cfg = getattr(getattr(self.settings, "observability", None), "alerts", None)
+        configured = list(getattr(cfg, "channels", []) or [])
+        channels = [str(item).strip() for item in configured if str(item).strip()]
+        if channels:
+            return channels
+        fallback = [str(item).strip() for item in (self.settings.notification.digest_channels or []) if str(item).strip()]
+        return fallback or ["email"]
+
+    def _is_alert_due(self, alert_code: str, now: datetime, cooldown_minutes: int) -> bool:
+        if hasattr(self.state, "is_alert_due"):
+            return bool(self.state.is_alert_due(alert_code, now, cooldown_minutes))
+        return True
+
+    def _mark_alert_sent(self, alert_code: str, now: datetime) -> None:
+        if hasattr(self.state, "mark_alert_sent"):
+            self.state.mark_alert_sent(alert_code, now)
+
+    def _build_threshold_alert_message(
+        self,
+        *,
+        run_id: str,
+        mode: str,
+        stats: dict[str, Any],
+        alerts: list[dict[str, Any]],
+    ) -> str:
+        lines = [
+            "SuccessionPilot 阈值告警",
+            "====================",
+            "",
+            f"Run ID: {run_id}",
+            f"Mode: {mode}",
+            f"Keyword: {self.settings.xhs.keyword}",
+            f"Triggered: {len(alerts)}",
+            "",
+            "告警详情：",
+        ]
+        for index, item in enumerate(alerts, start=1):
+            code = str(item.get("code") or "unknown")
+            reason = str(item.get("reason") or "").strip()
+            value = item.get("value")
+            threshold = item.get("threshold")
+            sample = int(item.get("sample_size") or 0)
+            if isinstance(value, float):
+                value_text = f"{value:.1%}" if "rate" in code else f"{value:.4f}"
+            else:
+                value_text = str(value)
+            if isinstance(threshold, float):
+                threshold_text = f"{threshold:.1%}" if "rate" in code else f"{threshold:.4f}"
+            else:
+                threshold_text = str(threshold)
+            lines.extend(
+                [
+                    f"{index}. {code}",
+                    f"   - value: {value_text}",
+                    f"   - threshold: {threshold_text}",
+                    f"   - sample_size: {sample}",
+                    f"   - reason: {reason or '-'}",
+                ]
+            )
+        diagnosis = stats.get("xhs_diagnosis")
+        if isinstance(diagnosis, dict) and diagnosis:
+            lines.extend(
+                [
+                    "",
+                    "XHS 诊断：",
+                    f"- category: {diagnosis.get('failure_category') or '-'}",
+                    f"- reason: {diagnosis.get('reason') or '-'}",
+                    f"- mcp_connect: {diagnosis.get('mcp_connect')}",
+                    f"- login_status: {diagnosis.get('login_status')}",
+                    f"- cookie_file_ready: {diagnosis.get('cookie_file_ready')}",
+                ]
+            )
+        lines.extend(
+            [
+                "",
+                "关键指标：",
+                f"- fetch_fail_streak: {int(stats.get('fetch_fail_streak', 0))}",
+                (
+                    f"- llm_timeout_rate: {float(stats.get('llm_timeout_rate', 0.0) or 0.0):.1%}"
+                    f" ({int(stats.get('llm_timeout_count', 0))}/{int(stats.get('llm_calls', 0))})"
+                ),
+                (
+                    f"- detail_missing_rate: {float(stats.get('detail_missing_rate', 0.0) or 0.0):.1%}"
+                    f" ({int(stats.get('detail_missing', 0))}/{int(stats.get('detail_target_notes', 0))})"
+                ),
+                "",
+                "可在控制中心查看 run 详情与重试队列定位问题。",
+            ]
+        )
+        return "\n".join(lines).strip()
+
+    def _dispatch_threshold_alerts(
+        self,
+        *,
+        run_id: str,
+        mode: str,
+        stats: dict[str, Any],
+        triggered_alerts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not triggered_alerts:
+            return {
+                "notified_codes": [],
+                "suppressed_codes": [],
+                "failed_codes": [],
+                "channels": [],
+                "send_logs_count": 0,
+            }
+        cfg = getattr(getattr(self.settings, "observability", None), "alerts", None)
+        cooldown_minutes = max(1, int(getattr(cfg, "cooldown_minutes", 60) or 60))
+        now = datetime.now(timezone.utc)
+        due_alerts: list[dict[str, Any]] = []
+        suppressed_codes: list[str] = []
+        for item in triggered_alerts:
+            code = str(item.get("code") or "").strip().lower()
+            if not code:
+                continue
+            if self._is_alert_due(code, now, cooldown_minutes):
+                due_alerts.append(item)
+            else:
+                suppressed_codes.append(code)
+
+        if not due_alerts:
+            if suppressed_codes:
+                self.logger.info(
+                    "阈值告警命中但处于冷却期 | run=%s | cooldown=%smin | codes=%s",
+                    run_id,
+                    cooldown_minutes,
+                    ",".join(sorted(set(suppressed_codes))),
+                )
+            return {
+                "notified_codes": [],
+                "suppressed_codes": sorted(set(suppressed_codes)),
+                "failed_codes": [],
+                "channels": self._resolve_alert_channels(),
+                "send_logs_count": 0,
+            }
+
+        channels = self._resolve_alert_channels()
+        subject = f"SuccessionPilot | 阈值告警 | {run_id} | {len(due_alerts)}项"
+        text = self._build_threshold_alert_message(run_id=run_id, mode=mode, stats=stats, alerts=due_alerts)
+        logs = self.router.dispatch_digest(
+            run_id=f"alert:{run_id}",
+            subject=subject,
+            text=text,
+            attachments=[],
+            channel_names=channels,
+        )
+        dispatched_ok = any(str(getattr(log, "send_status", "")).strip().lower() == "success" for log in logs)
+        due_codes = sorted({str(item.get("code") or "").strip().lower() for item in due_alerts if str(item.get("code") or "").strip()})
+        failed_codes: list[str] = []
+        notified_codes: list[str] = []
+        if dispatched_ok:
+            for code in due_codes:
+                self._mark_alert_sent(code, now)
+            try:
+                self.state.save()
+            except Exception as exc:
+                self.logger.warning("告警冷却状态保存失败 | run=%s | error=%s", run_id, exc)
+            notified_codes = due_codes
+            self.logger.warning(
+                "阈值告警已发送 | run=%s | channels=%s | codes=%s",
+                run_id,
+                ",".join(channels),
+                ",".join(notified_codes),
+            )
+        else:
+            failed_codes = due_codes
+            self.logger.warning(
+                "阈值告警发送失败 | run=%s | channels=%s | codes=%s",
+                run_id,
+                ",".join(channels),
+                ",".join(failed_codes),
+            )
+
+        dispatch_result = {
+            "subject": subject,
+            "body": text,
+            "channels": channels,
+            "attachments": [],
+        }
+        self._enqueue_failed_email_dispatch(run_id=run_id, send_logs=logs, dispatch_result=dispatch_result)
+        return {
+            "notified_codes": notified_codes,
+            "suppressed_codes": sorted(set(suppressed_codes)),
+            "failed_codes": failed_codes,
+            "channels": channels,
+            "send_logs_count": len(logs),
+        }
 
     def _load_latest_jobs_from_store(self, limit: int) -> list[JobRecord]:
         excel_path = Path(self.settings.storage.excel_path)

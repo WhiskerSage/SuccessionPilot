@@ -731,6 +731,16 @@ class DataBackend:
                 "detail_attempted_total": 0,
                 "detail_success_total": 0,
                 "detail_success_rate": 0.0,
+                "llm_timeout_count_total": 0,
+                "llm_timeout_rate": 0.0,
+                "detail_missing_total": 0,
+                "detail_missing_target_total": 0,
+                "detail_missing_rate": 0.0,
+                "alert_triggered_total": 0,
+                "alert_notified_total": 0,
+                "alert_triggered_runs": 0,
+                "alert_triggered_rate": 0.0,
+                "alert_codes": [],
                 "error_codes": [],
                 "slow_stages": [],
                 "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -741,14 +751,28 @@ class DataBackend:
         sample_size = len(runs)
         stage_failed_runs = sum(1 for item in runs if self._to_int(item.get("stage_failed_count")) > 0)
         llm_fail_total = sum(self._to_int(item.get("llm_fail")) for item in runs)
+        llm_calls_total = sum(self._to_int(item.get("llm_calls")) for item in runs)
+        llm_timeout_count_total = sum(self._to_int(item.get("llm_timeout_count")) for item in runs)
+        llm_timeout_rate = float(llm_timeout_count_total) / float(llm_calls_total) if llm_calls_total > 0 else 0.0
         fetch_fail_total = sum(self._to_int(item.get("fetch_fail_count_run")) for item in runs)
         detail_attempted_total = sum(self._to_int(item.get("detail_attempted")) for item in runs)
         detail_success_total = sum(self._to_int(item.get("detail_success")) for item in runs)
         detail_success_rate = (
             float(detail_success_total) / float(detail_attempted_total) if detail_attempted_total > 0 else 0.0
         )
+        detail_missing_total = sum(self._to_int(item.get("detail_missing")) for item in runs)
+        detail_missing_target_total = sum(self._to_int(item.get("detail_target_notes")) for item in runs)
+        detail_missing_rate = (
+            float(detail_missing_total) / float(detail_missing_target_total)
+            if detail_missing_target_total > 0
+            else 0.0
+        )
+        alert_triggered_total = sum(self._to_int(item.get("alerts_triggered_count")) for item in runs)
+        alert_notified_total = sum(self._to_int(item.get("alerts_notified_count")) for item in runs)
+        alert_triggered_runs = sum(1 for item in runs if self._to_int(item.get("alerts_triggered_count")) > 0)
 
         error_codes: dict[str, int] = {}
+        alert_codes: dict[str, int] = {}
         slow_stage_metrics: dict[str, dict[str, Any]] = {}
         for item in runs:
             codes = item.get("error_codes")
@@ -758,6 +782,13 @@ class DataBackend:
                     if not key:
                         continue
                     error_codes[key] = self._to_int(error_codes.get(key)) + self._to_int(count)
+            run_alert_codes = item.get("alert_codes")
+            if isinstance(run_alert_codes, list):
+                for code in run_alert_codes:
+                    key = str(code or "").strip().lower()
+                    if not key:
+                        continue
+                    alert_codes[key] = self._to_int(alert_codes.get(key)) + 1
 
             slow = item.get("slow_stages")
             if not isinstance(slow, list):
@@ -784,6 +815,12 @@ class DataBackend:
             if self._to_int(count) > 0
         ]
         error_list.sort(key=lambda item: self._to_int(item.get("count")), reverse=True)
+        alert_code_list = [
+            {"code": code, "count": self._to_int(count)}
+            for code, count in alert_codes.items()
+            if self._to_int(count) > 0
+        ]
+        alert_code_list.sort(key=lambda item: self._to_int(item.get("count")), reverse=True)
 
         slow_stage_list: list[dict[str, Any]] = []
         for value in slow_stage_metrics.values():
@@ -815,6 +852,16 @@ class DataBackend:
             "detail_attempted_total": detail_attempted_total,
             "detail_success_total": detail_success_total,
             "detail_success_rate": detail_success_rate,
+            "llm_timeout_count_total": llm_timeout_count_total,
+            "llm_timeout_rate": llm_timeout_rate,
+            "detail_missing_total": detail_missing_total,
+            "detail_missing_target_total": detail_missing_target_total,
+            "detail_missing_rate": detail_missing_rate,
+            "alert_triggered_total": alert_triggered_total,
+            "alert_notified_total": alert_notified_total,
+            "alert_triggered_runs": alert_triggered_runs,
+            "alert_triggered_rate": float(alert_triggered_runs) / float(sample_size),
+            "alert_codes": alert_code_list[:12],
             "error_codes": error_list[:12],
             "slow_stages": slow_stage_list[:10],
             "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -874,6 +921,8 @@ class DataBackend:
         retry = payload.get("retry") if isinstance(payload.get("retry"), dict) else {}
         stage_error_codes = stats.get("stage_error_codes") if isinstance(stats.get("stage_error_codes"), dict) else {}
         llm_error_codes = stats.get("llm_error_codes") if isinstance(stats.get("llm_error_codes"), dict) else {}
+        alerts_triggered = stats.get("alerts_triggered") if isinstance(stats.get("alerts_triggered"), list) else []
+        alerts_notified = stats.get("alerts_notified") if isinstance(stats.get("alerts_notified"), list) else []
 
         return {
             "run_id": str(payload.get("run_id") or target),
@@ -888,6 +937,8 @@ class DataBackend:
             "retry": retry,
             "stage_error_codes": stage_error_codes,
             "llm_error_codes": llm_error_codes,
+            "alerts_triggered": alerts_triggered,
+            "alerts_notified": alerts_notified,
         }
 
     def load_retry_queue_view(
@@ -1115,6 +1166,8 @@ class DataBackend:
         wechat = self._ensure_section(config, "wechat_service")
         llm = self._ensure_section(config, "llm")
         resume = self._ensure_section(config, "resume")
+        observability = self._ensure_section(config, "observability")
+        alerts = self._ensure_section(observability, "alerts")
         xhs_account = self.load_xhs_accounts_view()
 
         return {
@@ -1148,6 +1201,28 @@ class DataBackend:
                 "model": str(llm.get("model") or ""),
                 "base_url": str(llm.get("base_url") or ""),
             },
+            "observability": {
+                "alerts": {
+                    "enabled": bool(alerts.get("enabled", True)),
+                    "cooldown_minutes": self._coerce_int(alerts.get("cooldown_minutes"), 60, minimum=1),
+                    "fetch_fail_streak_threshold": self._coerce_int(
+                        alerts.get("fetch_fail_streak_threshold"),
+                        2,
+                        minimum=1,
+                    ),
+                    "llm_timeout_rate_threshold": self._coerce_rate(
+                        alerts.get("llm_timeout_rate_threshold"),
+                        0.35,
+                    ),
+                    "llm_timeout_min_calls": self._coerce_int(alerts.get("llm_timeout_min_calls"), 6, minimum=1),
+                    "detail_missing_rate_threshold": self._coerce_rate(
+                        alerts.get("detail_missing_rate_threshold"),
+                        0.45,
+                    ),
+                    "detail_missing_min_samples": self._coerce_int(alerts.get("detail_missing_min_samples"), 6, minimum=1),
+                    "channels": self._to_name_list(alerts.get("channels"), default=[]),
+                }
+            },
             "resume": {
                 "source_txt_path": str(resume.get("source_txt_path") or "config/resume.txt"),
                 "resume_text_path": str(resume.get("resume_text_path") or "data/resume_text.txt"),
@@ -1169,6 +1244,8 @@ class DataBackend:
         wechat = self._ensure_section(config, "wechat_service")
         llm = self._ensure_section(config, "llm")
         resume = self._ensure_section(config, "resume")
+        observability = self._ensure_section(config, "observability")
+        alerts = self._ensure_section(observability, "alerts")
 
         app_in = payload.get("app")
         if isinstance(app_in, dict):
@@ -1238,6 +1315,49 @@ class DataBackend:
                 llm["model"] = str(llm_in.get("model") or "").strip()
             if "base_url" in llm_in:
                 llm["base_url"] = str(llm_in.get("base_url") or "").strip()
+
+        observability_in = payload.get("observability")
+        if isinstance(observability_in, dict):
+            alerts_in = observability_in.get("alerts")
+            if isinstance(alerts_in, dict):
+                if "enabled" in alerts_in:
+                    alerts["enabled"] = bool(alerts_in.get("enabled"))
+                if "cooldown_minutes" in alerts_in:
+                    alerts["cooldown_minutes"] = self._coerce_int(
+                        alerts_in.get("cooldown_minutes"),
+                        alerts.get("cooldown_minutes", 60),
+                        minimum=1,
+                    )
+                if "fetch_fail_streak_threshold" in alerts_in:
+                    alerts["fetch_fail_streak_threshold"] = self._coerce_int(
+                        alerts_in.get("fetch_fail_streak_threshold"),
+                        alerts.get("fetch_fail_streak_threshold", 2),
+                        minimum=1,
+                    )
+                if "llm_timeout_rate_threshold" in alerts_in:
+                    alerts["llm_timeout_rate_threshold"] = self._coerce_rate(
+                        alerts_in.get("llm_timeout_rate_threshold"),
+                        alerts.get("llm_timeout_rate_threshold", 0.35),
+                    )
+                if "llm_timeout_min_calls" in alerts_in:
+                    alerts["llm_timeout_min_calls"] = self._coerce_int(
+                        alerts_in.get("llm_timeout_min_calls"),
+                        alerts.get("llm_timeout_min_calls", 6),
+                        minimum=1,
+                    )
+                if "detail_missing_rate_threshold" in alerts_in:
+                    alerts["detail_missing_rate_threshold"] = self._coerce_rate(
+                        alerts_in.get("detail_missing_rate_threshold"),
+                        alerts.get("detail_missing_rate_threshold", 0.45),
+                    )
+                if "detail_missing_min_samples" in alerts_in:
+                    alerts["detail_missing_min_samples"] = self._coerce_int(
+                        alerts_in.get("detail_missing_min_samples"),
+                        alerts.get("detail_missing_min_samples", 6),
+                        minimum=1,
+                    )
+                if "channels" in alerts_in:
+                    alerts["channels"] = self._to_name_list(alerts_in.get("channels"), default=[])
 
         resume_in = payload.get("resume")
         if isinstance(resume_in, dict):
@@ -1970,6 +2090,22 @@ class DataBackend:
                         continue
                     merged_error_codes[code] = self._to_int(merged_error_codes.get(code)) + self._to_int(value)
 
+            alerts_triggered_raw = stats.get("alerts_triggered")
+            if isinstance(alerts_triggered_raw, list):
+                alerts_triggered = [item for item in alerts_triggered_raw if isinstance(item, dict)]
+            else:
+                alerts_triggered = []
+            alert_codes = [
+                str(item.get("code") or "").strip().lower()
+                for item in alerts_triggered
+                if str(item.get("code") or "").strip()
+            ]
+            alerts_notified_raw = stats.get("alerts_notified")
+            if isinstance(alerts_notified_raw, list):
+                alerts_notified = [str(item).strip().lower() for item in alerts_notified_raw if str(item).strip()]
+            else:
+                alerts_notified = []
+
             out.append(
                 {
                     "run_id": str(payload.get("run_id") or file.stem),
@@ -1982,6 +2118,7 @@ class DataBackend:
                     "send_logs": self._to_int(stats.get("send_logs") if stats else payload.get("send_logs")),
                     "digest_sent": bool(stats.get("digest_sent") if stats else payload.get("digest_sent")),
                     "llm_fail": self._to_int(stats.get("llm_fail")),
+                    "llm_calls": self._to_int(stats.get("llm_calls")),
                     "process_workers": self._to_int(stats.get("process_workers")),
                     "detail_workers": self._to_int(stats.get("detail_workers")),
                     "stage_total_ms": stage_total_ms,
@@ -1999,10 +2136,27 @@ class DataBackend:
                     "fetch_fail_streak": self._to_int(stats.get("fetch_fail_streak")),
                     "xhs_data_empty": bool(stats.get("xhs_data_empty")),
                     "detail_attempted": self._to_int(stats.get("detail_attempted")),
+                    "detail_target_notes": self._to_int(stats.get("detail_target_notes")),
                     "detail_success": self._to_int(stats.get("detail_success")),
                     "detail_failed": self._to_int(stats.get("detail_failed")),
                     "detail_filled": self._to_int(stats.get("detail_filled")),
                     "detail_missing": self._to_int(stats.get("detail_missing")),
+                    "detail_missing_rate": float(stats.get("detail_missing_rate") or 0.0),
+                    "llm_timeout_count": self._to_int(stats.get("llm_timeout_count")),
+                    "llm_timeout_rate": float(stats.get("llm_timeout_rate") or 0.0),
+                    "alerts_triggered_count": self._to_int(
+                        stats.get("alerts_triggered_count")
+                        if "alerts_triggered_count" in stats
+                        else len(alert_codes)
+                    ),
+                    "alerts_notified_count": self._to_int(
+                        stats.get("alerts_notified_count")
+                        if "alerts_notified_count" in stats
+                        else len(alerts_notified)
+                    ),
+                    "alert_codes": alert_codes,
+                    "alerts_triggered": alerts_triggered,
+                    "alerts_notified": alerts_notified,
                     "xhs_diagnosis": stats.get("xhs_diagnosis") if isinstance(stats.get("xhs_diagnosis"), dict) else {},
                 }
             )
@@ -2254,6 +2408,16 @@ class DataBackend:
         except Exception:
             parsed = int(default)
         return max(minimum, parsed)
+
+    @staticmethod
+    def _coerce_rate(value: Any, default: float) -> float:
+        try:
+            parsed = float(value)
+        except Exception:
+            parsed = float(default)
+        if parsed > 1.0 and parsed <= 100.0:
+            parsed = parsed / 100.0
+        return max(0.0, min(1.0, parsed))
 
     @staticmethod
     def _normalize_mode(value: str) -> str:

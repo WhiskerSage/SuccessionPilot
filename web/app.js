@@ -101,6 +101,14 @@
     cfgLlmEnabled: document.getElementById("cfgLlmEnabled"),
     cfgLlmModel: document.getElementById("cfgLlmModel"),
     cfgLlmBaseUrl: document.getElementById("cfgLlmBaseUrl"),
+    cfgAlertEnabled: document.getElementById("cfgAlertEnabled"),
+    cfgAlertCooldown: document.getElementById("cfgAlertCooldown"),
+    cfgAlertFetchStreak: document.getElementById("cfgAlertFetchStreak"),
+    cfgAlertLlmTimeoutRate: document.getElementById("cfgAlertLlmTimeoutRate"),
+    cfgAlertLlmTimeoutMinCalls: document.getElementById("cfgAlertLlmTimeoutMinCalls"),
+    cfgAlertDetailMissingRate: document.getElementById("cfgAlertDetailMissingRate"),
+    cfgAlertDetailMissingMinSamples: document.getElementById("cfgAlertDetailMissingMinSamples"),
+    cfgAlertChannels: document.getElementById("cfgAlertChannels"),
     wizardGuideBadge: document.getElementById("wizardGuideBadge"),
     wizardGuideSteps: document.getElementById("wizardGuideSteps"),
     wizardApplyBtn: document.getElementById("wizardApplyBtn"),
@@ -138,8 +146,12 @@
     perfDetailSuccessRate: document.getElementById("perfDetailSuccessRate"),
     perfLlmFailTotal: document.getElementById("perfLlmFailTotal"),
     perfFetchFailTotal: document.getElementById("perfFetchFailTotal"),
+    perfAlertTriggeredTotal: document.getElementById("perfAlertTriggeredTotal"),
+    perfAlertNotifiedTotal: document.getElementById("perfAlertNotifiedTotal"),
+    perfAlertRunRate: document.getElementById("perfAlertRunRate"),
     perfSlowStages: document.getElementById("perfSlowStages"),
     perfErrorCodes: document.getElementById("perfErrorCodes"),
+    perfAlertCodes: document.getElementById("perfAlertCodes"),
   };
 
   let selectedResumeFile = null;
@@ -370,6 +382,14 @@
   function refreshDynamicDomRefs() {
     dom.cfgDetailWorkers = document.getElementById("cfgDetailWorkers");
     dom.cfgProcessWorkers = document.getElementById("cfgProcessWorkers");
+    dom.cfgAlertEnabled = document.getElementById("cfgAlertEnabled");
+    dom.cfgAlertCooldown = document.getElementById("cfgAlertCooldown");
+    dom.cfgAlertFetchStreak = document.getElementById("cfgAlertFetchStreak");
+    dom.cfgAlertLlmTimeoutRate = document.getElementById("cfgAlertLlmTimeoutRate");
+    dom.cfgAlertLlmTimeoutMinCalls = document.getElementById("cfgAlertLlmTimeoutMinCalls");
+    dom.cfgAlertDetailMissingRate = document.getElementById("cfgAlertDetailMissingRate");
+    dom.cfgAlertDetailMissingMinSamples = document.getElementById("cfgAlertDetailMissingMinSamples");
+    dom.cfgAlertChannels = document.getElementById("cfgAlertChannels");
     dom.leadStatusFilter = document.getElementById("leadStatusFilter");
     dom.leadDedupeFilter = document.getElementById("leadDedupeFilter");
     dom.runtimeProgressWrap = document.getElementById("runtimeProgressWrap");
@@ -392,8 +412,12 @@
     dom.perfDetailSuccessRate = document.getElementById("perfDetailSuccessRate");
     dom.perfLlmFailTotal = document.getElementById("perfLlmFailTotal");
     dom.perfFetchFailTotal = document.getElementById("perfFetchFailTotal");
+    dom.perfAlertTriggeredTotal = document.getElementById("perfAlertTriggeredTotal");
+    dom.perfAlertNotifiedTotal = document.getElementById("perfAlertNotifiedTotal");
+    dom.perfAlertRunRate = document.getElementById("perfAlertRunRate");
     dom.perfSlowStages = document.getElementById("perfSlowStages");
     dom.perfErrorCodes = document.getElementById("perfErrorCodes");
+    dom.perfAlertCodes = document.getElementById("perfAlertCodes");
   }
 
   function ensureEnhancedUi() {
@@ -553,6 +577,64 @@
         configForm.appendChild(processField);
       }
     }
+    if (configForm && !document.getElementById("cfgAlertEnabled")) {
+      const alertEnabledField = document.createElement("label");
+      alertEnabledField.className = "field checkbox";
+      alertEnabledField.innerHTML = `
+        <input id="cfgAlertEnabled" type="checkbox" />
+        <span>启用阈值告警</span>
+      `;
+      const alertCooldownField = document.createElement("label");
+      alertCooldownField.className = "field";
+      alertCooldownField.innerHTML = `
+        <span>告警冷却(分钟)</span>
+        <input id="cfgAlertCooldown" type="number" min="1" max="1440" />
+      `;
+      const alertFetchField = document.createElement("label");
+      alertFetchField.className = "field";
+      alertFetchField.innerHTML = `
+        <span>抓取连续失败阈值</span>
+        <input id="cfgAlertFetchStreak" type="number" min="1" max="20" />
+      `;
+      const alertLlmRateField = document.createElement("label");
+      alertLlmRateField.className = "field";
+      alertLlmRateField.innerHTML = `
+        <span>LLM超时率阈值(%)</span>
+        <input id="cfgAlertLlmTimeoutRate" type="number" min="1" max="100" />
+      `;
+      const alertLlmCallsField = document.createElement("label");
+      alertLlmCallsField.className = "field";
+      alertLlmCallsField.innerHTML = `
+        <span>LLM最小样本</span>
+        <input id="cfgAlertLlmTimeoutMinCalls" type="number" min="1" max="500" />
+      `;
+      const alertDetailRateField = document.createElement("label");
+      alertDetailRateField.className = "field";
+      alertDetailRateField.innerHTML = `
+        <span>详情缺失率阈值(%)</span>
+        <input id="cfgAlertDetailMissingRate" type="number" min="1" max="100" />
+      `;
+      const alertDetailSamplesField = document.createElement("label");
+      alertDetailSamplesField.className = "field";
+      alertDetailSamplesField.innerHTML = `
+        <span>详情最小样本</span>
+        <input id="cfgAlertDetailMissingMinSamples" type="number" min="1" max="500" />
+      `;
+      const alertChannelsField = document.createElement("label");
+      alertChannelsField.className = "field span-2";
+      alertChannelsField.innerHTML = `
+        <span>告警通道(逗号分隔)</span>
+        <input id="cfgAlertChannels" type="text" placeholder="留空=复用 digest_channels" />
+      `;
+      configForm.appendChild(alertEnabledField);
+      configForm.appendChild(alertCooldownField);
+      configForm.appendChild(alertFetchField);
+      configForm.appendChild(alertLlmRateField);
+      configForm.appendChild(alertLlmCallsField);
+      configForm.appendChild(alertDetailRateField);
+      configForm.appendChild(alertDetailSamplesField);
+      configForm.appendChild(alertChannelsField);
+    }
 
     const kpis = document.querySelector(".kpis");
     if (kpis && !document.getElementById("performanceSection")) {
@@ -573,6 +655,9 @@
           <div class="perf-item"><span>详情成功率</span><strong id="perfDetailSuccessRate">-</strong></div>
           <div class="perf-item"><span>LLM失败总数</span><strong id="perfLlmFailTotal">-</strong></div>
           <div class="perf-item"><span>抓取失败总数</span><strong id="perfFetchFailTotal">-</strong></div>
+          <div class="perf-item"><span>告警触发总数</span><strong id="perfAlertTriggeredTotal">-</strong></div>
+          <div class="perf-item"><span>告警已通知总数</span><strong id="perfAlertNotifiedTotal">-</strong></div>
+          <div class="perf-item"><span>告警触发轮次占比</span><strong id="perfAlertRunRate">-</strong></div>
         </div>
         <div class="perf-lists">
           <div class="perf-block">
@@ -582,6 +667,10 @@
           <div class="perf-block">
             <h4>错误码分布</h4>
             <ul id="perfErrorCodes"><li class="table-tip">暂无</li></ul>
+          </div>
+          <div class="perf-block">
+            <h4>告警码分布</h4>
+            <ul id="perfAlertCodes"><li class="table-tip">暂无</li></ul>
           </div>
         </div>
       `;
@@ -696,6 +785,7 @@
     const stageTotal = fmtMs(item.stage_total_ms);
     const stageAvg = fmtMs(item.stage_avg_ms);
     const stageFailed = Math.max(0, toInt(item.stage_failed_count, 0));
+    const alertTriggered = Math.max(0, toInt(item.alerts_triggered_count, 0));
     const slowStages = normalizeSlowStages(item.slow_stages).slice(0, 3);
     const slowStageText = slowStages.length ? slowStages.map((s) => `${s.name} ${fmtMs(s.durationMs)}`).join(" · ") : "none";
     const errorCodes = normalizeErrorCodes(item.error_codes);
@@ -718,6 +808,7 @@
         <span>Sent ${sent}</span>
         <span class="run-chip">${escapeHtml(mode)} / ${escapeHtml(notifyMode)}</span>
         <span class="run-chip ${digestCls}">${digest}</span>
+        ${alertTriggered > 0 ? `<span class="run-chip warn">alerts ${fmtInt(alertTriggered)}</span>` : ""}
       </div>
       <div class="run-stage">Stage total ${escapeHtml(stageTotal)} · avg ${escapeHtml(stageAvg)} · failed ${fmtInt(stageFailed)}</div>
       <div class="run-stage">Slow stages: ${escapeHtml(slowStageText)}</div>
@@ -736,6 +827,16 @@
     const xhsDiagnosis = detail.xhs_diagnosis && typeof detail.xhs_diagnosis === "object" ? detail.xhs_diagnosis : {};
     const stageErrorCodes = detail.stage_error_codes && typeof detail.stage_error_codes === "object" ? detail.stage_error_codes : {};
     const llmErrorCodes = detail.llm_error_codes && typeof detail.llm_error_codes === "object" ? detail.llm_error_codes : {};
+    const alertsTriggered = Array.isArray(detail.alerts_triggered)
+      ? detail.alerts_triggered
+      : Array.isArray(detail.stats && detail.stats.alerts_triggered)
+        ? detail.stats.alerts_triggered
+        : [];
+    const alertsNotified = Array.isArray(detail.alerts_notified)
+      ? detail.alerts_notified
+      : Array.isArray(detail.stats && detail.stats.alerts_notified)
+        ? detail.stats.alerts_notified
+        : [];
 
     const listCodes = (obj) => {
       const entries = Object.entries(obj || {}).filter(([, v]) => toInt(v, 0) > 0);
@@ -762,6 +863,19 @@
     const retryPending = retry.pending && typeof retry.pending === "object" ? retry.pending : {};
     const retryRunning = retry.running && typeof retry.running === "object" ? retry.running : {};
     const retryStats = retry.stats && typeof retry.stats === "object" ? retry.stats : {};
+    const alertListHtml = alertsTriggered.length
+      ? `<ul class="detail-list">${alertsTriggered
+          .slice(0, 8)
+          .map((item) => {
+            const code = toText(item && item.code, "unknown");
+            const reason = toText(item && item.reason, "-");
+            const value = item && item.value !== undefined ? String(item.value) : "-";
+            const threshold = item && item.threshold !== undefined ? String(item.threshold) : "-";
+            return `<li>${escapeHtml(code)} | value=${escapeHtml(value)} | threshold=${escapeHtml(threshold)} | ${escapeHtml(reason)}</li>`;
+          })
+          .join("")}</ul>`
+      : "<p class='muted'>No threshold alert triggered.</p>";
+    const alertNotifiedText = alertsNotified.length ? alertsNotified.map((item) => String(item)).join(" | ") : "none";
 
     return `
       <div class="meta-line">Run: <span class="mono">${escapeHtml(toText(detail.run_id))}</span> · ${escapeHtml(fmtTime(detail.recorded_at))}</div>
@@ -771,6 +885,8 @@
         <div class="detail-item"><span>Retry Pending</span><strong>${fmtInt(Object.values(retryPending).reduce((a, b) => a + toInt(b, 0), 0))}</strong></div>
         <div class="detail-item"><span>Retry Running</span><strong>${fmtInt(Object.values(retryRunning).reduce((a, b) => a + toInt(b, 0), 0))}</strong></div>
       </div>
+      <div class="detail-block"><h5>Threshold Alerts</h5>${alertListHtml}</div>
+      <div class="detail-block"><h5>Alert Notified Codes</h5><pre>${escapeHtml(alertNotifiedText)}</pre></div>
       <div class="detail-block"><h5>Failed Stages</h5>${failedStageHtml}</div>
       <div class="detail-block"><h5>Fetch Fail Events</h5>${fetchFailHtml}</div>
       <div class="detail-block"><h5>Stage Error Codes</h5><pre>${escapeHtml(listCodes(stageErrorCodes))}</pre></div>
@@ -1139,8 +1255,12 @@
     const fetchFailTotal = runs.reduce((sum, item) => sum + toInt(item.fetch_fail_count_run, 0), 0);
     const detailAttemptedTotal = runs.reduce((sum, item) => sum + toInt(item.detail_attempted, 0), 0);
     const detailSuccessTotal = runs.reduce((sum, item) => sum + toInt(item.detail_success, 0), 0);
+    const alertTriggeredTotal = runs.reduce((sum, item) => sum + toInt(item.alerts_triggered_count, 0), 0);
+    const alertNotifiedTotal = runs.reduce((sum, item) => sum + toInt(item.alerts_notified_count, 0), 0);
+    const alertTriggeredRuns = runs.filter((item) => toInt(item.alerts_triggered_count, 0) > 0).length;
 
     const errorAgg = {};
+    const alertAgg = {};
     const slowAgg = {};
     runs.forEach((item) => {
       const codes = item.error_codes && typeof item.error_codes === "object" ? item.error_codes : {};
@@ -1148,6 +1268,16 @@
         const key = String(code || "").trim().toLowerCase();
         if (!key) return;
         errorAgg[key] = toInt(errorAgg[key], 0) + toInt(count, 0);
+      });
+      const alertCodes = Array.isArray(item.alert_codes)
+        ? item.alert_codes
+        : Array.isArray(item.alerts_triggered)
+          ? item.alerts_triggered.map((entry) => (entry && typeof entry === "object" ? entry.code : ""))
+          : [];
+      alertCodes.forEach((code) => {
+        const key = String(code || "").trim().toLowerCase();
+        if (!key) return;
+        alertAgg[key] = toInt(alertAgg[key], 0) + 1;
       });
       const slowStages = Array.isArray(item.slow_stages) ? item.slow_stages : [];
       slowStages.forEach((stage) => {
@@ -1162,6 +1292,10 @@
     });
 
     const errorCodes = Object.entries(errorAgg)
+      .map(([code, count]) => ({ code, count: toInt(count, 0) }))
+      .filter((x) => x.count > 0)
+      .sort((a, b) => b.count - a.count);
+    const alertCodes = Object.entries(alertAgg)
       .map(([code, count]) => ({ code, count: toInt(count, 0) }))
       .filter((x) => x.count > 0)
       .sort((a, b) => b.count - a.count);
@@ -1181,7 +1315,12 @@
       detail_success_rate: detailAttemptedTotal > 0 ? detailSuccessTotal / detailAttemptedTotal : 0,
       llm_fail_total: llmFailTotal,
       fetch_fail_total: fetchFailTotal,
+      alert_triggered_total: alertTriggeredTotal,
+      alert_notified_total: alertNotifiedTotal,
+      alert_triggered_runs: alertTriggeredRuns,
+      alert_triggered_rate: sampleSize > 0 ? alertTriggeredRuns / sampleSize : 0,
       error_codes: errorCodes,
+      alert_codes: alertCodes,
       slow_stages: slowStages,
     };
   }
@@ -1195,8 +1334,12 @@
     const detailSuccessRate = Number(data.detail_success_rate || 0);
     const llmFailTotal = toInt(data.llm_fail_total, 0);
     const fetchFailTotal = toInt(data.fetch_fail_total, 0);
+    const alertTriggeredTotal = toInt(data.alert_triggered_total, 0);
+    const alertNotifiedTotal = toInt(data.alert_notified_total, 0);
+    const alertTriggeredRate = Number(data.alert_triggered_rate || 0);
     const slowStages = Array.isArray(data.slow_stages) ? data.slow_stages : [];
     const errorCodes = Array.isArray(data.error_codes) ? data.error_codes : [];
+    const alertCodes = Array.isArray(data.alert_codes) ? data.alert_codes : [];
 
     dom.perfSample.textContent = `最近 ${fmtInt(sample)} 轮`;
     if (dom.perfTotalAvg) dom.perfTotalAvg.textContent = fmtMs(total.avg);
@@ -1206,6 +1349,9 @@
     if (dom.perfDetailSuccessRate) dom.perfDetailSuccessRate.textContent = formatRate(detailSuccessRate);
     if (dom.perfLlmFailTotal) dom.perfLlmFailTotal.textContent = fmtInt(llmFailTotal);
     if (dom.perfFetchFailTotal) dom.perfFetchFailTotal.textContent = fmtInt(fetchFailTotal);
+    if (dom.perfAlertTriggeredTotal) dom.perfAlertTriggeredTotal.textContent = fmtInt(alertTriggeredTotal);
+    if (dom.perfAlertNotifiedTotal) dom.perfAlertNotifiedTotal.textContent = fmtInt(alertNotifiedTotal);
+    if (dom.perfAlertRunRate) dom.perfAlertRunRate.textContent = formatRate(alertTriggeredRate);
 
     if (dom.perfSlowStages) {
       if (!slowStages.length) {
@@ -1228,6 +1374,16 @@
         dom.perfErrorCodes.innerHTML = "<li class='table-tip'>暂无</li>";
       } else {
         dom.perfErrorCodes.innerHTML = errorCodes
+          .slice(0, 6)
+          .map((item) => `<li><span>${escapeHtml(toText(item.code))}</span><span>${fmtInt(item.count)}</span></li>`)
+          .join("");
+      }
+    }
+    if (dom.perfAlertCodes) {
+      if (!alertCodes.length) {
+        dom.perfAlertCodes.innerHTML = "<li class='table-tip'>暂无</li>";
+      } else {
+        dom.perfAlertCodes.innerHTML = alertCodes
           .slice(0, 6)
           .map((item) => `<li><span>${escapeHtml(toText(item.code))}</span><span>${fmtInt(item.count)}</span></li>`)
           .join("");
@@ -1661,6 +1817,8 @@
     const email = state.config.email || {};
     const wechat = state.config.wechat_service || {};
     const llm = state.config.llm || {};
+    const observability = state.config.observability || {};
+    const alerts = observability.alerts || {};
     renderXhsAccountOptions(xhs.account_options || [], xhs.account || "default");
 
     if (dom.cfgKeyword) dom.cfgKeyword.value = String(xhs.keyword || "");
@@ -1681,6 +1839,23 @@
     if (dom.cfgLlmEnabled) dom.cfgLlmEnabled.checked = Boolean(llm.enabled);
     if (dom.cfgLlmModel) dom.cfgLlmModel.value = String(llm.model || "");
     if (dom.cfgLlmBaseUrl) dom.cfgLlmBaseUrl.value = String(llm.base_url || "");
+    if (dom.cfgAlertEnabled) dom.cfgAlertEnabled.checked = alerts.enabled !== false;
+    if (dom.cfgAlertCooldown) dom.cfgAlertCooldown.value = String(toInt(alerts.cooldown_minutes, 60));
+    if (dom.cfgAlertFetchStreak) dom.cfgAlertFetchStreak.value = String(toInt(alerts.fetch_fail_streak_threshold, 2));
+    if (dom.cfgAlertLlmTimeoutRate) {
+      const llmRatePct = Math.max(0, Math.min(100, Math.round(Number(alerts.llm_timeout_rate_threshold || 0.35) * 100)));
+      dom.cfgAlertLlmTimeoutRate.value = String(llmRatePct);
+    }
+    if (dom.cfgAlertLlmTimeoutMinCalls) dom.cfgAlertLlmTimeoutMinCalls.value = String(toInt(alerts.llm_timeout_min_calls, 6));
+    if (dom.cfgAlertDetailMissingRate) {
+      const detailRatePct = Math.max(0, Math.min(100, Math.round(Number(alerts.detail_missing_rate_threshold || 0.45) * 100)));
+      dom.cfgAlertDetailMissingRate.value = String(detailRatePct);
+    }
+    if (dom.cfgAlertDetailMissingMinSamples) dom.cfgAlertDetailMissingMinSamples.value = String(toInt(alerts.detail_missing_min_samples, 6));
+    if (dom.cfgAlertChannels) {
+      const channels = Array.isArray(alerts.channels) ? alerts.channels.map((x) => String(x || "").trim()).filter(Boolean) : [];
+      dom.cfgAlertChannels.value = channels.join(", ");
+    }
 
     if (dom.runModeSelect) dom.runModeSelect.value = String(agent.mode || "auto");
     if (dom.daemonModeSelect) dom.daemonModeSelect.value = String(agent.mode || "auto");
@@ -1815,6 +1990,13 @@
     if (dom.cfgDigestTop) dom.cfgDigestTop.value = String(Math.max(5, toInt(dom.cfgDigestTop.value, 5)));
     if (dom.cfgDigestNoNew) dom.cfgDigestNoNew.checked = false;
     if (dom.cfgAgentMode) dom.cfgAgentMode.value = "auto";
+    if (dom.cfgAlertEnabled) dom.cfgAlertEnabled.checked = true;
+    if (dom.cfgAlertCooldown) dom.cfgAlertCooldown.value = String(Math.max(30, toInt(dom.cfgAlertCooldown.value, 60)));
+    if (dom.cfgAlertFetchStreak) dom.cfgAlertFetchStreak.value = String(Math.max(2, toInt(dom.cfgAlertFetchStreak.value, 2)));
+    if (dom.cfgAlertLlmTimeoutRate) dom.cfgAlertLlmTimeoutRate.value = String(Math.max(20, toInt(dom.cfgAlertLlmTimeoutRate.value, 35)));
+    if (dom.cfgAlertLlmTimeoutMinCalls) dom.cfgAlertLlmTimeoutMinCalls.value = String(Math.max(4, toInt(dom.cfgAlertLlmTimeoutMinCalls.value, 6)));
+    if (dom.cfgAlertDetailMissingRate) dom.cfgAlertDetailMissingRate.value = String(Math.max(30, toInt(dom.cfgAlertDetailMissingRate.value, 45)));
+    if (dom.cfgAlertDetailMissingMinSamples) dom.cfgAlertDetailMissingMinSamples.value = String(Math.max(4, toInt(dom.cfgAlertDetailMissingMinSamples.value, 6)));
   }
 
   async function runSetupCheck() {
@@ -1834,6 +2016,10 @@
   }
 
   function collectConfigPayload() {
+    const alertChannels = String(dom.cfgAlertChannels ? dom.cfgAlertChannels.value : "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter((item) => item);
     return {
       app: {
         interval_minutes: toInt(dom.cfgAppInterval ? dom.cfgAppInterval.value : 15, 15),
@@ -1869,6 +2055,18 @@
         enabled: Boolean(dom.cfgLlmEnabled && dom.cfgLlmEnabled.checked),
         model: String(dom.cfgLlmModel ? dom.cfgLlmModel.value : "").trim(),
         base_url: String(dom.cfgLlmBaseUrl ? dom.cfgLlmBaseUrl.value : "").trim(),
+      },
+      observability: {
+        alerts: {
+          enabled: Boolean(dom.cfgAlertEnabled && dom.cfgAlertEnabled.checked),
+          cooldown_minutes: toInt(dom.cfgAlertCooldown ? dom.cfgAlertCooldown.value : 60, 60),
+          fetch_fail_streak_threshold: toInt(dom.cfgAlertFetchStreak ? dom.cfgAlertFetchStreak.value : 2, 2),
+          llm_timeout_rate_threshold: toInt(dom.cfgAlertLlmTimeoutRate ? dom.cfgAlertLlmTimeoutRate.value : 35, 35) / 100,
+          llm_timeout_min_calls: toInt(dom.cfgAlertLlmTimeoutMinCalls ? dom.cfgAlertLlmTimeoutMinCalls.value : 6, 6),
+          detail_missing_rate_threshold: toInt(dom.cfgAlertDetailMissingRate ? dom.cfgAlertDetailMissingRate.value : 45, 45) / 100,
+          detail_missing_min_samples: toInt(dom.cfgAlertDetailMissingMinSamples ? dom.cfgAlertDetailMissingMinSamples.value : 6, 6),
+          channels: alertChannels,
+        },
       },
     };
   }

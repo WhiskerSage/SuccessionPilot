@@ -155,6 +155,18 @@ def test_load_runs_with_stage_observability_from_stats(tmp_path: Path) -> None:
             ],
             "llm_error_codes": {"read_timeout": 2},
             "stage_error_codes": {"timeout": 1},
+            "alerts_triggered_count": 1,
+            "alerts_notified_count": 1,
+            "alerts_triggered": [
+                {
+                    "code": "llm_timeout_rate",
+                    "metric": "llm_timeout_rate",
+                    "value": 0.5,
+                    "threshold": 0.35,
+                    "reason": "LLM timeout rate high",
+                }
+            ],
+            "alerts_notified": ["llm_timeout_rate"],
         },
     }
     (runs_dir / "20260225-120000.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -171,6 +183,9 @@ def test_load_runs_with_stage_observability_from_stats(tmp_path: Path) -> None:
     assert item["slow_stages"][0]["name"] == "collector.search"
     assert item["error_codes"]["read_timeout"] == 2
     assert item["error_codes"]["timeout"] == 1
+    assert item["alerts_triggered_count"] == 1
+    assert item["alerts_notified_count"] == 1
+    assert item["alert_codes"][0] == "llm_timeout_rate"
 
 
 def test_load_runs_fallback_stage_metrics_from_stage_records(tmp_path: Path) -> None:
@@ -202,6 +217,61 @@ def test_load_runs_fallback_stage_metrics_from_stage_records(tmp_path: Path) -> 
     assert item["stage_failed_count"] == 1
     assert item["slow_stages"][0]["name"] == "collector.search"
     assert item["error_codes"]["network_error"] == 1
+
+
+def test_load_performance_includes_alert_aggregates(tmp_path: Path) -> None:
+    workspace = tmp_path
+    _write_config(workspace / "config" / "config.yaml")
+    runs_dir = workspace / "data" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    payload_1 = {
+        "run_id": "r1",
+        "recorded_at": "2026-02-25T12:00:00+00:00",
+        "stats": {
+            "stage_total_ms": 4000,
+            "stage_avg_ms": 1200,
+            "stage_failed_count": 0,
+            "llm_calls": 10,
+            "llm_timeout_count": 4,
+            "detail_target_notes": 10,
+            "detail_missing": 5,
+            "alerts_triggered_count": 1,
+            "alerts_notified_count": 1,
+            "alerts_triggered": [{"code": "detail_missing_rate"}],
+        },
+    }
+    payload_2 = {
+        "run_id": "r2",
+        "recorded_at": "2026-02-25T12:10:00+00:00",
+        "stats": {
+            "stage_total_ms": 3000,
+            "stage_avg_ms": 1000,
+            "stage_failed_count": 1,
+            "llm_calls": 8,
+            "llm_timeout_count": 1,
+            "detail_target_notes": 8,
+            "detail_missing": 2,
+            "alerts_triggered_count": 1,
+            "alerts_notified_count": 0,
+            "alerts_triggered": [{"code": "fetch_fail_streak"}],
+        },
+    }
+    (runs_dir / "r1.json").write_text(json.dumps(payload_1, ensure_ascii=False, indent=2), encoding="utf-8")
+    (runs_dir / "r2.json").write_text(json.dumps(payload_2, ensure_ascii=False, indent=2), encoding="utf-8")
+    backend = DataBackend(workspace=workspace)
+
+    perf = backend.load_performance(limit=10)
+    assert perf["sample_size"] == 2
+    assert perf["alert_triggered_total"] == 2
+    assert perf["alert_notified_total"] == 1
+    assert perf["alert_triggered_runs"] == 2
+    assert perf["llm_timeout_count_total"] == 5
+    assert perf["llm_timeout_rate"] > 0.0
+    assert perf["detail_missing_total"] == 7
+    assert perf["detail_missing_target_total"] == 18
+    codes = {str(item.get("code") or "") for item in perf.get("alert_codes", [])}
+    assert "detail_missing_rate" in codes
+    assert "fetch_fail_streak" in codes
 
 
 def test_setup_check_offline_mode(tmp_path: Path) -> None:
@@ -419,4 +489,8 @@ class TestDashboardBackendCore(unittest.TestCase):
     def test_load_xhs_accounts_view_lists_available_accounts_unittest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             test_load_xhs_accounts_view_lists_available_accounts(Path(tmp_dir))
+
+    def test_load_performance_includes_alert_aggregates_unittest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            test_load_performance_includes_alert_aggregates(Path(tmp_dir))
 

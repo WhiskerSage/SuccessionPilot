@@ -207,6 +207,31 @@ class _DummyCommunication:
         )
 
 
+class _DummyRouter:
+    def __init__(self, send_status: str = "success"):
+        self.send_status = send_status
+        self.calls = []
+
+    def dispatch_digest(self, run_id: str, subject: str, text: str, html=None, attachments=None, channel_names=None):
+        self.calls.append(
+            {
+                "run_id": run_id,
+                "subject": subject,
+                "text": text,
+                "channels": list(channel_names or []),
+            }
+        )
+        return [
+            SendLogRecord(
+                run_id=run_id,
+                note_id=f"digest:{run_id}",
+                channel="email",
+                send_status=self.send_status,
+                send_response="ok" if self.send_status == "success" else "failed",
+            )
+        ]
+
+
 class _DummyJournal:
     def __init__(self):
         self.writes = []
@@ -222,6 +247,26 @@ class _DummyLock:
 
     def release(self):
         return None
+
+
+class _FailingLoginCollector:
+    def ensure_logged_in(self):
+        raise RuntimeError("login check failed")
+
+    def search_notes(self, run_id: str, keyword: str, max_results: int):
+        return []
+
+    def enrich_note_details(self, notes, max_notes: int):
+        return {
+            "target_notes": 0,
+            "attempted": 0,
+            "success": 0,
+            "failed": 0,
+            "skipped_no_token": 0,
+            "detail_filled": 0,
+            "detail_missing": 0,
+            "blocked": 0,
+        }
 
 
 class TestPipelineFlow(unittest.TestCase):
@@ -464,6 +509,34 @@ class TestPipelineFlow(unittest.TestCase):
         self.assertFalse(pipeline.state.digest_marked)
         self.assertFalse(pipeline.state.saved)
         self.assertEqual(len(pipeline.communication.digest_calls), 0)
+
+    def test_threshold_alert_auto_notifies_when_fetch_fail_streak_hit(self):
+        settings = _build_settings()
+        settings.notification.mode = "off"
+        settings.observability.alerts.enabled = True
+        settings.observability.alerts.fetch_fail_streak_threshold = 1
+        settings.observability.alerts.channels = ["email"]
+        settings.observability.alerts.cooldown_minutes = 60
+
+        logger = _NullLogger()
+        pipeline = AutoSuccessorPipeline(settings, logger)
+        pipeline.collector = _FailingLoginCollector()
+        pipeline.store = _DummyStore()
+        pipeline.state = _DummyState()
+        pipeline.communication = _DummyCommunication()
+        pipeline.router = _DummyRouter(send_status="success")
+        pipeline.journal = _DummyJournal()
+        pipeline.lock = _DummyLock()
+
+        stats = pipeline.run_once(run_id="r-alert")
+
+        self.assertEqual(stats["fetch_fail_streak"], 1)
+        self.assertEqual(stats["alerts_triggered_count"], 1)
+        self.assertIn("fetch_fail_streak", [item.get("code") for item in stats["alerts_triggered"]])
+        self.assertEqual(stats["alerts_notified_count"], 1)
+        self.assertEqual(stats["alerts_notified"], ["fetch_fail_streak"])
+        self.assertEqual(len(pipeline.router.calls), 1)
+        self.assertIn("阈值告警", pipeline.router.calls[0]["subject"])
 
     def test_jobs_to_summary_records_avoid_duplicate_original_text(self):
         settings = _build_settings()

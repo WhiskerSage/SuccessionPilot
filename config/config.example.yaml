@@ -95,6 +95,17 @@ retry:
   base_backoff_seconds: 20
   max_backoff_seconds: 1200
 
+observability:
+  alerts:
+    enabled: true
+    channels: [] # 留空则复用 notification.digest_channels
+    cooldown_minutes: 60
+    fetch_fail_streak_threshold: 2
+    llm_timeout_rate_threshold: 0.35 # 支持 0~1；也支持写 35 代表 35%
+    llm_timeout_min_calls: 6
+    detail_missing_rate_threshold: 0.45 # 支持 0~1；也支持写 45 代表 45%
+    detail_missing_min_samples: 6
+
 agent:
   runtime_name: "SuccessionPilot"
   mode: "auto"

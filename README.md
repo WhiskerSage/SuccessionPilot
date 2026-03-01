@@ -1,10 +1,17 @@
 ﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.4.5`
+- 项目版本：`0.4.6`
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
+
+### v0.4.6 更新要点
+- 新增阈值告警能力：支持连续抓取失败、LLM 超时率、详情缺失率三类告警自动评估与自动提醒。
+- 新增告警冷却：同类告警按 `cooldown_minutes` 限流，避免每轮重复刷屏。
+- 运行快照增强：`stats` 新增 `llm_timeout_rate/detail_missing_rate/alerts_*` 字段。
+- 性能看板增强：新增告警触发总数、已通知总数、触发轮次占比与告警码分布。
+- 控制中心配置面板新增告警参数可视化配置（阈值、样本、冷却、通道）。
 
 ### v0.4.5 更新要点
 - 控制中心“配置向导”整块支持折叠/展开（默认展开），减少页面占用并便于聚焦其他操作区。
@@ -251,6 +258,17 @@ retry:
   enabled: true
   worker_interval_seconds: 12
   replay_batch_size: 3
+
+observability:
+  alerts:
+    enabled: true
+    cooldown_minutes: 60
+    fetch_fail_streak_threshold: 2
+    llm_timeout_rate_threshold: 0.35
+    llm_timeout_min_calls: 6
+    detail_missing_rate_threshold: 0.45
+    detail_missing_min_samples: 6
+    channels: [] # 留空则复用 digest_channels
 
 resume:
   source_txt_path: "config/resume.txt"
@@ -517,6 +535,16 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - `base_backoff_seconds`：指数退避起始秒数
 - `max_backoff_seconds`：指数退避上限秒数
 
+### observability.alerts
+- `enabled`：是否启用阈值告警
+- `cooldown_minutes`：同类告警冷却时间（分钟）
+- `fetch_fail_streak_threshold`：连续抓取失败阈值（命中即告警）
+- `llm_timeout_rate_threshold`：LLM 超时率阈值（支持 `0~1`；也支持写 `35` 表示 `35%`）
+- `llm_timeout_min_calls`：LLM 超时率评估最小样本量
+- `detail_missing_rate_threshold`：详情缺失率阈值（支持 `0~1`；也支持写 `45` 表示 `45%`）
+- `detail_missing_min_samples`：详情缺失率评估最小样本量
+- `channels`：告警通道，留空则复用 `notification.digest_channels`
+
 行为说明。
 - 抓取失败（登录/搜索/详情）、LLM 超时、邮件失败会分别入队。
 - 队列持久化文件默认：`data/retry_queue.json`。
@@ -533,6 +561,11 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - `notification.digest_send_when_no_new: false`
 - `notification.attach_excel: false`
 - `notification.attach_jobs_csv: false`
+- `observability.alerts.enabled: true`
+- `observability.alerts.cooldown_minutes: 60`
+- `observability.alerts.fetch_fail_streak_threshold: 2`
+- `observability.alerts.llm_timeout_rate_threshold: 0.35`
+- `observability.alerts.detail_missing_rate_threshold: 0.45`
 
 ### agent
 - `runtime_name`：运行时名称
@@ -887,6 +920,7 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
+| v0.4.6 | 2026-02-28 | 新增阈值告警（连续抓取失败、LLM 超时率、详情缺失率）与冷却控制；run stats 增加 `llm_timeout_rate/detail_missing_rate/alerts_*`；性能看板新增告警聚合与告警码分布；控制中心可配置告警参数与通道。 |
 | v0.4.5 | 2026-02-27 | 控制中心“配置向导”整块支持折叠/展开；自检结果支持折叠/展开与“展开全部/收起通过项”；结果按失败/警告/通过排序；前端缓存版本升级为 `app.js?v=20260227-8`。 |
 | v0.4.4 | 2026-02-27 | 前端工作区改为 Vue 响应式渲染（保留原样式）；运行记录详情改为 `__spLoadRunDetail` 桥接；四个页面统一接入 Vue CDN 并更新 `app.js` 缓存版本；本次无新增配置字段。 |
 | v0.4.3 | 2026-02-27 | 提取链路改为每帖 NoteAgent 并行；岗位提取改为全量 LLM 尝试（取消预算截断）；`llm.max_job_items` 标记弃用并同步配置示例。 |
