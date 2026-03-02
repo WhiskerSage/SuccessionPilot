@@ -766,25 +766,47 @@
       `;
       configForm.appendChild(alertEnabledField);
       configForm.appendChild(alertCooldownField);
-      configForm.appendChild(alertFetchShortWindowField);
       configForm.appendChild(alertFetchField);
-      configForm.appendChild(alertFetchShortMinField);
-      configForm.appendChild(alertFetchLongWindowField);
-      configForm.appendChild(alertFetchLongThresholdField);
-      configForm.appendChild(alertFetchLongMinField);
-      configForm.appendChild(alertLlmShortWindowField);
       configForm.appendChild(alertLlmRateField);
       configForm.appendChild(alertLlmCallsField);
-      configForm.appendChild(alertLlmLongWindowField);
-      configForm.appendChild(alertLlmLongThresholdField);
-      configForm.appendChild(alertLlmLongMinSamplesField);
-      configForm.appendChild(alertDetailShortWindowField);
       configForm.appendChild(alertDetailRateField);
       configForm.appendChild(alertDetailSamplesField);
-      configForm.appendChild(alertDetailLongWindowField);
-      configForm.appendChild(alertDetailLongThresholdField);
-      configForm.appendChild(alertDetailLongMinSamplesField);
       configForm.appendChild(alertChannelsField);
+
+      const alertAdvancedPanel = document.createElement("details");
+      alertAdvancedPanel.id = "alertAdvancedPanel";
+      alertAdvancedPanel.className = "span-2 wizard-panel";
+      alertAdvancedPanel.innerHTML = `
+        <summary class="wizard-panel-summary">
+          <div class="head-row">
+            <h4>告警高级配置（双窗口）</h4>
+            <span class="wizard-panel-chevron"></span>
+          </div>
+        </summary>
+        <div class="wizard-panel-body">
+          <p class="muted">短窗用于识别突发，长窗用于识别趋势。默认参数已可直接使用，非必要不改。</p>
+          <div id="alertAdvancedGrid" class="form-grid"></div>
+        </div>
+      `;
+      const alertAdvancedGrid = alertAdvancedPanel.querySelector("#alertAdvancedGrid");
+      if (alertAdvancedGrid) {
+        [
+          alertFetchShortWindowField,
+          alertFetchShortMinField,
+          alertFetchLongWindowField,
+          alertFetchLongThresholdField,
+          alertFetchLongMinField,
+          alertLlmShortWindowField,
+          alertLlmLongWindowField,
+          alertLlmLongThresholdField,
+          alertLlmLongMinSamplesField,
+          alertDetailShortWindowField,
+          alertDetailLongWindowField,
+          alertDetailLongThresholdField,
+          alertDetailLongMinSamplesField,
+        ].forEach((field) => alertAdvancedGrid.appendChild(field));
+      }
+      configForm.appendChild(alertAdvancedPanel);
     }
 
     const kpis = document.querySelector(".kpis");
