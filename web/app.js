@@ -1,5 +1,12 @@
 (() => {
-  const startView = String(document.body.dataset.startView || "overview").trim().toLowerCase();
+  const queryView = (() => {
+    try {
+      return new URLSearchParams(window.location.search || "").get("view");
+    } catch (_err) {
+      return "";
+    }
+  })();
+  const startView = String(queryView || document.body.dataset.startView || "overview").trim().toLowerCase();
 
   const state = {
     leads: [],
@@ -31,6 +38,7 @@
       total: 0,
       totalPages: 1,
     },
+    retryQueueUnavailable: false,
   };
 
   const dom = {
@@ -53,6 +61,7 @@
     detailPanelChip: document.querySelector(".detail-panel .head-row .chip"),
     runList: document.getElementById("runList"),
     searchInput: document.getElementById("searchInput"),
+    searchWrap: document.querySelector(".toolbar .search"),
     refreshBtn: document.getElementById("refreshBtn"),
     skinBtn: document.getElementById("skinBtn"),
     navItems: document.querySelectorAll(".nav-link[data-page]"),
@@ -183,6 +192,11 @@
   let selectedResumeFile = null;
   let workspaceVue = null;
   let workspaceVueApp = null;
+  let retryQueueWarningShown = false;
+  const optionalLoadWarned = {
+    config: false,
+    resume: false,
+  };
 
   const SKINS = ["business-blue", "graphite-office"];
   const WIZARD_DONE_KEY = "successor_setup_wizard_done";
@@ -391,6 +405,26 @@
     });
   }
 
+  function isApiNotFoundError(err) {
+    const msg = String(err instanceof Error ? err.message : err || "")
+      .toLowerCase()
+      .trim();
+    if (!msg) return false;
+    return msg.includes("404") || msg.includes("not_found");
+  }
+
+  function renderRetryQueueUnavailable(message) {
+    const reason = String(message || "当前后端未启用重试队列接口").trim();
+    if (dom.retryQueueSummary) dom.retryQueueSummary.textContent = "重试队列不可用";
+    if (dom.retryQueueBody) {
+      dom.retryQueueBody.innerHTML = `<tr><td colspan="7" class="table-tip">${escapeHtml(reason)}</td></tr>`;
+    }
+    if (dom.retryDeadSummary) dom.retryDeadSummary.textContent = "-";
+    if (dom.retryDeadBody) {
+      dom.retryDeadBody.innerHTML = '<tr><td colspan="4" class="table-tip">暂无死信记录</td></tr>';
+    }
+  }
+
   function pageSizeForView(view) {
     if (view === "overview") return 10;
     if (view === "summary") return 20;
@@ -540,7 +574,7 @@
     if (opsGrid && !document.getElementById("retryQueueCard")) {
       const card = document.createElement("article");
       card.id = "retryQueueCard";
-      card.className = "ops-card span-2";
+      card.className = "ops-card ops-span-2";
       card.innerHTML = `
         <div class="head-row">
           <h4>失败重试队列</h4>
@@ -911,45 +945,45 @@
     const risk = compactText(lead.risk_flags, 360) || "-";
     const firstSeen = fmtTime(lead.first_seen_at);
     const updatedAt = fmtTime(lead.updated_at);
-    const dedupeStatus = String(lead.dedupe_status || "new") === "updated" ? "updated" : "new";
+    const dedupeStatus = String(lead.dedupe_status || "new") === "updated" ? "已更新" : "新增";
     const url = String(lead.url || "").trim();
 
     if (summaryView) {
-      const summaryTitle = `${toText(lead.position, "Position TBD")} / ${toText(lead.company, "Company TBD")}`;
+      const summaryTitle = `${toText(lead.position, "岗位待补充")} / ${toText(lead.company, "公司待补充")}`;
       return `
         <h4>${escapeHtml(summaryTitle)}</h4>
-        <div class="meta-line">Published: ${escapeHtml(publish)} | Author: ${escapeHtml(author)} | ID: <span class="mono">${escapeHtml(toText(lead.note_id))}</span></div>
-        <div class="meta-line">First Seen: ${escapeHtml(firstSeen)} | Updated: ${escapeHtml(updatedAt)} | Dedupe: ${escapeHtml(dedupeStatus)}</div>
+        <div class="meta-line">发布时间：${escapeHtml(publish)} | 作者：${escapeHtml(author)} | ID：<span class="mono">${escapeHtml(toText(lead.note_id))}</span></div>
+        <div class="meta-line">首次发现：${escapeHtml(firstSeen)} | 最近更新：${escapeHtml(updatedAt)} | 增量状态：${escapeHtml(dedupeStatus)}</div>
         <div class="detail-grid">
-          <div class="detail-item"><span>Company</span><strong>${escapeHtml(company)}</strong></div>
-          <div class="detail-item"><span>Position</span><strong>${escapeHtml(position)}</strong></div>
-          <div class="detail-item"><span>Location</span><strong>${escapeHtml(location)}</strong></div>
-          <div class="detail-item"><span>Title</span><strong>${escapeHtml(title)}</strong></div>
+          <div class="detail-item"><span>公司</span><strong>${escapeHtml(company)}</strong></div>
+          <div class="detail-item"><span>岗位</span><strong>${escapeHtml(position)}</strong></div>
+          <div class="detail-item"><span>地点</span><strong>${escapeHtml(location)}</strong></div>
+          <div class="detail-item"><span>标题</span><strong>${escapeHtml(title)}</strong></div>
         </div>
-        <div class="detail-block"><h5>Requirements</h5><pre>${escapeHtml(req)}</pre></div>
-        <div class="detail-block"><h5>Summary</h5><pre>${escapeHtml(summary)}</pre></div>
+        <div class="detail-block"><h5>岗位要求</h5><pre>${escapeHtml(req)}</pre></div>
+        <div class="detail-block"><h5>摘要</h5><pre>${escapeHtml(summary)}</pre></div>
         ${renderQuickEditBlock(lead)}
-        ${url ? `<div class="detail-link"><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open Original</a></div>` : ""}
+        ${url ? `<div class="detail-link"><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">打开原帖</a></div>` : ""}
       `;
     }
 
     return `
       <h4>${escapeHtml(title)}</h4>
-      <div class="meta-line">Author: ${escapeHtml(author)} | Published: ${escapeHtml(publish)} | ID: <span class="mono">${escapeHtml(toText(lead.note_id))}</span></div>
-      <div class="meta-line">First Seen: ${escapeHtml(firstSeen)} | Updated: ${escapeHtml(updatedAt)} | Dedupe: ${escapeHtml(dedupeStatus)}</div>
+      <div class="meta-line">作者：${escapeHtml(author)} | 发布时间：${escapeHtml(publish)} | ID：<span class="mono">${escapeHtml(toText(lead.note_id))}</span></div>
+      <div class="meta-line">首次发现：${escapeHtml(firstSeen)} | 最近更新：${escapeHtml(updatedAt)} | 增量状态：${escapeHtml(dedupeStatus)}</div>
       <div class="detail-grid">
-        <div class="detail-item"><span>Company</span><strong>${escapeHtml(company)}</strong></div>
-        <div class="detail-item"><span>Position</span><strong>${escapeHtml(position)}</strong></div>
-        <div class="detail-item"><span>Location</span><strong>${escapeHtml(location)}</strong></div>
-        <div class="detail-item"><span>Stats</span><strong>Like ${fmtInt(lead.like_count)} / Comment ${fmtInt(lead.comment_count)} / Share ${fmtInt(lead.share_count)}</strong></div>
+        <div class="detail-item"><span>公司</span><strong>${escapeHtml(company)}</strong></div>
+        <div class="detail-item"><span>岗位</span><strong>${escapeHtml(position)}</strong></div>
+        <div class="detail-item"><span>地点</span><strong>${escapeHtml(location)}</strong></div>
+        <div class="detail-item"><span>互动</span><strong>赞 ${fmtInt(lead.like_count)} / 评 ${fmtInt(lead.comment_count)} / 分享 ${fmtInt(lead.share_count)}</strong></div>
       </div>
-      <div class="detail-block"><h5>Structured Requirements</h5><pre>${escapeHtml(req)}</pre></div>
-      <div class="detail-block"><h5>Summary</h5><pre>${escapeHtml(summary)}</pre></div>
-      <div class="detail-block"><h5>Poster Comments</h5><pre>${escapeHtml(comments)}</pre></div>
-      <div class="detail-block"><h5>Original Detail</h5><pre>${escapeHtml(detailText)}</pre></div>
-      <div class="meta-line">Risk Flags: ${escapeHtml(risk)}</div>
+      <div class="detail-block"><h5>岗位要求</h5><pre>${escapeHtml(req)}</pre></div>
+      <div class="detail-block"><h5>摘要</h5><pre>${escapeHtml(summary)}</pre></div>
+      <div class="detail-block"><h5>贴主评论</h5><pre>${escapeHtml(comments)}</pre></div>
+      <div class="detail-block"><h5>原帖正文</h5><pre>${escapeHtml(detailText)}</pre></div>
+      <div class="meta-line">风险标记：${escapeHtml(risk)}</div>
       ${renderQuickEditBlock(lead)}
-      ${url ? `<div class="detail-link"><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open Original</a></div>` : ""}
+      ${url ? `<div class="detail-link"><a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">打开原帖</a></div>` : ""}
     `;
   }
 
@@ -980,7 +1014,7 @@
     const fetched = fmtInt(item.fetched);
     const jobs = fmtInt(item.jobs);
     const sent = fmtInt(item.send_logs);
-    const digest = item.digest_sent ? "digest sent" : "digest not sent";
+    const digest = item.digest_sent ? "摘要已发送" : "摘要未发送";
     const digestCls = item.digest_sent ? "ok" : "warn";
     const mode = toText(item.mode);
     const notifyMode = toText(item.notification_mode);
@@ -989,14 +1023,14 @@
     const stageFailed = Math.max(0, toInt(item.stage_failed_count, 0));
     const alertTriggered = Math.max(0, toInt(item.alerts_triggered_count, 0));
     const slowStages = normalizeSlowStages(item.slow_stages).slice(0, 3);
-    const slowStageText = slowStages.length ? slowStages.map((s) => `${s.name} ${fmtMs(s.durationMs)}`).join(" · ") : "none";
+    const slowStageText = slowStages.length ? slowStages.map((s) => `${s.name} ${fmtMs(s.durationMs)}`).join(" · ") : "暂无";
     const errorCodes = normalizeErrorCodes(item.error_codes);
     const errorHtml = errorCodes.length
       ? errorCodes
           .slice(0, 4)
-          .map((entry) => `<span class="run-code">${escapeHtml(entry.code)} x ${fmtInt(entry.count)}</span>`)
+          .map((entry) => `<span class="run-code">${escapeHtml(entry.code)} × ${fmtInt(entry.count)}</span>`)
           .join("")
-      : '<span class="run-code empty">none</span>';
+      : '<span class="run-code empty">无</span>';
     const remainErrors = errorCodes.length > 4 ? `<span class="run-code">+${errorCodes.length - 4}</span>` : "";
 
     return `
@@ -1005,22 +1039,22 @@
         <span>${escapeHtml(t)}</span>
       </div>
       <div class="run-meta">
-        <span>Fetched ${fetched}</span>
-        <span>Jobs ${jobs}</span>
-        <span>Sent ${sent}</span>
+        <span>抓取 ${fetched}</span>
+        <span>岗位 ${jobs}</span>
+        <span>发送 ${sent}</span>
         <span class="run-chip">${escapeHtml(mode)} / ${escapeHtml(notifyMode)}</span>
         <span class="run-chip ${digestCls}">${digest}</span>
-        ${alertTriggered > 0 ? `<span class="run-chip warn">alerts ${fmtInt(alertTriggered)}</span>` : ""}
+        ${alertTriggered > 0 ? `<span class="run-chip warn">告警 ${fmtInt(alertTriggered)}</span>` : ""}
       </div>
-      <div class="run-stage">Stage total ${escapeHtml(stageTotal)} · avg ${escapeHtml(stageAvg)} · failed ${fmtInt(stageFailed)}</div>
-      <div class="run-stage">Slow stages: ${escapeHtml(slowStageText)}</div>
-      <div class="run-codes"><span class="run-label">Error codes:</span>${errorHtml}${remainErrors}</div>
+      <div class="run-stage">阶段耗时：总计 ${escapeHtml(stageTotal)} · 平均 ${escapeHtml(stageAvg)} · 失败 ${fmtInt(stageFailed)}</div>
+      <div class="run-stage">慢阶段：${escapeHtml(slowStageText)}</div>
+      <div class="run-codes"><span class="run-label">错误码：</span>${errorHtml}${remainErrors}</div>
     `;
   }
 
   function buildRunDetailHtml(detail) {
     if (!detail || typeof detail !== "object") {
-      return "<p class='muted'>Select one run record to view details.</p>";
+      return "<p class='muted'>点击一条运行记录后显示详情。</p>";
     }
 
     const failedStages = Array.isArray(detail.failed_stages) ? detail.failed_stages : [];
@@ -1042,7 +1076,7 @@
 
     const listCodes = (obj) => {
       const entries = Object.entries(obj || {}).filter(([, v]) => toInt(v, 0) > 0);
-      if (!entries.length) return "none";
+      if (!entries.length) return "无";
       return entries
         .slice(0, 8)
         .map(([k, v]) => `${k}: ${fmtInt(v)}`)
@@ -1053,14 +1087,14 @@
           .slice(0, 8)
           .map((s) => `<li>${escapeHtml(toText(s.name, "unknown"))} · ${escapeHtml(toText(s.error_code, "failed"))}</li>`)
           .join("")}</ul>`
-      : "<p class='muted'>No failed stage.</p>";
+      : "<p class='muted'>无失败阶段。</p>";
 
     const fetchFailHtml = fetchFails.length
       ? `<ul class="detail-list">${fetchFails
           .slice(0, 8)
           .map((s) => `<li>${escapeHtml(toText(s.stage, "-"))}: ${escapeHtml(toText(s.error, "-"))}</li>`)
           .join("")}</ul>`
-      : "<p class='muted'>No fetch failure.</p>";
+      : "<p class='muted'>无抓取失败事件。</p>";
 
     const retryPending = retry.pending && typeof retry.pending === "object" ? retry.pending : {};
     const retryRunning = retry.running && typeof retry.running === "object" ? retry.running : {};
@@ -1076,25 +1110,25 @@
             return `<li>${escapeHtml(code)} | value=${escapeHtml(value)} | threshold=${escapeHtml(threshold)} | ${escapeHtml(reason)}</li>`;
           })
           .join("")}</ul>`
-      : "<p class='muted'>No threshold alert triggered.</p>";
-    const alertNotifiedText = alertsNotified.length ? alertsNotified.map((item) => String(item)).join(" | ") : "none";
+      : "<p class='muted'>未触发阈值告警。</p>";
+    const alertNotifiedText = alertsNotified.length ? alertsNotified.map((item) => String(item)).join(" | ") : "无";
 
     return `
-      <div class="meta-line">Run: <span class="mono">${escapeHtml(toText(detail.run_id))}</span> · ${escapeHtml(fmtTime(detail.recorded_at))}</div>
+      <div class="meta-line">Run：<span class="mono">${escapeHtml(toText(detail.run_id))}</span> · ${escapeHtml(fmtTime(detail.recorded_at))}</div>
       <div class="detail-grid">
-        <div class="detail-item"><span>Failed Stages</span><strong>${fmtInt(failedStages.length)}</strong></div>
-        <div class="detail-item"><span>Fetch Failures</span><strong>${fmtInt(fetchFails.length)}</strong></div>
-        <div class="detail-item"><span>Retry Pending</span><strong>${fmtInt(Object.values(retryPending).reduce((a, b) => a + toInt(b, 0), 0))}</strong></div>
-        <div class="detail-item"><span>Retry Running</span><strong>${fmtInt(Object.values(retryRunning).reduce((a, b) => a + toInt(b, 0), 0))}</strong></div>
+        <div class="detail-item"><span>失败阶段数</span><strong>${fmtInt(failedStages.length)}</strong></div>
+        <div class="detail-item"><span>抓取失败数</span><strong>${fmtInt(fetchFails.length)}</strong></div>
+        <div class="detail-item"><span>重试待执行</span><strong>${fmtInt(Object.values(retryPending).reduce((a, b) => a + toInt(b, 0), 0))}</strong></div>
+        <div class="detail-item"><span>重试执行中</span><strong>${fmtInt(Object.values(retryRunning).reduce((a, b) => a + toInt(b, 0), 0))}</strong></div>
       </div>
-      <div class="detail-block"><h5>Threshold Alerts</h5>${alertListHtml}</div>
-      <div class="detail-block"><h5>Alert Notified Codes</h5><pre>${escapeHtml(alertNotifiedText)}</pre></div>
-      <div class="detail-block"><h5>Failed Stages</h5>${failedStageHtml}</div>
-      <div class="detail-block"><h5>Fetch Fail Events</h5>${fetchFailHtml}</div>
-      <div class="detail-block"><h5>Stage Error Codes</h5><pre>${escapeHtml(listCodes(stageErrorCodes))}</pre></div>
-      <div class="detail-block"><h5>LLM Error Codes</h5><pre>${escapeHtml(listCodes(llmErrorCodes))}</pre></div>
-      <div class="detail-block"><h5>XHS Diagnosis</h5><pre>${escapeHtml(JSON.stringify(xhsDiagnosis, null, 2) || "{}")}</pre></div>
-      <div class="detail-block"><h5>Retry Snapshot</h5><pre>${escapeHtml(JSON.stringify({ pending: retryPending, running: retryRunning, stats: retryStats }, null, 2))}</pre></div>
+      <div class="detail-block"><h5>阈值告警</h5>${alertListHtml}</div>
+      <div class="detail-block"><h5>已通知告警码</h5><pre>${escapeHtml(alertNotifiedText)}</pre></div>
+      <div class="detail-block"><h5>失败阶段</h5>${failedStageHtml}</div>
+      <div class="detail-block"><h5>抓取失败事件</h5>${fetchFailHtml}</div>
+      <div class="detail-block"><h5>阶段错误码</h5><pre>${escapeHtml(listCodes(stageErrorCodes))}</pre></div>
+      <div class="detail-block"><h5>LLM 错误码</h5><pre>${escapeHtml(listCodes(llmErrorCodes))}</pre></div>
+      <div class="detail-block"><h5>XHS 诊断</h5><pre>${escapeHtml(JSON.stringify(xhsDiagnosis, null, 2) || "{}")}</pre></div>
+      <div class="detail-block"><h5>重试快照</h5><pre>${escapeHtml(JSON.stringify({ pending: retryPending, running: retryRunning, stats: retryStats }, null, 2))}</pre></div>
     `;
   }
 
@@ -1113,7 +1147,7 @@
           pagination: { ...state.pagination },
           runItems: [],
           selectedRunId: "",
-          runDetailHtml: "<p class='muted'>Select one run record to view details.</p>",
+          runDetailHtml: "<p class='muted'>点击一条运行记录后显示详情。</p>",
         };
       },
       computed: {
@@ -1145,7 +1179,7 @@
           const page = this.pageCurrent;
           const totalPages = this.pageTotal;
           const total = toInt(this.pagination.total, 0);
-          return `${page} / ${totalPages} · total ${fmtInt(total)}`;
+          return `${page} / ${totalPages} · 共 ${fmtInt(total)} 条`;
         },
         selectedLead() {
           if (!this.leads.length) return null;
@@ -1168,7 +1202,7 @@
           if (!value) return;
           this.selectedRunId = value;
           state.selectedRunId = value;
-          this.runDetailHtml = "<p class='muted'>Loading run detail...</p>";
+          this.runDetailHtml = "<p class='muted'>正在加载运行详情...</p>";
           if (typeof window.__spLoadRunDetail === "function") {
             window.__spLoadRunDetail(value);
           }
@@ -1183,22 +1217,22 @@
           return toText(value, fallback);
         },
         jobLine(lead) {
-          return `${toText(lead.position, "Position TBD")} / ${toText(lead.company, "Company TBD")}`;
+          return `${toText(lead.position, "岗位待补充")} / ${toText(lead.company, "公司待补充")}`;
         },
         requirementLine(lead) {
-          return compactOneLine(lead.requirements, "No requirements", 90);
+          return compactOneLine(lead.requirements, "岗位要求待补充", 90);
         },
         summaryLine(lead) {
-          return compactOneLine(lead.summary, "No summary", 130);
+          return compactOneLine(lead.summary, "暂无摘要", 130);
         },
         dedupeText(lead) {
-          return String(lead.dedupe_status || "new") === "updated" ? "updated" : "new";
+          return String(lead.dedupe_status || "new") === "updated" ? "已更新" : "新增";
         },
         interactText(lead) {
-          return `Like ${fmtInt(lead.like_count)} / Comment ${fmtInt(lead.comment_count)}`;
+          return `赞 ${fmtInt(lead.like_count)} / 评 ${fmtInt(lead.comment_count)}`;
         },
         updateLine(lead) {
-          return `Updated ${fmtTime(lead.updated_at)} · ${this.dedupeText(lead)}`;
+          return `更新 ${fmtTime(lead.updated_at)} · ${this.dedupeText(lead)}`;
         },
         statusBadgeHtml(lead) {
           return statusBadge(lead.status, lead.like_count, lead.comment_count);
@@ -1228,22 +1262,22 @@
         },
         setLoading(message) {
           this.tableError = "";
-          this.tableLoading = String(message || "Loading...");
+          this.tableLoading = String(message || "加载中...");
           this.leads = [];
         },
         setError(message) {
           this.tableLoading = "";
-          this.tableError = String(message || "Load failed");
+          this.tableError = String(message || "加载失败");
           this.leads = [];
         },
         applyRuns(items) {
-          this.runItems = Array.isArray(items) ? items : [];
-          if (!this.runItems.length) {
-            this.selectedRunId = "";
-            state.selectedRunId = "";
-            this.runDetailHtml = "<p class='muted'>No run records.</p>";
-            return;
-          }
+            this.runItems = Array.isArray(items) ? items : [];
+            if (!this.runItems.length) {
+              this.selectedRunId = "";
+              state.selectedRunId = "";
+              this.runDetailHtml = "<p class='muted'>暂无运行记录。</p>";
+              return;
+            }
           const hasSelected = this.runItems.some((item) => item && item.run_id === this.selectedRunId);
           if (!this.selectedRunId || !hasSelected) {
             this.selectedRunId = String(this.runItems[0].run_id || "");
@@ -1257,35 +1291,35 @@
       template: `
         <article class="panel table-panel enter" style="--delay: 320ms">
           <div class="head-row">
-            <h3>{{ summaryView ? 'Summary List' : 'Leads List' }}</h3>
+            <h3>{{ summaryView ? '摘要列表' : '线索列表' }}</h3>
             <span class="count" id="leadCount">{{ leadCountText }}</span>
             <div id="leadFiltersRow" class="lead-filters-row">
               <label class="mini-field">
-                <span>Status</span>
+                <span>状态</span>
                 <select id="leadStatusFilter">
-                  <option value="all">All</option>
-                  <option value="high_priority">High Priority</option>
-                  <option value="actionable">Actionable</option>
-                  <option value="pending_review">Pending Review</option>
-                  <option value="new_lead">New Lead</option>
+                  <option value="all">全部</option>
+                  <option value="high_priority">高优先级</option>
+                  <option value="actionable">可推进</option>
+                  <option value="pending_review">待复核</option>
+                  <option value="new_lead">新线索</option>
                 </select>
               </label>
               <label class="mini-field">
-                <span>Dedupe</span>
+                <span>去重状态</span>
                 <select id="leadDedupeFilter">
-                  <option value="all">All</option>
-                  <option value="new">New</option>
-                  <option value="updated">Updated</option>
+                  <option value="all">全部</option>
+                  <option value="new">新增</option>
+                  <option value="updated">已更新</option>
                 </select>
               </label>
             </div>
           </div>
           <div class="pager" id="leadPager">
-            <button id="leadPrevBtn" class="btn ghost" type="button" :disabled="prevDisabled">Prev</button>
+            <button id="leadPrevBtn" class="btn ghost" type="button" :disabled="prevDisabled">上一页</button>
             <span id="leadPageInfo">{{ pageInfoText }}</span>
-            <button id="leadNextBtn" class="btn ghost" type="button" :disabled="nextDisabled">Next</button>
+            <button id="leadNextBtn" class="btn ghost" type="button" :disabled="nextDisabled">下一页</button>
             <label class="pager-size">
-              <span>Size</span>
+              <span>每页</span>
               <select id="leadPageSize" :value="pageSizeText">
                 <option value="10">10</option>
                 <option value="20">20</option>
@@ -1298,30 +1332,34 @@
             <table>
               <thead>
                 <tr v-if="summaryView">
-                  <th>Published</th>
-                  <th>Position / Company</th>
-                  <th>Requirements</th>
-                  <th>Summary</th>
+                  <th>发布时间</th>
+                  <th>岗位 / 公司</th>
+                  <th>岗位要求</th>
+                  <th>摘要</th>
                 </tr>
                 <tr v-else>
-                  <th>Published</th>
-                  <th>Position / Company</th>
-                  <th>Location</th>
-                  <th>Interaction</th>
-                  <th>Status</th>
+                  <th>发布时间</th>
+                  <th>岗位 / 公司</th>
+                  <th>地点</th>
+                  <th>互动</th>
+                  <th>状态</th>
                 </tr>
               </thead>
               <tbody id="leadBody">
                 <tr v-if="tableLoading"><td :colspan="tableColspan" class="table-tip">{{ tableLoading }}</td></tr>
                 <tr v-else-if="tableError"><td :colspan="tableColspan" class="table-tip error">{{ tableError }}</td></tr>
-                <tr v-else-if="!leads.length"><td :colspan="tableColspan" class="table-tip">No matched leads</td></tr>
+                <tr v-else-if="!leads.length"><td :colspan="tableColspan" class="table-tip">暂无匹配线索</td></tr>
                 <template v-else>
                   <tr
                     v-for="lead in leads"
                     :key="lead.note_id"
                     :class="rowClass(lead.note_id)"
                     :data-id="lead.note_id"
+                    tabindex="0"
+                    role="button"
                     @click="selectLead(lead.note_id)"
+                    @keydown.enter.prevent="selectLead(lead.note_id)"
+                    @keydown.space.prevent="selectLead(lead.note_id)"
                   >
                     <td>{{ publishText(lead) }}</td>
                     <td>
@@ -1346,21 +1384,25 @@
 
         <article class="panel detail-panel enter" style="--delay: 370ms">
           <div class="head-row">
-            <h3>{{ summaryView ? 'Summary Detail' : 'Lead Detail' }}</h3>
-            <span class="chip">{{ summaryView ? 'Structured' : 'Realtime' }}</span>
+            <h3>{{ summaryView ? '摘要详情' : '线索详情' }}</h3>
+            <span class="chip">{{ summaryView ? '结构化视图' : '实时数据' }}</span>
           </div>
           <div id="detailBox" class="detail-box" v-html="detailHtml"></div>
           <div class="runs-box">
-            <h4>Run Records</h4>
+            <h4>运行记录</h4>
             <ul id="runList">
-              <li v-if="!runItems.length">No run records</li>
+              <li v-if="!runItems.length">暂无运行记录</li>
               <li
                 v-for="item in runItems"
                 :key="String(item.run_id || '')"
                 class="run-item"
                 :class="{ active: String(item.run_id || '') === String(selectedRunId || '') }"
                 :data-run-id="String(item.run_id || '')"
+                tabindex="0"
+                role="button"
                 @click="selectRun(item.run_id)"
+                @keydown.enter.prevent="selectRun(item.run_id)"
+                @keydown.space.prevent="selectRun(item.run_id)"
                 v-html="runItemInnerHtml(item)"
               ></li>
             </ul>
@@ -1391,34 +1433,6 @@
     const vm = ensureWorkspaceVue();
     if (vm) {
       vm.view = state.view;
-      return;
-    }
-
-    const summaryView = isSummaryView();
-    if (dom.leadHeadRow) {
-      dom.leadHeadRow.innerHTML = summaryView
-        ? `
-            <th>发布时间</th>
-            <th>岗位 / 公司</th>
-            <th>岗位要求</th>
-            <th>摘要</th>
-          `
-        : `
-            <th>发布时间</th>
-            <th>岗位 / 公司</th>
-            <th>地点</th>
-            <th>互动</th>
-            <th>状态</th>
-          `;
-    }
-    if (dom.leadPanelTitle) {
-      dom.leadPanelTitle.textContent = summaryView ? "摘要列表" : "线索列表";
-    }
-    if (dom.detailPanelTitle) {
-      dom.detailPanelTitle.textContent = summaryView ? "摘要详情" : "详情与摘要";
-    }
-    if (dom.detailPanelChip) {
-      dom.detailPanelChip.textContent = summaryView ? "结构化视图" : "实时数据";
     }
   }
 
@@ -1671,118 +1685,15 @@
 
   function renderRuns(items) {
     state.runItems = Array.isArray(items) ? items : [];
-    if (workspaceVue && typeof workspaceVue.applyRuns === "function") {
-      workspaceVue.applyRuns(state.runItems);
-      return;
-    }
-    if (!dom.runList) return;
-    if (!state.runItems.length) {
-      dom.runList.innerHTML = "<li>暂无运行记录</li>";
-      state.selectedRunId = "";
-      if (dom.runDetailBox) {
-        dom.runDetailBox.innerHTML = "<p class='muted'>暂无运行详情。</p>";
-      }
-      return;
-    }
-    if (!state.selectedRunId || !state.runItems.some((item) => item && item.run_id === state.selectedRunId)) {
-      state.selectedRunId = String(state.runItems[0].run_id || "");
-    }
-    const normalizeSlowStages = (value) => {
-      if (!Array.isArray(value)) return [];
-      return value
-        .filter((item) => item && typeof item === "object")
-        .map((item) => ({
-          name: toText(item.name, "unknown"),
-          durationMs: Math.max(0, toInt(item.duration_ms, 0)),
-        }))
-        .filter((item) => item.durationMs > 0);
-    };
-    const normalizeErrorCodes = (value) => {
-      if (!value || typeof value !== "object") return [];
-      return Object.entries(value)
-        .map(([k, v]) => ({
-          code: String(k || "").trim().toLowerCase(),
-          count: Math.max(0, toInt(v, 0)),
-        }))
-        .filter((item) => item.code && item.count > 0)
-        .sort((a, b) => b.count - a.count);
-    };
-    dom.runList.innerHTML = state.runItems
-      .map((item) => {
-        const runIdRaw = String(item.run_id || "");
-        const active = runIdRaw === state.selectedRunId ? "active" : "";
-        const runId = toText(item.run_id);
-        const t = fmtTime(item.recorded_at);
-        const fetched = fmtInt(item.fetched);
-        const jobs = fmtInt(item.jobs);
-        const sent = fmtInt(item.send_logs);
-        const digest = item.digest_sent ? "摘要已发" : "摘要未发";
-        const digestCls = item.digest_sent ? "ok" : "warn";
-        const mode = toText(item.mode);
-        const notifyMode = toText(item.notification_mode);
-        const stageTotal = fmtMs(item.stage_total_ms);
-        const stageAvg = fmtMs(item.stage_avg_ms);
-        const stageFailed = Math.max(0, toInt(item.stage_failed_count, 0));
-        const slowStages = normalizeSlowStages(item.slow_stages).slice(0, 3);
-        const slowStageText = slowStages.length
-          ? slowStages.map((s) => `${s.name} ${fmtMs(s.durationMs)}`).join(" · ")
-          : "暂无";
-        const errorCodes = normalizeErrorCodes(item.error_codes);
-        const errorHtml = errorCodes.length
-          ? errorCodes
-              .slice(0, 4)
-              .map((entry) => `<span class="run-code">${escapeHtml(entry.code)} × ${fmtInt(entry.count)}</span>`)
-              .join("")
-          : '<span class="run-code empty">无</span>';
-        const remainErrors = errorCodes.length > 4 ? `<span class="run-code">+${errorCodes.length - 4}</span>` : "";
-        return `
-          <li class="run-item ${active}" data-run-id="${escapeHtml(runIdRaw)}">
-            <div class="run-head">
-              <strong>${escapeHtml(runId)}</strong>
-              <span>${escapeHtml(t)}</span>
-            </div>
-            <div class="run-meta">
-              <span>抓取 ${fetched}</span>
-              <span>岗位 ${jobs}</span>
-              <span>发送 ${sent}</span>
-              <span class="run-chip">${escapeHtml(mode)} / ${escapeHtml(notifyMode)}</span>
-              <span class="run-chip ${digestCls}">${digest}</span>
-            </div>
-            <div class="run-stage">阶段耗时：总计 ${escapeHtml(stageTotal)} · 平均 ${escapeHtml(stageAvg)} · 失败 ${fmtInt(stageFailed)}</div>
-            <div class="run-stage">慢阶段：${escapeHtml(slowStageText)}</div>
-            <div class="run-codes"><span class="run-label">错误码：</span>${errorHtml}${remainErrors}</div>
-          </li>
-        `;
-      })
-      .join("");
-    const runRows = dom.runList.querySelectorAll("li[data-run-id]");
-    runRows.forEach((row) => {
-      row.addEventListener("click", () => {
-        const runId = String(row.getAttribute("data-run-id") || "").trim();
-        if (!runId) return;
-        state.selectedRunId = runId;
-        renderRuns(state.runItems);
-        loadRunDetail(runId).catch((err) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (dom.runDetailBox) {
-            dom.runDetailBox.innerHTML = `<p class="table-tip error">${escapeHtml(msg)}</p>`;
-          }
-        });
-      });
-    });
+    if (!workspaceVue || typeof workspaceVue.applyRuns !== 'function') return;
+    workspaceVue.applyRuns(state.runItems);
   }
 
   function renderRunDetail(detail) {
-    if (workspaceVue && typeof workspaceVue.applyRunDetail === "function") {
-      state.runDetail = detail || null;
-      workspaceVue.applyRunDetail(state.runDetail);
-      return;
-    }
-    if (!dom.runDetailBox) return;
     state.runDetail = detail || null;
-    dom.runDetailBox.innerHTML = buildRunDetailHtml(detail);
+    if (!workspaceVue || typeof workspaceVue.applyRunDetail !== 'function') return;
+    workspaceVue.applyRunDetail(state.runDetail);
   }
-
 
   async function loadRunDetail(runId) {
     const id = String(runId || "").trim();
@@ -1793,31 +1704,20 @@
     if (workspaceVue && typeof workspaceVue.applyRunDetail === "function") {
       workspaceVue.applyRunDetail({ run_id: id, recorded_at: "", failed_stages: [], fetch_fail_events: [] });
     } else if (dom.runDetailBox) {
-      dom.runDetailBox.innerHTML = "<p class='muted'>Loading run detail...</p>";
+      dom.runDetailBox.innerHTML = "<p class='muted'>正在加载运行详情...</p>";
     }
     const detail = await fetchJson(`/api/runs/${encodeURIComponent(id)}`);
     renderRunDetail(detail || null);
   }
 
   function renderPagination() {
-    if (workspaceVue) {
-      workspaceVue.pagination = {
-        page: toInt(state.pagination.page, 1),
-        pageSize: toInt(state.pagination.pageSize, pageSizeForView(state.view)),
-        total: toInt(state.pagination.total, 0),
-        totalPages: Math.max(1, toInt(state.pagination.totalPages, 1)),
-      };
-      return;
-    }
-    if (!dom.leadPageInfo || !dom.leadPrevBtn || !dom.leadNextBtn || !dom.leadPager) return;
-    const { page, totalPages, total, pageSize } = state.pagination;
-    dom.leadPageInfo.textContent = `${page} / ${totalPages} · 共 ${fmtInt(total)} 条`;
-    dom.leadPrevBtn.disabled = page <= 1;
-    dom.leadNextBtn.disabled = page >= totalPages;
-    dom.leadPager.classList.toggle("hidden", !isWorkspaceView(state.view));
-    if (dom.leadPageSize) {
-      dom.leadPageSize.value = String(pageSize);
-    }
+    if (!workspaceVue) return;
+    workspaceVue.pagination = {
+      page: toInt(state.pagination.page, 1),
+      pageSize: toInt(state.pagination.pageSize, pageSizeForView(state.view)),
+      total: toInt(state.pagination.total, 0),
+      totalPages: Math.max(1, toInt(state.pagination.totalPages, 1)),
+    };
   }
 
   function getSelectedLead() {
@@ -1904,71 +1804,9 @@
 
   function renderLeads(items) {
     state.leads = Array.isArray(items) ? items : [];
-    if (workspaceVue && typeof workspaceVue.applyLeads === "function") {
-      workspaceVue.applyLeads(state.leads, state.pagination);
-      return;
-    }
-    if (dom.leadCount) dom.leadCount.textContent = `${fmtInt(state.leads.length)} 条`;
-
-    if (!dom.leadBody) return;
-    if (!state.leads.length) {
-      dom.leadBody.innerHTML = `<tr><td colspan="${tableColumnCount()}" class="table-tip">暂无匹配线索</td></tr>`;
-      state.selectedNoteId = "";
-      renderDetail(null);
-      return;
-    }
-
-    if (!state.selectedNoteId || !state.leads.some((x) => x.note_id === state.selectedNoteId)) {
-      state.selectedNoteId = state.leads[0].note_id;
-    }
-
-    dom.leadBody.innerHTML = state.leads
-      .map((lead) => {
-        const active = lead.note_id === state.selectedNoteId ? "active" : "";
-        const publish = toText(lead.publish_time_display || fmtTime(lead.publish_time));
-        const jobLine = `${toText(lead.position, "岗位待补充")} / ${toText(lead.company, "公司待补充")}`;
-
-        if (isSummaryView()) {
-          const requirementLine = compactOneLine(lead.requirements, "岗位要求待补充", 90);
-          const summaryLine = compactOneLine(lead.summary, "暂无摘要", 130);
-          const dedupeText = String(lead.dedupe_status || "new") === "updated" ? "已更新" : "新增";
-          return `
-            <tr class="${active}" data-id="${escapeHtml(lead.note_id)}">
-              <td>${escapeHtml(publish)}</td>
-              <td><div class="title-cell">${escapeHtml(jobLine)}</div><div class="sub-cell">${escapeHtml(toText(lead.location))} · ${escapeHtml(dedupeText)}</div></td>
-              <td>${escapeHtml(requirementLine)}</td>
-              <td>${escapeHtml(summaryLine)}</td>
-            </tr>
-          `;
-        }
-
-        const location = toText(lead.location);
-        const interact = `赞 ${fmtInt(lead.like_count)} / 评 ${fmtInt(lead.comment_count)}`;
-        const badge = statusBadge(lead.status, lead.like_count, lead.comment_count);
-        const updateLine = `更新 ${fmtTime(lead.updated_at)} · ${String(lead.dedupe_status || "new") === "updated" ? "已更新" : "新增"}`;
-        return `
-          <tr class="${active}" data-id="${escapeHtml(lead.note_id)}">
-            <td>${escapeHtml(publish)}</td>
-            <td><div class="title-cell">${escapeHtml(jobLine)}</div><div class="sub-cell">${escapeHtml(toText(lead.title))}</div><div class="sub-cell">${escapeHtml(updateLine)}</div></td>
-            <td>${escapeHtml(location)}</td>
-            <td>${escapeHtml(interact)}</td>
-            <td>${badge}</td>
-          </tr>
-        `;
-      })
-      .join("");
-
-    const rows = dom.leadBody.querySelectorAll("tr[data-id]");
-    rows.forEach((row) => {
-      row.addEventListener("click", () => {
-        const nextId = row.getAttribute("data-id") || "";
-        if (!nextId || nextId === state.selectedNoteId) return;
-        state.selectedNoteId = nextId;
-        rows.forEach((item) => item.classList.toggle("active", item === row));
-        renderDetail(getSelectedLead());
-      });
-    });
-    renderDetail(getSelectedLead());
+    if (dom.leadCount) dom.leadCount.textContent = fmtInt(state.leads.length) + ' 条';
+    if (!workspaceVue || typeof workspaceVue.applyLeads !== 'function') return;
+    workspaceVue.applyLeads(state.leads, state.pagination);
   }
 
   function setLoadingTable(message = "加载中...") {
@@ -2607,6 +2445,7 @@
       if (accountResp.account_cookies_dir) config.xhs.account_cookies_dir = accountResp.account_cookies_dir;
     }
     renderConfig(config);
+    optionalLoadWarned.config = false;
   }
 
   function renderResume(resume) {
@@ -2624,6 +2463,7 @@
   async function loadResume() {
     const data = await fetchJson("/api/resume");
     renderResume(data || {});
+    optionalLoadWarned.resume = false;
   }
 
   async function parseResumeFile(file) {
@@ -2660,9 +2500,53 @@
     return data || {};
   }
 
-  function applyViewMode(nextView) {
+  function normalizeView(nextView) {
     const allowed = new Set(["overview", "control", "leads", "summary"]);
-    state.view = allowed.has(nextView) ? nextView : "overview";
+    const view = String(nextView || "").trim().toLowerCase();
+    return allowed.has(view) ? view : "overview";
+  }
+
+  function syncViewQuery(view, replace = false) {
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("view", normalizeView(view));
+      const statePayload = { view: normalizeView(view) };
+      if (replace) {
+        window.history.replaceState(statePayload, "", url.toString());
+      } else {
+        window.history.pushState(statePayload, "", url.toString());
+      }
+    } catch (_err) {}
+  }
+
+  async function switchView(nextView, options = {}) {
+    const view = normalizeView(nextView);
+    const pushHistory = options && options.pushHistory === true;
+    const replaceHistory = options && options.replaceHistory === true;
+    const loadData = !(options && options.loadData === false);
+
+    const viewChanged = state.view !== view;
+    if (!viewChanged && !loadData) {
+      if (replaceHistory) syncViewQuery(view, true);
+      return;
+    }
+
+    applyViewMode(view);
+
+    if (pushHistory) syncViewQuery(view, false);
+    if (replaceHistory) syncViewQuery(view, true);
+
+    if (!loadData) return;
+
+    if (state.view === "control") {
+      await loadControlPanelData();
+    } else if (isWorkspaceView(state.view)) {
+      await loadLeads();
+    }
+  }
+
+  function applyViewMode(nextView) {
+    state.view = normalizeView(nextView);
     document.body.dataset.view = state.view;
 
     dom.navItems.forEach((item) => {
@@ -2674,6 +2558,7 @@
     const showWorkspace = isWorkspaceView(state.view);
     if (dom.controlSection) dom.controlSection.classList.toggle("hidden", !showControl);
     if (dom.workspace) dom.workspace.classList.toggle("hidden", !showWorkspace);
+    if (dom.searchWrap) dom.searchWrap.classList.toggle("hidden", !showWorkspace);
     if (dom.searchInput) dom.searchInput.disabled = !showWorkspace;
 
     if (dom.searchInput) {
@@ -2784,7 +2669,7 @@
             try {
               await postJson("/api/retry-queue/requeue", { id });
               showToast("已加入重试", "success");
-              await loadRetryQueue();
+              await loadRetryQueue({ optional: true });
             } catch (err) {
               showToast(err instanceof Error ? err.message : String(err), "error");
             }
@@ -2796,7 +2681,7 @@
             try {
               await postJson("/api/retry-queue/drop", { id });
               showToast("已丢弃", "success");
-              await loadRetryQueue();
+              await loadRetryQueue({ optional: true });
             } catch (err) {
               showToast(err instanceof Error ? err.message : String(err), "error");
             }
@@ -2833,14 +2718,52 @@
     }
   }
 
-  async function loadRetryQueue() {
+  async function loadRetryQueue(options = {}) {
     if (!dom.retryQueueBody) return;
+    const optional = Boolean(options && options.optional);
     const query = new URLSearchParams();
     query.set("status", String(state.retryQueueFilters.status || "all"));
     query.set("queue_type", String(state.retryQueueFilters.queueType || "all"));
     query.set("limit", "120");
-    const data = await fetchJson(`/api/retry-queue?${query.toString()}`);
-    renderRetryQueue(data || null);
+    try {
+      const data = await fetchJson(`/api/retry-queue?${query.toString()}`);
+      state.retryQueueUnavailable = false;
+      retryQueueWarningShown = false;
+      renderRetryQueue(data || null);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const notFound = isApiNotFoundError(err);
+      if (optional || notFound) {
+        state.retryQueueUnavailable = true;
+        renderRetryQueueUnavailable(notFound ? "当前后端版本未提供重试队列接口" : `重试队列暂不可用：${msg}`);
+        if (!retryQueueWarningShown) {
+          retryQueueWarningShown = true;
+          showToast(notFound ? "重试队列接口未启用，已自动降级。" : `重试队列加载失败：${msg}`, "info");
+        }
+        return;
+      }
+      throw err;
+    }
+  }
+
+  async function loadControlPanelData() {
+    await Promise.all([
+      loadConfig().catch((err) => {
+        if (!optionalLoadWarned.config) {
+          optionalLoadWarned.config = true;
+          const msg = err instanceof Error ? err.message : String(err);
+          showToast(`配置加载失败，已降级：${msg}`, "info");
+        }
+      }),
+      loadResume().catch((err) => {
+        if (!optionalLoadWarned.resume) {
+          optionalLoadWarned.resume = true;
+          const msg = err instanceof Error ? err.message : String(err);
+          showToast(`简历加载失败，已降级：${msg}`, "info");
+        }
+      }),
+      loadRetryQueue({ optional: true }),
+    ]);
   }
 
   async function refreshAll() {
@@ -2850,7 +2773,10 @@
     setLoadingTable("正在加载实时数据...");
 
     try {
-      await Promise.all([loadSummaryAndRuns(), loadRuntime(), loadConfig(), loadResume(), loadRetryQueue()]);
+      await Promise.all([loadSummaryAndRuns(), loadRuntime()]);
+      if (state.view === "control") {
+        await loadControlPanelData();
+      }
       if (isWorkspaceView(state.view)) {
         await loadLeads();
       } else {
@@ -2889,8 +2815,64 @@
     };
   }
 
+  function setButtonBusy(button, busyText = "处理中...") {
+    if (!button) return () => {};
+    const idleText = String(button.dataset.idleText || button.textContent || "").trim();
+    if (!button.dataset.idleText) {
+      button.dataset.idleText = idleText;
+    }
+    button.dataset.busy = "1";
+    button.classList.add("busy");
+    button.disabled = true;
+    button.textContent = String(busyText || "处理中...");
+    return () => {
+      button.dataset.busy = "0";
+      button.classList.remove("busy");
+      button.textContent = String(button.dataset.idleText || idleText || "");
+      button.disabled = false;
+    };
+  }
+
+  async function withBusyButton(button, busyText, task) {
+    if (!button) return task();
+    if (button.dataset.busy === "1") return;
+    const restore = setButtonBusy(button, busyText);
+    try {
+      return await task();
+    } finally {
+      restore();
+      if (state.runtime && typeof state.runtime === "object") {
+        renderRuntime(state.runtime);
+      }
+    }
+  }
+
   function bindEvents() {
     ensureEnhancedUi();
+
+    if (dom.navItems && dom.navItems.length) {
+      dom.navItems.forEach((item) => {
+        item.addEventListener("click", (event) => {
+          const isModified = event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0;
+          if (isModified) return;
+          const targetView = normalizeView(item.getAttribute("data-page"));
+          event.preventDefault();
+          switchView(targetView, { pushHistory: true }).catch((err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            showToast(msg, "error");
+          });
+        });
+      });
+    }
+
+    window.addEventListener("popstate", () => {
+      const params = new URLSearchParams(window.location.search || "");
+      const targetView = normalizeView(params.get("view"));
+      switchView(targetView, { loadData: true }).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        showToast(msg, "error");
+      });
+    });
 
     if (dom.refreshBtn) {
       dom.refreshBtn.addEventListener("click", () => {
@@ -2977,140 +2959,142 @@
     if (dom.retryQueueStatusFilter) {
       dom.retryQueueStatusFilter.addEventListener("change", () => {
         state.retryQueueFilters.status = String(dom.retryQueueStatusFilter.value || "all");
-        loadRetryQueue().catch(() => {});
+        loadRetryQueue({ optional: true }).catch(() => {});
       });
     }
     if (dom.retryQueueTypeFilter) {
       dom.retryQueueTypeFilter.addEventListener("change", () => {
         state.retryQueueFilters.queueType = String(dom.retryQueueTypeFilter.value || "all");
-        loadRetryQueue().catch(() => {});
+        loadRetryQueue({ optional: true }).catch(() => {});
       });
     }
     if (dom.retryQueueRefreshBtn) {
       dom.retryQueueRefreshBtn.addEventListener("click", () => {
-        loadRetryQueue().catch((err) => showToast(String(err), "error"));
+        withBusyButton(dom.retryQueueRefreshBtn, "刷新中...", async () => {
+          await loadRetryQueue({ optional: true });
+        }).catch((err) => showToast(String(err), "error"));
       });
     }
     if (dom.retryQueueReplayBtn) {
       dom.retryQueueReplayBtn.addEventListener("click", async () => {
-        try {
+        withBusyButton(dom.retryQueueReplayBtn, "触发中...", async () => {
           const payload = { queue_type: String(state.retryQueueFilters.queueType || "all"), limit: 120 };
           const resp = await postJson("/api/retry-queue/kick", payload);
           const kicked = toInt(resp && resp.kicked, 0);
           showToast(`已触发待执行重试 ${kicked} 条`, "success");
-          await loadRetryQueue();
-        } catch (err) {
+          await loadRetryQueue({ optional: true });
+        }).catch((err) => {
           showToast(err instanceof Error ? err.message : String(err), "error");
-        }
+        });
       });
     }
 
     if (dom.runOnceBtn) {
       dom.runOnceBtn.addEventListener("click", async () => {
-        try {
+        withBusyButton(dom.runOnceBtn, "抓取中...", async () => {
           await invokeAction("run_once", { mode: dom.runModeSelect ? dom.runModeSelect.value : "auto" });
-        } catch (err) {
+        }).catch((err) => {
           showToast(err instanceof Error ? err.message : String(err), "error");
-        }
+        });
       });
     }
     if (dom.sendLatestBtn) {
       dom.sendLatestBtn.addEventListener("click", async () => {
-        try {
+        withBusyButton(dom.sendLatestBtn, "发送中...", async () => {
           await invokeAction("send_latest", { limit: toInt(dom.sendLatestInput ? dom.sendLatestInput.value : 5, 5) });
-        } catch (err) {
+        }).catch((err) => {
           showToast(err instanceof Error ? err.message : String(err), "error");
-        }
+        });
       });
     }
     if (dom.xhsLoginBtn) {
       dom.xhsLoginBtn.addEventListener("click", async () => {
-        try {
+        withBusyButton(dom.xhsLoginBtn, "登录中...", async () => {
           await invokeAction("xhs_login", { timeout_seconds: toInt(dom.loginTimeoutInput ? dom.loginTimeoutInput.value : 180, 180) });
-        } catch (err) {
+        }).catch((err) => {
           showToast(err instanceof Error ? err.message : String(err), "error");
-        }
+        });
       });
     }
     if (dom.xhsStatusBtn) {
       dom.xhsStatusBtn.addEventListener("click", async () => {
-        try {
+        withBusyButton(dom.xhsStatusBtn, "检查中...", async () => {
           const data = await invokeAction("xhs_status", {});
           if (data && data.status && typeof data.status === "object") {
             showToast(`登录状态: ${JSON.stringify(data.status)}`, data.ok ? "success" : "error");
           }
-        } catch (err) {
+        }).catch((err) => {
           showToast(err instanceof Error ? err.message : String(err), "error");
-        }
+        });
       });
     }
     if (dom.startDaemonBtn) {
       dom.startDaemonBtn.addEventListener("click", async () => {
-        try {
+        withBusyButton(dom.startDaemonBtn, "启动中...", async () => {
           await invokeAction("start_daemon", {
             mode: dom.daemonModeSelect ? dom.daemonModeSelect.value : "auto",
             interval_minutes: toInt(dom.daemonIntervalInput ? dom.daemonIntervalInput.value : 15, 15),
           });
-        } catch (err) {
+        }).catch((err) => {
           showToast(err instanceof Error ? err.message : String(err), "error");
-        }
+        });
       });
     }
     if (dom.stopDaemonBtn) {
       dom.stopDaemonBtn.addEventListener("click", async () => {
-        try {
+        withBusyButton(dom.stopDaemonBtn, "停止中...", async () => {
           await invokeAction("stop_daemon", {});
-        } catch (err) {
+        }).catch((err) => {
           showToast(err instanceof Error ? err.message : String(err), "error");
-        }
+        });
       });
     }
     if (dom.stopJobBtn) {
       dom.stopJobBtn.addEventListener("click", async () => {
-        try {
+        withBusyButton(dom.stopJobBtn, "停止中...", async () => {
           await invokeAction("stop_job", {});
-        } catch (err) {
+        }).catch((err) => {
           showToast(err instanceof Error ? err.message : String(err), "error");
-        }
+        });
       });
     }
     if (dom.reloadConfigBtn) {
       dom.reloadConfigBtn.addEventListener("click", async () => {
-        try {
+        withBusyButton(dom.reloadConfigBtn, "重载中...", async () => {
           await loadConfig();
           showToast("配置已重载", "success");
-        } catch (err) {
+        }).catch((err) => {
           showToast(err instanceof Error ? err.message : String(err), "error");
-        }
+        });
       });
     }
     if (dom.saveConfigBtn) {
       dom.saveConfigBtn.addEventListener("click", async () => {
-        try {
+        withBusyButton(dom.saveConfigBtn, "保存中...", async () => {
           await saveConfigForm("配置已保存");
-        } catch (err) {
+        }).catch((err) => {
           showToast(err instanceof Error ? err.message : String(err), "error");
-        }
+        });
       });
     }
     if (dom.wizardApplyBtn) {
       dom.wizardApplyBtn.addEventListener("click", async () => {
-        try {
+        withBusyButton(dom.wizardApplyBtn, "应用中...", async () => {
           applyWizardPresetFields();
           await saveConfigForm("向导推荐配置已应用");
           showToast("推荐配置已应用，可继续执行一键自检", "success");
-        } catch (err) {
+        }).catch((err) => {
           showToast(err instanceof Error ? err.message : String(err), "error");
-        }
+        });
       });
     }
     if (dom.wizardCheckBtn) {
       dom.wizardCheckBtn.addEventListener("click", async () => {
-        try {
+        withBusyButton(dom.wizardCheckBtn, "检测中...", async () => {
           await runSetupCheck();
-        } catch (err) {
+        }).catch((err) => {
           showToast(err instanceof Error ? err.message : String(err), "error");
-        }
+        });
       });
     }
     if (dom.wizardCheckList) {
@@ -3152,7 +3136,7 @@
     }
     if (dom.resumeParseBtn) {
       dom.resumeParseBtn.addEventListener("click", async () => {
-        try {
+        withBusyButton(dom.resumeParseBtn, "解析中...", async () => {
           const data = await parseResumeFile(selectedResumeFile);
           if (dom.resumeTextArea) {
             dom.resumeTextArea.value = String((data && data.resume_text) || "");
@@ -3161,37 +3145,50 @@
             dom.resumeChars.textContent = fmtInt((data && data.resume_chars) || 0);
           }
           showToast("文件解析完成，已覆盖文本框", "success");
-        } catch (err) {
+        }).catch((err) => {
           showToast(err instanceof Error ? err.message : String(err), "error");
-        }
+        });
       });
     }
     if (dom.resumeUploadBtn) {
       dom.resumeUploadBtn.addEventListener("click", async () => {
-        try {
+        withBusyButton(dom.resumeUploadBtn, "上传中...", async () => {
           const text = String(dom.resumeTextArea ? dom.resumeTextArea.value : "");
           const data = await postJson("/api/resume/text", { resume_text: text });
           showToast((data && data.message) || "简历上传成功", "success");
           await loadResume();
-        } catch (err) {
+        }).catch((err) => {
           showToast(err instanceof Error ? err.message : String(err), "error");
-        }
+        });
       });
     }
   }
 
   function initAutoRefresh() {
-    setInterval(() => {
+    const refreshCore = () => {
+      if (document.hidden) return;
       loadSummaryAndRuns().catch(() => {});
       loadRuntime().catch(() => {});
-      loadRetryQueue().catch(() => {});
-    }, 12000);
+      if (state.view === "control") {
+        loadRetryQueue({ optional: true }).catch(() => {});
+      }
+    };
 
-    setInterval(() => {
+    const refreshLeads = () => {
+      if (document.hidden) return;
       if (isWorkspaceView(state.view)) {
         loadLeads().catch(() => {});
       }
-    }, 25000);
+    };
+
+    setInterval(refreshCore, 12000);
+    setInterval(refreshLeads, 25000);
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      refreshCore();
+      refreshLeads();
+    });
   }
 
   function boot() {
@@ -3207,6 +3204,7 @@
       });
     loadSkin();
     applyViewMode(state.view);
+    syncViewQuery(state.view, true);
     bindEvents();
     refreshAll();
     initAutoRefresh();
