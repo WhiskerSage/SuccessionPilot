@@ -1015,20 +1015,36 @@ class PipelineServiceMixin(PipelineRepositoryMixin):
         attachments: list[str],
         reason: str,
     ) -> dict[str, Any]:
-        subject = self.communication._build_subject(
-            run_id=run_id,
-            mode=mode,
-            jobs=jobs,
-            headline="notification retry",
-        )
-        body = self.communication._build_body(
-            run_id=run_id,
-            mode=mode,
-            jobs=jobs,
-            headline="notification retry",
-            overview=f"主流程通知失败，已写入重试队列。reason={reason}",
-            attachments=attachments,
-        )
+        subject = ""
+        body = ""
+        builder = getattr(self.communication, "build_retry_fallback_message", None)
+        if callable(builder):
+            try:
+                built_subject, built_body = builder(
+                    run_id=run_id,
+                    mode=mode,
+                    jobs=jobs,
+                    attachments=attachments,
+                    reason=reason,
+                )
+                subject = str(built_subject or "").strip()
+                body = str(built_body or "").strip()
+            except Exception:
+                subject = ""
+                body = ""
+
+        if not subject:
+            subject = f"SuccessionPilot | notification retry | {run_id}"
+        if not body:
+            lines = [
+                "SuccessionPilot 通知重试回退",
+                "========================================",
+                f"运行ID：{run_id}",
+                f"运行模式：{mode}",
+                f"岗位数量：{len(jobs)}",
+                f"原因：{reason}",
+            ]
+            body = "\n".join(lines)
         return {
             "logs": [],
             "subject": subject,

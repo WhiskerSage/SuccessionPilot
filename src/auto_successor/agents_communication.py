@@ -96,6 +96,31 @@ class CommunicationAgent:
             body="legacy dispatch_digest disabled",
         )
 
+    def build_retry_fallback_message(
+        self,
+        *,
+        run_id: str,
+        mode: str,
+        jobs: list[JobRecord],
+        attachments: list[str],
+        reason: str,
+    ) -> tuple[str, str]:
+        subject = self._build_subject(
+            run_id=run_id,
+            mode=mode,
+            jobs=jobs,
+            headline="notification retry",
+        )
+        body = self._build_body(
+            run_id=run_id,
+            mode=mode,
+            jobs=jobs,
+            headline="notification retry",
+            overview=f"主流程通知失败，已写入重试队列。reason={reason}",
+            attachments=attachments,
+        )
+        return subject, body
+
     @staticmethod
     def _format_multiline_block(text: str) -> str:
         raw = (text or "").replace("\r\n", "\n").strip()
