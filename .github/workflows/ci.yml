@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  backend-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Syntax checks
+        run: |
+          python -m compileall -q src/auto_successor
+          python -m py_compile tests/test_split_compatibility.py
+          python -m py_compile tests/test_dashboard_backend_core.py
+          python -m py_compile tests/test_pipeline_flow.py
+
+      - name: Targeted regression tests
+        run: |
+          python -m unittest tests.test_split_compatibility
+          python -m unittest tests.test_dashboard_backend_core
+          python -m unittest tests.test_pipeline_flow
+

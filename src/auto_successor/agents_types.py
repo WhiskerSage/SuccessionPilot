@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from .models import JobRecord, NoteRecord, SendLogRecord
 
 
+@dataclass
 class AgentPlan:
     mode: str
     detail_fetch_limit: int
@@ -14,11 +15,15 @@ class AgentPlan:
     top_n: int
     include_jd_full: bool
 
+
+@dataclass
 class FilterOutcome:
     targets: list[NoteRecord]
     filtered_out: list[dict]
     scores: dict[str, float]
 
+
+@dataclass
 class ExtractOutcome:
     targets: list[NoteRecord]
     jobs: list[JobRecord]
@@ -27,11 +32,15 @@ class ExtractOutcome:
     note_agent_stats: dict[str, int] = field(default_factory=dict)
     note_agent_details: list[dict[str, object]] = field(default_factory=list)
 
+
+@dataclass
 class NoteAgentTask:
     index: int
     note: NoteRecord
     allow_llm: bool
 
+
+@dataclass
 class NoteAgentResult:
     index: int
     note: NoteRecord
@@ -41,6 +50,8 @@ class NoteAgentResult:
     worker_fallback: bool = False
     error: str = ""
 
+
+@dataclass
 class BatchDispatchResult:
     sent: bool
     logs: list[SendLogRecord]
@@ -48,6 +59,8 @@ class BatchDispatchResult:
     body: str
     opportunity_post_ids: list[str]
 
+
+@dataclass
 class DigestDispatchResult:
     sent: bool
     logs: list[SendLogRecord]
