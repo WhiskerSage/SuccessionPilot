@@ -2639,7 +2639,7 @@
       } else if (state.view === "leads") {
         dom.searchInput.placeholder = "按岗位 / 公司 / 地点筛选";
       } else if (state.view === "overview") {
-        dom.searchInput.placeholder = "总览页筛选（默认每页 10 条）";
+        dom.searchInput.placeholder = "总览页筛选（每页条数沿用你的选择）";
       } else {
         dom.searchInput.placeholder = "控制中心无需搜索";
       }
