@@ -1,10 +1,15 @@
 ﻿# SuccessionPilot 自动找继任系统
 
 ## 版本信息
-- 项目版本：`0.5.1`
+- 项目版本：`0.5.2`
 - Python：`>=3.9`
 - Node.js：`>=18`
 - XHS MCP（vendor）：`0.8.8-local`
+
+### v0.5.2 更新要点
+- README 对齐实际代码：补充 v0.5.1 后端分层文件定位（dashboard/pipeline/agents 门面与子模块）。
+- 文档结构优化：配置章节新增“覆盖优先级 / 最小可用配置 / 高频字段优先调 / 进阶参数”分层阅读路径。
+- 测试说明优化：建议先跑拆分兼容性与关键回归，再按需执行全量测试。
 
 ### v0.5.1 更新要点
 - 后端核心分层拆分（第一阶段）：将 `dashboard_backend.py` 拆分为 API 门面 + 服务层 + 仓储层 + 运行时管理，降低单文件联动风险。
@@ -439,12 +444,14 @@ powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1
 - 展示层：内置 Dashboard（办公风格页面）展示线索、摘要、岗位、运行记录
 
 ## 目录结构
-- `src/auto_successor/`：核心运行逻辑
-- `config/config.yaml`：主配置文件
+- `src/auto_successor/`：主业务代码（采集、智能处理、通知、Dashboard API）
+- `config/`：配置模板与主配置
 - `.env`：密钥与账号环境变量
-- `scripts/`：运行脚本与 XHS 辅助脚本
+- `scripts/`：启动、登录、自检相关脚本
 - `web/`：Dashboard 前端页面
-- `data/`：本地数据、状态、运行快照
+- `data/`：本地数据、状态、运行快照（运行后生成）
+- `tests/`：回归与兼容性测试
+- `docs/`：设计说明、实施报告等项目文档
 
 ## 快速定位（文件在哪）
 - 主配置文件：`config/config.yaml`
@@ -466,6 +473,23 @@ powershell -ExecutionPolicy Bypass -File scripts/xhs_status.ps1
 - 状态文件（运行后生成）：`data/state.json`
 - 运行快照目录：`data/runs/`
 - 运行日志：`logs/app.log`
+
+后端核心（v0.5.1 分层后）：
+- Dashboard API 门面：`src/auto_successor/dashboard_backend.py`
+- Dashboard 服务层：`src/auto_successor/dashboard_service.py`
+- Dashboard 仓储层：`src/auto_successor/dashboard_repository.py`
+- Dashboard 运行时：`src/auto_successor/dashboard_runtime_manager.py`
+- Pipeline 主编排：`src/auto_successor/pipeline.py`
+- Pipeline 服务层：`src/auto_successor/pipeline_service.py`
+- Pipeline 仓储层：`src/auto_successor/pipeline_repository.py`
+- Agents 门面：`src/auto_successor/agents.py`
+- Agents 子模块：`src/auto_successor/agents_{types,planner,intelligence,communication}.py`
+
+## 后端分层说明（v0.5.1）
+- **API 层**：对外暴露稳定入口（例如 `DataBackend` / `AutoSuccessorPipeline` / `agents` 门面）。
+- **服务层（Service）**：业务编排与规则判断，不直接耦合具体存储格式。
+- **仓储层（Repository）**：文件/表格/快照等读写细节，尽量保持低耦合、可替换。
+- 维护建议：新增功能优先放在 Service/Repository，不要把 API 门面重新做大。
 
 ## 环境要求
 - Python 3.9 及以上
@@ -539,6 +563,51 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - 程序启动时会自动读取根目录 `.env`。
 - 若某环境变量在系统中已存在，则 `.env` 不会覆盖该变量。
 
+配置覆盖优先级（高 → 低）：
+1. 命令行参数（如 `--mode`、`--interval-minutes`）
+2. `config/config.yaml`
+3. `.env`（用于密钥与账号类变量）
+4. `config.py` 中的默认值
+
+### 最小可用配置（先跑起来）
+如果你想先稳定跑通，再做精细调参，可先保证下列核心字段：
+
+```yaml
+app:
+  interval_minutes: 15
+
+xhs:
+  keyword: "继任"
+  max_results: 20
+  max_detail_fetch: 18
+  detail_workers: 3
+
+notification:
+  mode: "digest"
+  digest_interval_minutes: 30
+  digest_channels: ["email"]
+```
+
+同时在 `.env` 配置最小邮件参数（若使用邮件）：
+- `EMAIL_SMTP_USERNAME`
+- `EMAIL_SMTP_PASSWORD`
+- `EMAIL_FROM`
+- `EMAIL_TO`
+
+### 高频字段（建议优先调）
+- 抓取量：`xhs.max_results`
+- 详情补全：`xhs.max_detail_fetch`、`xhs.detail_workers`
+- 运行频率：`app.interval_minutes`
+- 运行模式：`agent.mode`（`auto` / `agent`）
+- 提取并发：`pipeline.process_workers`
+- 通知策略：`notification.mode`、`notification.digest_interval_minutes`
+- 摘要通道：`notification.digest_channels`
+- LLM 总开关：`llm.enabled`
+- LLM 直提模式：`llm.single_pass_extract`
+- 重试开关：`retry.enabled`
+
+### 模块详细参数（进阶）
+
 ### app
 - `timezone`：时区，例如 `Asia/Shanghai`
 - `log_level`：日志级别
@@ -546,7 +615,7 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 
 ### pipeline
 - `min_confidence`：规则链路基础阈值
-- `process_workers`：提取阶段并行线程数（默认 `4`，建议 `2-8`）
+- `process_workers`：提取阶段并行线程数（默认 `4`，建议 `2-6`）
 
 ### xhs
 - `command`：执行命令，通常为 `node`
@@ -577,7 +646,7 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - `enabled_for_jobs`：是否用于岗位抽取
 - `enabled_for_summary`：是否用于摘要增强
 - `enabled_for_outreach`：是否生成套磁文案（关闭后机会点岗位不再生成文案）
-- `max_job_items`：已弃用（岗位提取改为全量 LLM 尝试，不再按配额截断）
+- `max_job_items`：兼容字段（默认不建议依赖；开启 `single_pass_extract` 时通常不作为主控阈值）
 - `max_filter_items` `max_summary_items`：兼容字段
 - `single_pass_extract`：是否启用“单次直提”（每条帖子一次 LLM 完成目标判断+岗位提取，默认 `true`）
 - `filter_threshold`：过滤阈值
@@ -625,23 +694,20 @@ powershell -ExecutionPolicy Bypass -File scripts/start_auto.ps1 -ConfigPath conf
 - 重试超过最大次数会进入死信（dead-letter），可在控制中心查看并手动重试/丢弃。
 - 邮件与超时重试支持幂等键（`idempotency_key`），完成过的任务不会重复执行。
 
-当前项目 `config/config.example.yaml` 默认值。
-- `xhs.search_sort: time_descending`
-- `xhs.detail_workers: 3`
-- `pipeline.process_workers: 4`
-- `notification.mode: digest`
-- `notification.digest_interval_minutes: 30`
-- `notification.digest_send_when_no_new: false`
-- `notification.attach_excel: false`
-- `notification.attach_jobs_csv: false`
-- `observability.alerts.enabled: true`
-- `observability.alerts.cooldown_minutes: 60`
-- `observability.alerts.fetch_fail_streak_threshold: 2`
-- `observability.alerts.llm_timeout_rate_threshold: 0.35`
-- `observability.alerts.detail_missing_rate_threshold: 0.45`
-- `observability.alerts.fetch_fail_streak.long_window_runs: 6`
-- `observability.alerts.llm_timeout_rate.long_window_runs: 8`
-- `observability.alerts.detail_missing_rate.long_window_runs: 8`
+`config/config.example.yaml` 默认值速览（节选）：
+
+| 分类 | 默认值 |
+|---|---|
+| `xhs.search_sort` | `time_descending` |
+| `xhs.detail_workers` | `3` |
+| `pipeline.process_workers` | `4` |
+| `notification.mode` | `digest` |
+| `notification.digest_interval_minutes` | `30` |
+| `notification.digest_send_when_no_new` | `false` |
+| `notification.attach_excel` | `false` |
+| `notification.attach_jobs_csv` | `false` |
+| `observability.alerts.enabled` | `true` |
+| `observability.alerts.cooldown_minutes` | `60` |
 
 ### agent
 - `runtime_name`：运行时名称
@@ -950,7 +1016,12 @@ node vendor/xhs-mcp/dist/xhs-mcp.js login --timeout 180
 
 ## 测试
 ```powershell
-python -m unittest discover -s tests -v
+# 推荐：先跑拆分兼容性与关键回归（更快）
+python -m unittest tests.test_split_compatibility
+python -m unittest tests.test_dashboard_backend_core
+
+# 需要更完整验证时再跑全量
+python -m unittest discover -s tests
 ```
 
 ## 许可
@@ -1002,6 +1073,7 @@ pip install -e .[dashboard]
 
 | 版本 | 日期 | 更新内容 |
 |---|---|---|
+| v0.5.2 | 2026-03-04 | README 对齐与可读性优化：补充分层后后端文件定位（dashboard/pipeline/agents），重构配置章节为“覆盖优先级 + 最小可用 + 高频字段 + 进阶参数”，并将测试建议调整为先跑兼容性与关键回归。 |
 | v0.5.1 | 2026-03-04 | 后端核心重构：`dashboard` 按 API/服务/仓储/运行时分层；`pipeline` 拆分为主编排 + 服务 + 仓储；`agents` 拆分为类型/规划/智能/通信模块并保留原导入兼容，降低超大文件联动风险并提升可维护性。 |
 | v0.5.0 | 2026-03-03 | 前端可用性专项优化：控制中心高级配置改为可折叠（默认收起），关键按钮新增执行中状态，控制中心隐藏搜索框；上调关键字体尺寸并优化控制区栅格；减少侧栏/详情多层滚动，提升办公场景可读性与操作稳定性；修复 `ops-span-2` 与 `span-2` 栅格冲突导致的控制中心排版错位；分页大小按视图记忆并持久化；未保存“快速改字段”时自动刷新跳过线索重载，避免编辑内容被覆盖。 |
 | v0.4.12 | 2026-03-03 | 工作台导航支持无刷新视图切换并同步 `?view=`；支持浏览器前进/后退视图切换；工作区渲染逻辑收敛到 Vue 主路径，移除重复 DOM 分支，降低维护复杂度。 |

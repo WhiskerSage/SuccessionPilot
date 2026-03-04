@@ -37,7 +37,7 @@ def create_fastapi_app(backend: DataBackend, web_dir: Path):
 
     app = FastAPI(
         title="SuccessionPilot Dashboard API",
-        version="0.5.1",
+        version="0.5.2",
     )
     app.add_middleware(
         CORSMiddleware,
