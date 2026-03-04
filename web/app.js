@@ -7,6 +7,14 @@
     }
   })();
   const startView = String(queryView || document.body.dataset.startView || "overview").trim().toLowerCase();
+  const PAGE_SIZE_PREF_KEY = "successor_page_size_by_view";
+  const DEFAULT_PAGE_SIZES = Object.freeze({
+    overview: 10,
+    leads: 30,
+    summary: 20,
+  });
+  const ALLOWED_PAGE_SIZES = [10, 20, 30, 50];
+  const QUICK_EDIT_FIELDS = ["title", "position", "company", "location", "requirements", "summary"];
 
   const state = {
     leads: [],
@@ -38,6 +46,7 @@
       total: 0,
       totalPages: 1,
     },
+    pageSizePrefs: { ...DEFAULT_PAGE_SIZES },
     retryQueueUnavailable: false,
   };
 
@@ -425,10 +434,57 @@
     }
   }
 
-  function pageSizeForView(view) {
+  function defaultPageSizeForView(view) {
     if (view === "overview") return 10;
     if (view === "summary") return 20;
     return 30;
+  }
+
+  function pageSizeForView(view) {
+    const key = String(view || "").trim().toLowerCase();
+    const fallback = defaultPageSizeForView(key);
+    const preferred = toInt(state.pageSizePrefs && state.pageSizePrefs[key], fallback);
+    if (ALLOWED_PAGE_SIZES.includes(preferred)) {
+      return preferred;
+    }
+    return fallback;
+  }
+
+  function loadPageSizePrefs() {
+    let parsed = {};
+    try {
+      const raw = localStorage.getItem(PAGE_SIZE_PREF_KEY);
+      if (raw) {
+        const value = JSON.parse(raw);
+        if (value && typeof value === "object") {
+          parsed = value;
+        }
+      }
+    } catch (_err) {
+      parsed = {};
+    }
+    state.pageSizePrefs = { ...DEFAULT_PAGE_SIZES };
+    Object.keys(DEFAULT_PAGE_SIZES).forEach((key) => {
+      const value = toInt(parsed[key], DEFAULT_PAGE_SIZES[key]);
+      if (ALLOWED_PAGE_SIZES.includes(value)) {
+        state.pageSizePrefs[key] = value;
+      }
+    });
+  }
+
+  function savePageSizePrefs() {
+    try {
+      localStorage.setItem(PAGE_SIZE_PREF_KEY, JSON.stringify(state.pageSizePrefs || {}));
+    } catch (_err) {}
+  }
+
+  function rememberPageSizeForView(view, pageSize) {
+    const key = String(view || "").trim().toLowerCase();
+    if (!(key in DEFAULT_PAGE_SIZES)) return;
+    const value = toInt(pageSize, defaultPageSizeForView(key));
+    if (!ALLOWED_PAGE_SIZES.includes(value)) return;
+    state.pageSizePrefs[key] = value;
+    savePageSizePrefs();
   }
 
   function isWorkspaceView(view) {
@@ -1743,6 +1799,23 @@
     return String(value ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
   }
 
+  function hasUnsavedQuickEditChanges() {
+    if (!isWorkspaceView(state.view) || !dom.detailBox) return false;
+    const form = dom.detailBox.querySelector("form.quick-edit-form");
+    if (!form) return false;
+    const selected = getSelectedLead();
+    if (!selected) return false;
+    const formData = new FormData(form);
+    for (const key of QUICK_EDIT_FIELDS) {
+      const currentValue = normalizeEditableText(formData.get(key));
+      const selectedValue = normalizeEditableText(selected[key]);
+      if (currentValue !== selectedValue) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   function renderQuickEditBlock(lead) {
     const noteId = String(lead.note_id || "").trim();
     if (!noteId) return "";
@@ -1889,7 +1962,7 @@
 
     if (state.prevJobRunning && !jobRunning) {
       loadSummaryAndRuns().catch(() => {});
-      if (isWorkspaceView(state.view)) {
+      if (isWorkspaceView(state.view) && !hasUnsavedQuickEditChanges()) {
         loadLeads().catch(() => {});
       }
     }
@@ -2397,8 +2470,7 @@
     const selected = getSelectedLead() || {};
     const payloadFields = {};
     const formData = new FormData(form);
-    const candidateFields = ["title", "position", "company", "location", "requirements", "summary"];
-    for (const key of candidateFields) {
+    for (const key of QUICK_EDIT_FIELDS) {
       const newValue = normalizeEditableText(formData.get(key));
       const prevValue = normalizeEditableText(selected[key]);
       if (newValue !== prevValue) {
@@ -2931,7 +3003,9 @@
     }
     if (dom.leadPageSize) {
       dom.leadPageSize.addEventListener("change", () => {
-        state.pagination.pageSize = toInt(dom.leadPageSize.value, 30);
+        const nextSize = toInt(dom.leadPageSize.value, pageSizeForView(state.view));
+        rememberPageSizeForView(state.view, nextSize);
+        state.pagination.pageSize = pageSizeForView(state.view);
         state.pagination.page = 1;
         loadLeads().catch((err) => showToast(String(err), "error"));
       });
@@ -3177,6 +3251,7 @@
     const refreshLeads = () => {
       if (document.hidden) return;
       if (isWorkspaceView(state.view)) {
+        if (hasUnsavedQuickEditChanges()) return;
         loadLeads().catch(() => {});
       }
     };
@@ -3203,6 +3278,7 @@
         }
       });
     loadSkin();
+    loadPageSizePrefs();
     applyViewMode(state.view);
     syncViewQuery(state.view, true);
     bindEvents();
