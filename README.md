@@ -690,6 +690,8 @@ notification:
 
 行为说明。
 - 告警按“双窗口”评估：短窗口识别突发、长窗口识别趋势，必须同时满足才触发通知。
+- 当前轮若已出现明确故障，也会直接触发专用告警：`resume_missing`、`llm_timeout_spike`、`xhs_not_logged_in`、`xhs_mcp_unreachable`、`xhs_risk_control`、`retry_backlog`。
+- `llm_timeout_spike` 用于识别单轮严重超时尖峰，不依赖长窗口历史，避免实跑时“这轮已经明显异常但还没告警”。
 - 抓取失败（登录/搜索/详情）、LLM 超时、邮件失败会分别入队。
 - 队列持久化文件默认：`data/retry_queue.json`。
 - 重放在后台线程执行，不阻塞主流程抓取、入库和当前轮通知。

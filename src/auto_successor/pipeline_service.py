@@ -250,6 +250,11 @@ class PipelineServiceMixin(PipelineRepositoryMixin):
                 "long_threshold": llm_long_threshold,
                 "long_min_samples": llm_long_min_calls,
             },
+            "llm_timeout_spike": {
+                "min_calls": max(2, min(llm_short_min_calls, 4)),
+                "count_threshold": max(2, min(llm_short_min_calls, 3)),
+                "rate_threshold": max(0.5, llm_short_threshold),
+            },
             "detail_missing_rate": {
                 "short_window_runs": detail_short_window_runs,
                 "short_threshold": detail_short_threshold,
@@ -259,6 +264,15 @@ class PipelineServiceMixin(PipelineRepositoryMixin):
                 "long_min_samples": detail_long_min_samples,
             },
             "history_sample_runs": len(run_stats_window),
+            "resume_missing": {
+                "threshold": 1,
+            },
+            "retry_backlog": {
+                "pending_total_threshold": max(3, int(getattr(self.settings.retry, "replay_batch_size", 3) or 3) * 2),
+            },
+            "xhs_failure": {
+                "enabled": True,
+            },
         }
         triggered: list[dict[str, Any]] = []
 
@@ -314,6 +328,48 @@ class PipelineServiceMixin(PipelineRepositoryMixin):
         llm_long_calls = int(llm_long.get("denominator", 0))
         llm_long_timeout_count = int(llm_long.get("numerator", 0))
         llm_long_rate = float(llm_long.get("rate", 0.0))
+        llm_spike_cfg = thresholds.get("llm_timeout_spike", {}) if isinstance(thresholds.get("llm_timeout_spike"), dict) else {}
+        llm_spike_min_calls = max(2, int(llm_spike_cfg.get("min_calls", 4) or 4))
+        llm_spike_count_threshold = max(2, int(llm_spike_cfg.get("count_threshold", 3) or 3))
+        llm_spike_rate_threshold = self._normalize_rate_threshold(
+            llm_spike_cfg.get("rate_threshold"),
+            default=max(0.5, llm_short_threshold),
+        )
+        llm_current_calls = max(0, int(stats.get("llm_calls", 0) or 0))
+        llm_current_timeout_count = max(0, int(stats.get("llm_timeout_count", 0) or 0))
+        llm_current_timeout_rate = (
+            float(llm_current_timeout_count) / float(llm_current_calls) if llm_current_calls > 0 else 0.0
+        )
+        llm_error_codes = stats.get("llm_error_codes") if isinstance(stats.get("llm_error_codes"), dict) else {}
+        timeout_error_codes = {
+            str(code): max(0, int(count or 0))
+            for code, count in llm_error_codes.items()
+            if max(0, int(count or 0)) > 0 and str(code or "").strip().lower() in {"connect_timeout", "read_timeout", "timeout"}
+        }
+        if (
+            llm_current_calls >= llm_spike_min_calls
+            and llm_current_timeout_count >= llm_spike_count_threshold
+            and llm_current_timeout_rate >= llm_spike_rate_threshold
+        ):
+            triggered.append(
+                {
+                    "code": "llm_timeout_spike",
+                    "level": "critical",
+                    "metric": "llm_timeout_count",
+                    "value": llm_current_timeout_count,
+                    "threshold": llm_spike_count_threshold,
+                    "sample_size": llm_current_calls,
+                    "timeout_rate": llm_current_timeout_rate,
+                    "rate_threshold": llm_spike_rate_threshold,
+                    "error_codes": timeout_error_codes,
+                    "reason": (
+                        f"?? LLM ?? {llm_current_timeout_count}/{llm_current_calls}"
+                        f" ({llm_current_timeout_rate:.1%})??????????"
+                        f" count>={llm_spike_count_threshold} ? rate>={llm_spike_rate_threshold:.1%}?"
+                        f" timeout_codes={timeout_error_codes or '-'}"
+                    ),
+                }
+            )
         if (
             llm_short_calls >= llm_short_min_calls
             and llm_long_calls >= llm_long_min_calls
@@ -398,6 +454,65 @@ class PipelineServiceMixin(PipelineRepositoryMixin):
                         f"详情缺失率短窗 {detail_short_rate:.1%}（{detail_short_missing}/{detail_short_target}）/"
                         f"{detail_short_threshold:.1%}，长窗 {detail_long_rate:.1%}（{detail_long_missing}/{detail_long_target}）/"
                         f"{detail_long_threshold:.1%}"
+                    ),
+                }
+            )
+
+        resume_chars = max(0, int(stats.get("resume_chars") or 0))
+        resume_relevant = max(0, int(stats.get("target_notes") or 0)) > 0 or max(0, int(stats.get("jobs") or 0)) > 0
+        if resume_relevant and resume_chars <= 0:
+            triggered.append(
+                {
+                    "code": "resume_missing",
+                    "level": "warning",
+                    "metric": "resume_chars",
+                    "value": resume_chars,
+                    "threshold": 1,
+                    "sample_size": 1,
+                    "reason": (
+                        "简历文本为空，匹配分与套磁文案会退化为无简历上下文。"
+                        "请检查 config/resume.txt 或 resume.source_txt_path。"
+                    ),
+                }
+            )
+
+        diagnosis = stats.get("xhs_diagnosis") if isinstance(stats.get("xhs_diagnosis"), dict) else {}
+        xhs_failure_category = str(diagnosis.get("failure_category") or "").strip().lower()
+        xhs_failure_map = {
+            "not_logged_in": "xhs_not_logged_in",
+            "mcp_unreachable": "xhs_mcp_unreachable",
+            "risk_control": "xhs_risk_control",
+        }
+        xhs_alert_code = xhs_failure_map.get(xhs_failure_category, "")
+        if xhs_alert_code:
+            triggered.append(
+                {
+                    "code": xhs_alert_code,
+                    "level": "critical" if xhs_failure_category in {"mcp_unreachable", "not_logged_in"} else "warning",
+                    "metric": "xhs_failure_category",
+                    "value": xhs_failure_category,
+                    "threshold": 1,
+                    "sample_size": 1,
+                    "reason": str(diagnosis.get("reason") or xhs_failure_category or "XHS 诊断失败"),
+                }
+            )
+
+        retry_pending = stats.get("retry_pending") if isinstance(stats.get("retry_pending"), dict) else {}
+        retry_pending_total = sum(max(0, int(value or 0)) for value in retry_pending.values())
+        retry_backlog_threshold = int(thresholds.get("retry_backlog", {}).get("pending_total_threshold", 3) or 3)
+        if retry_pending_total >= retry_backlog_threshold:
+            triggered.append(
+                {
+                    "code": "retry_backlog",
+                    "level": "warning",
+                    "metric": "retry_pending_total",
+                    "value": retry_pending_total,
+                    "threshold": retry_backlog_threshold,
+                    "sample_size": retry_pending_total,
+                    "queue_breakdown": dict(retry_pending),
+                    "reason": (
+                        f"重试队列待处理任务积压 {retry_pending_total} 条，阈值 {retry_backlog_threshold} 条。"
+                        f" pending={retry_pending}"
                     ),
                 }
             )

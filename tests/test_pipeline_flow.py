@@ -249,6 +249,11 @@ class _DummyLock:
         return None
 
 
+class _EmptyResumeLoader:
+    def load_resume_text(self):
+        return ""
+
+
 class _FailingLoginCollector:
     def ensure_logged_in(self):
         raise RuntimeError("login check failed")
@@ -546,6 +551,32 @@ class TestPipelineFlow(unittest.TestCase):
         self.assertEqual(len(pipeline.router.calls), 1)
         self.assertIn("阈值告警", pipeline.router.calls[0]["subject"])
 
+    def test_resume_missing_triggers_alert(self):
+        settings = _build_settings()
+        settings.observability.alerts.enabled = True
+
+        logger = _NullLogger()
+        pipeline = AutoSuccessorPipeline(settings, logger)
+        pipeline.resume_loader = _EmptyResumeLoader()
+        pipeline.collector = _DummyCollector([
+            _note(
+                note_id="n-resume-missing",
+                title="找继任：测试岗位",
+                detail="测试岗位正文。",
+            )
+        ])
+        pipeline.store = _DummyStore()
+        pipeline.state = _DummyState()
+        pipeline.communication = _DummyCommunication()
+        pipeline.router = _DummyRouter(send_status="success")
+        pipeline.journal = _DummyJournal()
+        pipeline.lock = _DummyLock()
+
+        stats = pipeline.run_once(run_id="r-resume-missing")
+
+        self.assertEqual(stats["resume_chars"], 0)
+        self.assertIn("resume_missing", [item.get("code") for item in stats["alerts_triggered"]])
+
     def test_dual_window_llm_timeout_requires_long_window_trend(self):
         settings = _build_settings()
         settings.observability.alerts.enabled = True
@@ -584,6 +615,60 @@ class TestPipelineFlow(unittest.TestCase):
         eval_high_long = pipeline._evaluate_threshold_alerts(run_id="r-high-long", stats=stats)
         self.assertIn("llm_timeout_rate", [item.get("code") for item in eval_high_long["triggered"]])
 
+    def test_llm_timeout_spike_triggers_without_long_window_history(self):
+        settings = _build_settings()
+        settings.observability.alerts.enabled = True
+        settings.observability.alerts.llm_timeout_rate = {
+            "short_window_runs": 1,
+            "short_threshold": 0.5,
+            "short_min_samples": 6,
+            "long_window_runs": 3,
+            "long_threshold": 0.3,
+            "long_min_samples": 18,
+        }
+
+        logger = _NullLogger()
+        pipeline = AutoSuccessorPipeline(settings, logger)
+        pipeline._load_recent_alert_stats = lambda limit, exclude_run_id: []
+        stats = {
+            "fetch_fail_streak": 0,
+            "llm_calls": 4,
+            "llm_timeout_count": 3,
+            "llm_timeout_rate": 0.75,
+            "llm_error_codes": {"read_timeout": 2, "timeout": 1, "api_error": 5},
+            "detail_target_notes": 0,
+            "detail_missing": 0,
+            "detail_missing_rate": 0.0,
+        }
+
+        result = pipeline._evaluate_threshold_alerts(run_id="r-llm-spike", stats=stats)
+        codes = [item.get("code") for item in result["triggered"]]
+        self.assertIn("llm_timeout_spike", codes)
+        self.assertNotIn("llm_timeout_rate", codes)
+        spike = next(item for item in result["triggered"] if item.get("code") == "llm_timeout_spike")
+        self.assertEqual(spike.get("error_codes"), {"read_timeout": 2, "timeout": 1})
+
+    def test_llm_timeout_spike_requires_severe_current_run(self):
+        settings = _build_settings()
+        settings.observability.alerts.enabled = True
+
+        logger = _NullLogger()
+        pipeline = AutoSuccessorPipeline(settings, logger)
+        pipeline._load_recent_alert_stats = lambda limit, exclude_run_id: []
+        stats = {
+            "fetch_fail_streak": 0,
+            "llm_calls": 5,
+            "llm_timeout_count": 2,
+            "llm_timeout_rate": 0.4,
+            "llm_error_codes": {"read_timeout": 2},
+            "detail_target_notes": 0,
+            "detail_missing": 0,
+            "detail_missing_rate": 0.0,
+        }
+
+        result = pipeline._evaluate_threshold_alerts(run_id="r-llm-spike-low", stats=stats)
+        self.assertNotIn("llm_timeout_spike", [item.get("code") for item in result["triggered"]])
+
     def test_dual_window_fetch_fail_requires_long_window_min_runs(self):
         settings = _build_settings()
         settings.observability.alerts.enabled = True
@@ -618,6 +703,67 @@ class TestPipelineFlow(unittest.TestCase):
         ]
         eval_triggered = pipeline._evaluate_threshold_alerts(run_id="r-with-history", stats=stats)
         self.assertIn("fetch_fail_streak", [item.get("code") for item in eval_triggered["triggered"]])
+
+    def test_retry_backlog_triggers_alert(self):
+        settings = _build_settings()
+        settings.observability.alerts.enabled = True
+        settings.retry.replay_batch_size = 2
+
+        logger = _NullLogger()
+        pipeline = AutoSuccessorPipeline(settings, logger)
+        stats = {
+            "fetch_fail_streak": 0,
+            "llm_calls": 0,
+            "llm_timeout_count": 0,
+            "llm_timeout_rate": 0.0,
+            "detail_target_notes": 0,
+            "detail_missing": 0,
+            "detail_missing_rate": 0.0,
+            "retry_pending": {"fetch": 2, "llm_timeout": 1, "email": 1},
+        }
+
+        result = pipeline._evaluate_threshold_alerts(run_id="r-retry-backlog", stats=stats)
+        self.assertIn("retry_backlog", [item.get("code") for item in result["triggered"]])
+
+    def test_xhs_not_logged_in_triggers_alert(self):
+        settings = _build_settings()
+        settings.observability.alerts.enabled = True
+
+        logger = _NullLogger()
+        pipeline = AutoSuccessorPipeline(settings, logger)
+        stats = {
+            "fetch_fail_streak": 0,
+            "llm_calls": 0,
+            "llm_timeout_count": 0,
+            "llm_timeout_rate": 0.0,
+            "detail_target_notes": 0,
+            "detail_missing": 0,
+            "detail_missing_rate": 0.0,
+            "xhs_diagnosis": {"failure_category": "not_logged_in", "reason": "login expired"},
+        }
+
+        result = pipeline._evaluate_threshold_alerts(run_id="r-xhs-login", stats=stats)
+        self.assertIn("xhs_not_logged_in", [item.get("code") for item in result["triggered"]])
+
+    def test_xhs_mcp_unreachable_triggers_alert(self):
+        settings = _build_settings()
+        settings.observability.alerts.enabled = True
+
+        logger = _NullLogger()
+        pipeline = AutoSuccessorPipeline(settings, logger)
+        stats = {
+            "fetch_fail_streak": 0,
+            "llm_calls": 0,
+            "llm_timeout_count": 0,
+            "llm_timeout_rate": 0.0,
+            "detail_target_notes": 0,
+            "detail_missing": 0,
+            "detail_missing_rate": 0.0,
+            "xhs_diagnosis": {"failure_category": "mcp_unreachable", "reason": "mcp connect failed"},
+        }
+
+        result = pipeline._evaluate_threshold_alerts(run_id="r-xhs-mcp", stats=stats)
+        self.assertIn("xhs_mcp_unreachable", [item.get("code") for item in result["triggered"]])
 
     def test_jobs_to_summary_records_avoid_duplicate_original_text(self):
         settings = _build_settings()
